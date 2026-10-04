@@ -1,0 +1,11 @@
+# config for pose2visual.lightningpose.predict_ibl.
+# camera names; each one is formatted into the video_naming templates below
+cameras: [left, right]
+
+# null = predict every session found under --root; override with --sessionids on the cli
+sessionids: null
+
+# directory layout and file naming under --root (defaults follow the IBL-2view convention)
+video_naming:
+  camera_video_subdir: '{cam}Camera.video'
+  video_filename: '_iblrig_{cam}Camera.downsampled.{session_id}.mp4'
