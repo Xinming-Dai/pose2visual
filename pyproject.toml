@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pose2visual"
+version = "0.1.0"
+description = "Pose-to-visual pipelines for IBL: keypoint prediction and neural encoding"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+# neural encoding (pose2visual.encoding.run_encoding and its models)
+encoding = [
+    "accelerate",
+    "facemap",
+    "ray[tune]",
+    "scikit-learn",
+    "scipy",
+    "torch",
+    "tqdm",
+]
+# IBL neural-data extraction (pose2visual.encoding.extract_neural_data)
+ibl = [
+    "ibllib",
+    "iblatlas",
+    "iblutil",
+    "one-api",
+    "pandas",
+    "scipy",
+    "tqdm",
+]
+test = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "gpu: test requires a CUDA GPU",
+    "multigpu: test requires two or more GPUs (always paired with gpu)",
+]
