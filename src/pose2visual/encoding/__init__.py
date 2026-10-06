@@ -15,5 +15,16 @@ Modules:
     rrr_encoder: ``RRRGD`` reduced-rank regression model and its LBFGS training loop.
     utils: CLI parsing, seeding, logging setup and encoding metrics (co-bps).
 
-Slurm wrappers live in ``scripts/delta/encoding/``.
+Variant that replaces the ONE keypoints by your own Lightning Pose predictions (one camera per
+model) and compares base keypoints against base + additional keypoints:
+
+    list_litpose_keypoints: step A (cpu). Write one keypoint-names json per camera and session.
+    extract_litpose_dynamic_vars_trials: step B (cpu). Bin keypoint speeds onto the neural
+        intervals and write ``dynamic_vars.npz``.
+    run_litpose_encoding: step C (gpu). Fit RRR and CNN on base and base + additional keypoints
+        and write ``encoding_result.npz``.
+    litpose_keypoints: csv reading, naming conventions, speed and binning shared by A-C.
+
+Slurm wrappers live in ``scripts/delta/encoding/`` (ONE pipeline) and
+``scripts/delta/lightningpose_encoding/`` (Lightning Pose keypoint pipeline).
 """

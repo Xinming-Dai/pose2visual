@@ -19,7 +19,7 @@ variant_name: plus_pupil_upperlip
 camera: left
 
 # keypoint names are listed in <video_preds_dir>/encoding/keypoint_names/<camera>_<eid>.json
-# (run litpose_step0_list_keypoints.sh); keypoints in neither list are logged as unused; keypoints that are mostly masked
+# (run step0_list_keypoints.sh); keypoints in neither list are logged as unused; keypoints that are mostly masked
 # (far-side keypoints, likelihood ~0) are listed under skipped_masked and cannot be selected
 base_keypoints:
   - nose_tip
