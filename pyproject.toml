@@ -35,6 +35,11 @@ ibl = [
     "scipy",
     "tqdm",
 ]
+# bar plots of the encoding results (scripts/delta/analysis/plotting)
+plotting = [
+    "matplotlib",
+    "pyyaml",
+]
 test = [
     "pytest",
 ]
