@@ -14,13 +14,20 @@ Requires `extract_neural_data` (step 0) to have produced `<eid>_aligned.npz`.
    `video_preds/<camera>_encoding/<eid>/dynamic_vars.npz` (`OUTPUT_NAME_SUFFIX` changes
    `encoding`). The yaml `output_name` of step 3 must equal that folder, e.g. `left_encoding`.
 3. Edit `configs/encoding/litpose_encoding.yaml` (eid, camera, base / additional keypoints,
-   `variant_name`), then `scripts/delta/lightningpose_encoding/step2_run_encoding.sh`. The base fit is
-   cached in `<output_name>/<eid>/base/` and reused; the variant writes `encoding_result.npz`,
+   optional `variant_name`), then `scripts/delta/lightningpose_encoding/step2_run_encoding.sh`. The base fit is
+   cached in `<output_name>/<eid>/base/<hash8>/` (one folder per base setting, e.g. pca on / off) and reused; the variant writes `encoding_result.npz`,
    `encoding_params.json` and `encoding.log` (checkpoint location, base / additional / unused
-   keypoints) to `<output_name>/<eid>/<variant_name>/`. To compare another additional set
-   against the same base, change `additional_keypoints` and `variant_name` and resubmit
+   keypoints) to `<output_name>/<eid>/<variant_name>/`, where `variant_name` defaults to the
+   sorted `additional_keypoints` joined by `_` (set it in the yaml to choose another name). A
+   folder that already holds a result with other settings (base / additional keypoints, pca,
+   seed) is never overwritten; a hash suffix is added to the folder name instead. To compare
+   another additional set against the same base, change `additional_keypoints` and resubmit
    (`RERUN_BASE=1` forces a base refit). The train/val/test split comes from `<eid>_aligned.npz`,
-   so it is identical for all variants.
+   so it is identical for all variants. Inside this job the keypoint speeds are z-scored and
+   rotated onto principal components (`pca`, `pca_n_components_base`,
+   `pca_n_components_base_plus_additional` in the yaml; default n_components = number of
+   keypoints of each condition), with the basis fit on the pooled
+   train/val/test features; changing them refits the base.
 
 Keypoint features are speeds in pixels/second of the downsampled video frames (ONE's are
 half-resolution px/s), so absolute values are not comparable with ONE's or across cameras; the

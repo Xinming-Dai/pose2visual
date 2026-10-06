@@ -12,7 +12,9 @@ Directory layout under ``video_preds_dir`` (``<model_dir>/video_preds``)::
     encoding/keypoint_names/<camera>_<eid>.json           step A, one per csv
     <output_name>/<eid>/dynamic_vars.npz                  step B
     <output_name>/<eid>/base/encoding_result.npz          step C, base fit, reused by variants
-    <output_name>/<eid>/<variant_name>/encoding_result.npz  step C, one per additional set
+    <output_name>/<eid>/<variant_name>/encoding_result.npz  step C, one per additional set (the
+        default name is the sorted additional keypoints joined by ``_``, plus a hash suffix when
+        that folder holds a run with other settings)
 """
 
 import re
@@ -85,18 +87,26 @@ def session_output_dir(video_preds_dir: str | Path, output_name: str, eid: str) 
     return Path(video_preds_dir) / output_name / eid
 
 
-def base_dir(video_preds_dir: str | Path, output_name: str, eid: str) -> Path:
-    """Directory holding the base-keypoints fit that every variant of a session reuses.
+def base_dir(
+    video_preds_dir: str | Path,
+    output_name: str,
+    eid: str,
+    key_hash: str | None = None,
+) -> Path:
+    """Directory holding the base-keypoints fits that the variants of a session reuse.
 
     Args:
         video_preds_dir: directory holding the Lightning Pose prediction csvs.
         output_name: user-chosen folder name.
         eid: session id.
+        key_hash: hash of the base cache key; each distinct base input (pca on / off, number of
+            components, seed, ...) gets its own subfolder so one fit never replaces another.
 
     Returns:
-        `<video_preds_dir>/<output_name>/<eid>/base`.
+        `<video_preds_dir>/<output_name>/<eid>/base`, plus `/<key_hash>` when given.
     """
-    return session_output_dir(video_preds_dir, output_name, eid) / 'base'
+    root = session_output_dir(video_preds_dir, output_name, eid) / 'base'
+    return root if key_hash is None else root / key_hash
 
 
 def variant_dir(

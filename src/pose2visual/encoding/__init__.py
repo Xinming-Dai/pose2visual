@@ -24,6 +24,7 @@ model) and compares base keypoints against base + additional keypoints:
     run_litpose_encoding: step C (gpu). Fit RRR and CNN on base and base + additional keypoints
         and write ``encoding_result.npz``.
     litpose_keypoints: csv reading, naming conventions, speed and binning shared by A-C.
+    litpose_preprocess: finite check and pooled z-score + PCA of the keypoint speeds, used by C.
 
 Slurm wrappers live in ``scripts/delta/encoding/`` (ONE pipeline) and
 ``scripts/delta/lightningpose_encoding/`` (Lightning Pose keypoint pipeline).
