@@ -18,6 +18,7 @@ dependencies = [
 encoding = [
     "accelerate",
     "facemap",
+    "pandas",
     "ray[tune]",
     "scikit-learn",
     "scipy",

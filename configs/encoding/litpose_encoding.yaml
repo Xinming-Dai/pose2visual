@@ -1,0 +1,29 @@
+# config for pose2visual.encoding.run_litpose_encoding.
+# session to analyze (the --eid flag overrides this)
+eid: 781b35fd-e1f0-4d14-b2bb-95b7263082bb
+
+# <model_dir>/video_preds of the lightning pose checkpoint; its location is recorded in the log
+video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/E3a-headmlp256/face+ibl+cheese+caz+kondo+hmv+c3d+kauf_train/supervised/sampling-T2/tf1/vits_dinov3/seed0/video_preds
+
+# dynamic_vars.npz and the results live in <video_preds_dir>/<output_name>/<eid>/; put the camera in
+# the name, e.g. left_encoding
+output_name: left_encoding
+
+# results of this additional_keypoints set go to <output_name>/<eid>/<variant_name>/. The base fit
+# is stored once in <output_name>/<eid>/base/ and reused by every variant with the same
+# base_keypoints / camera / seed / data, so to try another additional set change
+# additional_keypoints AND variant_name (must not be "base"), then resubmit.
+variant_name: plus_pupil_upperlip
+
+# camera whose keypoints are used; must match the one used by extract_litpose_dynamic_vars_trials
+camera: left
+
+# keypoint names are listed in <video_preds_dir>/encoding/keypoint_names/<camera>_<eid>.json
+# (run litpose_step0_list_keypoints.sh); keypoints in neither list are logged as unused; keypoints that are mostly masked
+# (far-side keypoints, likelihood ~0) are listed under skipped_masked and cannot be selected
+base_keypoints:
+  - nose_tip
+  - pad_center
+additional_keypoints:
+  - pupil_center_left
+  - upperlip_left
