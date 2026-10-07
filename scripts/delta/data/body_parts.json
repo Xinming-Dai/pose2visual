@@ -1,0 +1,50 @@
+{
+  "parts": [
+    "eye",
+    "pupil",
+    "upperlip",
+    "tongue",
+    "nose",
+    "pad",
+    "mouth",
+    "lowerlip",
+    "ear",
+    "wrist",
+    "d1",
+    "d2",
+    "d3",
+    "d4"
+  ],
+  "nonoverlap_analysis_groups": {
+    "eye_related": [
+      "eye",
+      "pupil"
+    ],
+    "mouth_related": [
+      "mouth",
+      "upperlip",
+      "lowerlip",
+      "tongue"
+    ],
+    "nose_pad_related": [
+      "nose",
+      "pad"
+    ],
+    "ear_related": [
+      "ear"
+    ],
+    "digits": [
+      "d1",
+      "d2",
+      "d3",
+      "d4"
+    ],
+    "forelimb": [
+      "wrist",
+      "d1",
+      "d2",
+      "d3",
+      "d4"
+    ]
+  }
+}
