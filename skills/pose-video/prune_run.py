@@ -7,7 +7,7 @@ same for both.
 
 Usage:
     python prune_run.py --registry /path/to/rainbow_qc/registry.json \\
-        --run-name 20261009_143201__my-qc
+        --run-name 20261009_143201__my-qc 20261009_150322__other-qc
 """
 
 import argparse
@@ -35,7 +35,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         '--run-name',
         required=True,
-        help='Run folder name (registry key) to delete',
+        nargs='+',
+        help='Run folder name(s) (registry key) to delete',
     )
     return parser.parse_args(argv)
 
@@ -44,25 +45,32 @@ def main() -> None:
     """CLI entry point."""
     args = parse_args()
     registry_path = Path(args.registry).resolve()
-    run_dir = registry_path.parent / args.run_name
 
     if not registry_path.exists():
         print(f'Error: registry not found: {registry_path}', file=sys.stderr)
         sys.exit(1)
 
     registry = json.loads(registry_path.read_text())
-    if args.run_name not in registry:
-        print(
-            f'Error: run {args.run_name!r} not found in {registry_path}',
-            file=sys.stderr,
-        )
+
+    had_error = False
+    for run_name in args.run_name:
+        if run_name not in registry:
+            print(
+                f'Error: run {run_name!r} not found in {registry_path}',
+                file=sys.stderr,
+            )
+            had_error = True
+            continue
+
+        run_dir = registry_path.parent / run_name
+        if not run_dir.exists():
+            print(f'Warning: run directory already gone: {run_dir}', file=sys.stderr)
+
+        prune_entry(registry_path, run_dir, run_name)
+        print(f'Pruned {run_name!r}: removed {run_dir} and its registry entry')
+
+    if had_error:
         sys.exit(1)
-
-    if not run_dir.exists():
-        print(f'Warning: run directory already gone: {run_dir}', file=sys.stderr)
-
-    prune_entry(registry_path, run_dir, args.run_name)
-    print(f'Pruned {args.run_name!r}: removed {run_dir} and its registry entry')
 
 
 if __name__ == '__main__':
