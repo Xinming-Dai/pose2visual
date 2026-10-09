@@ -27,13 +27,14 @@ Usage:
         --eks-npz-dir /path/to/eks/npz \\
         --tag my-qc
 
-Default output: <model_dir>/rainbow_qc/<hash8>/{figures,csv,qc_manifest.json}
-Hash is based on inputs (CSVs, session, frame range, threshold, parts, EKS paths).
-Same inputs → same hash folder (overwritten in place); different inputs → new folder.
+Default output: <model_dir>/rainbow_qc/<timestamp>[__<tag>]/{figures,csv,qc_manifest.json}
+Folder name is `YYYYMMDD_HHMMSS`, suffixed with `__<tag>` when `--tag` is given. Every run's
+manifest is also appended to `<model_dir>/rainbow_qc/registry.json` (keyed by folder name),
+so old runs can be found without opening every folder. Use `prune_run.py` to delete a run
+and its registry entry together.
 """
 
 import argparse
-import hashlib
 import json
 import sys
 from datetime import datetime
@@ -54,7 +55,9 @@ _pose2visual_src = Path(__file__).parent.parent.parent / 'src'
 if _pose2visual_src.exists() and str(_pose2visual_src) not in sys.path:
     sys.path.insert(0, str(_pose2visual_src))
 
+from pose2visual.lightningpose.fit_eks_latent_model import load_latent_model
 from pose2visual.preprocessing import resolve_video_path
+from pose2visual.run_registry import append_entry
 
 # Landmark colours: one saturated hue per part (base/top/tip/bottom).
 LANDMARK_COLORS_RGB = {
@@ -63,20 +66,6 @@ LANDMARK_COLORS_RGB = {
     'tip': '#ff3cdf',
     'bottom': '#6aff46',
 }
-
-_NAME_HASH_LEN = 8
-
-
-def _short_hash(text: str) -> str:
-    """First hex digits of the sha256 of text, for folder names.
-
-    Args:
-        text: text to hash.
-
-    Returns:
-        First `_NAME_HASH_LEN` hex characters.
-    """
-    return hashlib.sha256(text.encode()).hexdigest()[:_NAME_HASH_LEN]
 
 
 def add_title_canvas(
@@ -195,6 +184,19 @@ def find_seed_csv(
         raise FileNotFoundError(f'CSV not found: {csv_path}')
 
     return csv_path
+
+
+def _count_csv_rows(csv_path: Path) -> int:
+    """Number of data rows in a 3-level-header DLC-style csv.
+
+    Args:
+        csv_path: path to the csv.
+
+    Returns:
+        number of data rows (excludes the 3 header rows).
+    """
+    with open(csv_path) as f:
+        return sum(1 for _ in f) - 3
 
 
 def load_seed_predictions(
@@ -485,61 +487,13 @@ def load_eks(
         )
 
     npz_path = npz_files[0]
-    model = np.load(npz_path)
+    loaded = load_latent_model(npz_path)
+    if loaded['xy'].shape[0] != n_frames:
+        raise ValueError(
+            f'EKS npz {npz_path} has {loaded["xy"].shape[0]} frames, expected {n_frames}',
+        )
 
-    eks = (model['mean'] + model['smoothed_means'] @ model['W'].T).reshape(
-        n_frames, 4, 2
-    )
-
-    return eks, model
-
-
-def compute_hash_key(
-    csv_paths: dict[str, dict[str, Path]],
-    session_id: str,
-    start_frame: int,
-    n_frames: int,
-    conf_threshold: float,
-    parts: list[str],
-    background_frame: int,
-    eks_npz_paths: dict[str, Optional[str]],
-    tag: Optional[str],
-    keypoint_prefix: str = 'ear',
-) -> str:
-    """Compute sha256 hash of input configuration for reproducibility.
-
-    Args:
-        csv_paths: {camera: {seed_name: path_to_csv}}.
-        session_id: session UUID.
-        start_frame: starting frame index.
-        n_frames: number of frames.
-        conf_threshold: confidence threshold.
-        parts: landmark part names.
-        background_frame: background frame index.
-        eks_npz_paths: {camera: path_or_none}.
-        tag: optional tag.
-        keypoint_prefix: keypoint prefix (e.g. 'ear', 'nose').
-
-    Returns:
-        First 8 hex digits of sha256.
-    """
-    key_dict = {
-        'csv_paths': {
-            cam: {name: str(p) for name, p in paths.items()}
-            for cam, paths in csv_paths.items()
-        },
-        'session': session_id,
-        'start_frame': start_frame,
-        'n_frames': n_frames,
-        'conf_threshold': conf_threshold,
-        'parts': parts,
-        'background_frame': background_frame,
-        'eks_npz_paths': eks_npz_paths,
-        'tag': tag,
-        'keypoint_prefix': keypoint_prefix,
-    }
-    key_json = json.dumps(key_dict, sort_keys=True)
-    return _short_hash(key_json)
+    return loaded['xy'], np.load(npz_path)
 
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
@@ -598,7 +552,7 @@ Examples:
     parser.add_argument(
         '--out-dir',
         default=None,
-        help='Output directory (default: <model-dir>/rainbow_qc/<hash8>)',
+        help='Output directory (default: <model-dir>/rainbow_qc/<timestamp>[__<tag>])',
     )
     parser.add_argument(
         '--tag',
@@ -608,8 +562,8 @@ Examples:
     parser.add_argument(
         '--n-frames',
         type=int,
-        default=5000,
-        help='Number of frames to process (default: 5000)',
+        default=None,
+        help='Number of frames to process (default: every frame available, from start-frame)',
     )
     parser.add_argument(
         '--start-frame',
@@ -667,9 +621,7 @@ def run(args: argparse.Namespace) -> None:
     """Main execution logic."""
     model_dir = Path(args.model_dir).resolve()
     session_id = args.session
-    n_frames = args.n_frames
     start_frame = args.start_frame
-    background_frame = args.background_frame or (start_frame + n_frames // 2)
     conf_threshold = args.conf_threshold
     tag = args.tag
     parts = args.parts
@@ -698,6 +650,19 @@ def run(args: argparse.Namespace) -> None:
             csv_paths[camera][seed_name] = csv_path
             print(f'  {camera}/{seed_name}: {csv_path}')
 
+    if args.n_frames is not None:
+        n_frames = args.n_frames
+    else:
+        # default: every frame available, from start_frame, across all resolved csvs
+        available = min(
+            _count_csv_rows(path)
+            for paths in csv_paths.values()
+            for path in paths.values()
+        )
+        n_frames = available - start_frame
+        print(f'--n-frames not given; using all available frames: {n_frames}')
+    background_frame = args.background_frame or (start_frame + n_frames // 2)
+
     # Auto-discover videos
     print('Resolving video paths...')
     video_paths = {}
@@ -723,7 +688,6 @@ def run(args: argparse.Namespace) -> None:
 
         print(f'  {camera}: {video_paths[camera]}')
 
-    # Compute output directory hash
     eks_npz_dir = Path(args.eks_npz_dir).resolve() if args.eks_npz_dir else None
     eks_npz_paths = {camera: None for camera in args.cameras}
     if eks_npz_dir:
@@ -732,16 +696,15 @@ def run(args: argparse.Namespace) -> None:
             if len(npz_files) == 1:
                 eks_npz_paths[camera] = str(npz_files[0])
 
-    hash_key = compute_hash_key(
-        csv_paths, session_id, start_frame, n_frames, conf_threshold, parts,
-        background_frame, eks_npz_paths, tag, keypoint_prefix,
-    )
+    run_name = datetime.now().strftime('%Y%m%d_%H%M%S')
+    if tag:
+        run_name = f'{run_name}__{tag}'
 
     # Resolve output directory
     if args.out_dir:
         out_dir = Path(args.out_dir).resolve()
     else:
-        out_dir = model_dir / 'rainbow_qc' / hash_key
+        out_dir = model_dir / 'rainbow_qc' / run_name
 
     fig_dir = out_dir / 'figures'
     csv_dir = out_dir / 'csv'
@@ -876,7 +839,7 @@ def run(args: argparse.Namespace) -> None:
 
     # Save manifest
     manifest = {
-        'hash_key': hash_key,
+        'run_name': run_name,
         'timestamp_utc': datetime.utcnow().isoformat(),
         'model_dir': str(model_dir),
         'seed_folders': args.seed_dirs,
@@ -903,6 +866,10 @@ def run(args: argparse.Namespace) -> None:
     manifest_path = out_dir / 'qc_manifest.json'
     manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
     print(f'Saved: {manifest_path}')
+
+    registry_path = model_dir / 'rainbow_qc' / 'registry.json'
+    append_entry(registry_path, run_name, manifest)
+    print(f'Updated registry: {registry_path}')
 
     print(f'Done. Output in: {out_dir}')
 
