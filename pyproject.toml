@@ -40,6 +40,12 @@ plotting = [
     "matplotlib",
     "pyyaml",
 ]
+# Pose-EKS latent-model fitting (pose2visual.lightningpose.fit_eks_latent_model); not on PyPI
+# under this name, so installed straight from the paninski-lab/eks GitHub repo
+eks = [
+    "eks @ git+https://github.com/paninski-lab/eks.git",
+    "pandas",
+]
 test = [
     "pytest",
 ]
