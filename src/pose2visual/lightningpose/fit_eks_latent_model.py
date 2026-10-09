@@ -1,7 +1,7 @@
 """Fit Pose-EKS rank-reduced latent smoothers for ``plot_comparison.py``.
 
 For one session, fits one rank-reduced (probabilistic-PCA-style) Ensemble Kalman Smoother per
-body-part group (from a ``body_parts.json``-style file's ``nonoverlap_analysis_groups``) per
+body-part group (from a ``body_parts.json``-style file's ``nonoverlapping_analysis_groups``) per
 camera, using the `eks <https://github.com/paninski-lab/eks>`_ package. Each group's landmarks
 are fit jointly, independently per camera and independently from every other group, using
 mixture ("ensemble") variance across the seeds as the observation uncertainty.
@@ -129,22 +129,27 @@ def group_columns_for_camera(bases: list[tuple[str, bool]], camera: str) -> list
     return [f'{base}_{camera}' if is_bilateral else base for base, is_bilateral in bases]
 
 
-def load_groups(groups_file: str | Path) -> dict[str, list[str]]:
-    """Load `nonoverlap_analysis_groups` from a `body_parts.json`-style file.
+def load_groups(
+    groups_file: str | Path,
+    group_set: str = 'nonoverlapping_analysis_groups',
+) -> dict[str, list[str]]:
+    """Load a group-set from a `body_parts.json`-style file.
 
     Args:
         groups_file: path to the json file.
+        group_set: top-level key to load, e.g. `'nonoverlapping_analysis_groups'` or
+            `'overlapping_analysis_groups'`.
 
     Returns:
         mapping of group name to its token list.
 
     Raises:
-        ValueError: if `nonoverlap_analysis_groups` is missing or empty.
+        ValueError: if `group_set` is missing or empty in `groups_file`.
     """
     raw = json.loads(Path(groups_file).read_text())
-    groups = raw.get('nonoverlap_analysis_groups')
+    groups = raw.get(group_set)
     if not groups:
-        raise ValueError(f"'nonoverlap_analysis_groups' missing or empty in {groups_file}")
+        raise ValueError(f"'{group_set}' missing or empty in {groups_file}")
     return {name: list(tokens) for name, tokens in groups.items()}
 
 
@@ -392,13 +397,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         '--groups-file',
         default='scripts/delta/data/body_parts.json',
-        help="Path to a body_parts.json-style file with 'nonoverlap_analysis_groups'",
+        help="Path to a body_parts.json-style file with 'nonoverlapping_analysis_groups'",
+    )
+    parser.add_argument(
+        '--group-set',
+        choices=['nonoverlapping_analysis_groups', 'overlapping_analysis_groups'],
+        default='nonoverlapping_analysis_groups',
+        help="Top-level key to load from --groups-file (default: nonoverlapping_analysis_groups)",
     )
     parser.add_argument(
         '--groups',
         nargs='+',
         default=None,
-        help='Subset of group names to fit (default: every group in --groups-file)',
+        help='Subset of group names to fit (default: every group in --groups-file/--group-set)',
     )
     parser.add_argument(
         '--start-frame',
@@ -471,7 +482,7 @@ def main(argv: list[str] | None = None) -> None:
 
     model_dir = Path(args.model_dir).resolve()
     seed_dirs = _resolve_seed_dirs(model_dir, args.seed_dirs)
-    groups = load_groups(args.groups_file)
+    groups = load_groups(args.groups_file, group_set=args.group_set)
     if args.groups is not None:
         missing = sorted(set(args.groups) - set(groups))
         if missing:
@@ -571,6 +582,7 @@ def main(argv: list[str] | None = None) -> None:
         'session': args.session,
         'cameras': args.cameras,
         'groups_file': str(args.groups_file),
+        'group_set': args.group_set,
         'groups': groups,
         'start_frame': args.start_frame,
         'n_frames_requested': args.n_frames,

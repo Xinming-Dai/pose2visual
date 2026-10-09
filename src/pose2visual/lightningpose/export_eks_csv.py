@@ -5,7 +5,7 @@ Combines every body-part group's fitted latent model under a session's eks outpu
 ``(scorer, bodyparts, coords)`` 3-level-header format as the raw prediction csvs — a drop-in
 for tools that expect that format (e.g. ``render_overlay.py``).
 
-Safe to combine every group into one csv because ``nonoverlap_analysis_groups`` (what
+Safe to combine every group into one csv because ``nonoverlapping_analysis_groups`` (what
 ``fit_eks_latent_model.py`` fits by default) is a true partition: no landmark appears in more
 than one group. This module still raises if it ever finds a landmark duplicated across groups,
 or frame counts that disagree between groups for the same camera, rather than silently merging
