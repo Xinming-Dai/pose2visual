@@ -890,7 +890,7 @@ def run(args: argparse.Namespace) -> None:
     csv_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f'Output: {out_dir}')
-    
+
     base_manifest = {
         'run_name': run_name,
         'timestamp_utc': datetime.utcnow().isoformat(),
@@ -1111,7 +1111,7 @@ def run(args: argparse.Namespace) -> None:
                 # Save figure, named after the source csv (- is reserved for the UUID)
                 mode_safe = mode.replace('-', '_')
                 fig_name = (
-                    f'{csv_stem}-bodyparts_{args.group_set}_{mode_safe}_{camera}_'
+                    f'{csv_stem}.bodyparts_{args.group_set}_{mode_safe}_{camera}_'
                     f'frames{start_frame:06d}_{start_frame + n_frames - 1:06d}.png'
                 )
                 fig_path = fig_dir / fig_name
