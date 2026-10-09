@@ -890,6 +890,31 @@ def run(args: argparse.Namespace) -> None:
     csv_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(f'Output: {out_dir}')
+    
+    base_manifest = {
+        'run_name': run_name,
+        'timestamp_utc': datetime.utcnow().isoformat(),
+        'model_dir': str(model_dir),
+        'seed_folders': args.seed_dirs,
+        'resolved_seed_dirs': {name: str(path) for name, path in seed_dirs.items()},
+        'sessions_requested': (
+            {'sessions': args.sessions} if args.sessions is not None
+            else {'sessions_file': str(args.sessions_file), 'session_group': args.session_group}
+        ),
+        'cameras': args.cameras,
+        'conf_threshold': conf_threshold,
+        'groups_file': str(args.groups_file),
+        'group_set': args.group_set,
+        'groups': groups,
+        'save_ensemble_median': args.save_ensemble_median,
+        'eks_npz_dir': str(eks_npz_dir) if eks_npz_dir else None,
+        'ensemble_median_dir': str(args.ensemble_median_dir) if args.ensemble_median_dir else None,
+        'roi': {'left': args.roi_left, 'right': args.roi_right},
+        'tag': tag,
+    }
+    registry_path = model_dir / 'rainbow_qc' / 'registry.json'
+    append_entry(registry_path, run_name, {**base_manifest, 'status': 'running'})
+    logger.info(f'Registered run (status=running): {registry_path}')
 
     all_stats = []
     audit = {}
@@ -1150,35 +1175,18 @@ def run(args: argparse.Namespace) -> None:
 
     # Save manifest
     manifest = {
-        'run_name': run_name,
+        **base_manifest,
         'timestamp_utc': datetime.utcnow().isoformat(),
-        'model_dir': str(model_dir),
-        'seed_folders': args.seed_dirs,
-        'resolved_seed_dirs': {name: str(path) for name, path in seed_dirs.items()},
-        'sessions_requested': (
-            {'sessions': args.sessions} if args.sessions is not None
-            else {'sessions_file': str(args.sessions_file), 'session_group': args.session_group}
-        ),
         'sessions': sessions_manifest,
-        'cameras': args.cameras,
-        'conf_threshold': conf_threshold,
-        'groups_file': str(args.groups_file),
-        'group_set': args.group_set,
-        'groups': groups,
-        'save_ensemble_median': args.save_ensemble_median,
-        'eks_npz_dir': str(eks_npz_dir) if eks_npz_dir else None,
-        'ensemble_median_dir': str(args.ensemble_median_dir) if args.ensemble_median_dir else None,
-        'roi': {'left': args.roi_left, 'right': args.roi_right},
-        'tag': tag,
         'audit': audit,
+        'status': 'done',
     }
     manifest_path = out_dir / 'qc_manifest.json'
     manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
     logger.info(f'Saved: {manifest_path}')
 
-    registry_path = model_dir / 'rainbow_qc' / 'registry.json'
     append_entry(registry_path, run_name, manifest)
-    logger.info(f'Updated registry: {registry_path}')
+    logger.info(f'Updated registry (status=done): {registry_path}')
 
     logger.info(f'Done. Output in: {out_dir}')
 
