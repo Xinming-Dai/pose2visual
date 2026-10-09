@@ -47,17 +47,21 @@ Usage:
         --save-ensemble-median \\
         --tag my-qc
 
-Default output: <model_dir>/rainbow_qc/<timestamp>[__<tag>]/{figures,csv,qc_manifest.json}
+Default output: <model_dir>/rainbow_qc/<timestamp>[__<tag>]/{rainbow_qc,ensemble_median,qc_manifest.json}
 Folder name is `YYYYMMDD_HHMMSS`, suffixed with `__<tag>` when `--tag` is given. 
 """
 
 import argparse
 import json
+import logging
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 # Run-folder timestamps use this timezone, not the cluster's local time.
 RUN_TIMEZONE = ZoneInfo('America/New_York')
@@ -794,14 +798,15 @@ Examples:
         '--save-ensemble-median',
         action='store_true',
         help='Also write the ensemble median (every discovered keypoint, not just the plotted '
-        'groups) to csv/ensemble_median_<camera>.csv (default: off)',
+        'groups) to ensemble_median/<source-csv-name>.csv, i.e. the same filename as the raw '
+        'seed csv (default: off)',
     )
     parser.add_argument(
         '--ensemble-median-dir',
         default=DEFAULT_ENSEMBLE_MEDIAN_DIR,
-        help='Directory of already-saved ensemble_median_<session[:8]>_<camera>.csv files '
-        '(as written by --save-ensemble-median) to reuse instead of recomputing from the '
-        f'seeds, for any (session, camera) found there (default: {DEFAULT_ENSEMBLE_MEDIAN_DIR})',
+        help='Directory of already-saved median csvs, named <source-csv-name>.csv (as written '
+        'by --save-ensemble-median), to reuse instead of recomputing from the seeds, for any '
+        f'(session, camera) found there (default: {DEFAULT_ENSEMBLE_MEDIAN_DIR})',
     )
     parser.add_argument(
         '--eks-npz-dir',
@@ -838,7 +843,7 @@ def run(args: argparse.Namespace) -> None:
     if args.groups is not None:
         missing = sorted(set(args.groups) - set(groups))
         if missing:
-            print(f'Error: groups not found in {args.groups_file}: {missing}', file=sys.stderr)
+            logger.error(f'groups not found in {args.groups_file}: {missing}')
             sys.exit(1)
         groups = {name: groups[name] for name in args.groups}
 
@@ -847,14 +852,13 @@ def run(args: argparse.Namespace) -> None:
     else:
         session_groups = load_groups(args.sessions_file, group_set='neural_sessions')
         if args.session_group not in session_groups:
-            print(
-                f'Error: session group {args.session_group!r} not found in '
+            logger.error(
+                f'session group {args.session_group!r} not found in '
                 f'{args.sessions_file}: {sorted(session_groups)}',
-                file=sys.stderr,
             )
             sys.exit(1)
         sessions = session_groups[args.session_group]
-    print(f'Sessions: {sessions}')
+    logger.info(f'Sessions: {sessions}')
 
     # Resolve seed directories
     seed_dirs = {}
@@ -864,7 +868,7 @@ def run(args: argparse.Namespace) -> None:
             seed_path = model_dir / seed_name
         seed_path = seed_path.resolve()
         if not seed_path.exists():
-            print(f'Error: seed directory not found: {seed_path}', file=sys.stderr)
+            logger.error(f'seed directory not found: {seed_path}')
             sys.exit(1)
         seed_dirs[seed_name] = seed_path
 
@@ -880,22 +884,25 @@ def run(args: argparse.Namespace) -> None:
     else:
         out_dir = model_dir / 'rainbow_qc' / run_name
 
-    fig_dir = out_dir / 'figures'
-    csv_dir = out_dir / 'csv'
+    fig_dir = out_dir / 'rainbow_qc'
+    csv_dir = out_dir / 'ensemble_median'
     fig_dir.mkdir(parents=True, exist_ok=True)
     csv_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f'Output: {out_dir}')
+    logger.info(f'Output: {out_dir}')
 
     all_stats = []
     audit = {}
     sessions_manifest = {}
+    n_sessions = len(sessions)
+    run_start = time.time()
 
-    for session_id in sessions:
-        print(f'=== Session {session_id} ===')
+    for session_idx, session_id in enumerate(sessions, start=1):
+        session_start = time.time()
+        logger.info(f'=== [{session_idx}/{n_sessions}] Session {session_id} ===')
 
         # Find video_preds directories and CSVs
-        print('Resolving seed predictions...')
+        logger.info('Resolving seed predictions...')
         csv_paths = {}  # {camera: {seed_name: path}}
         for camera in args.cameras:
             csv_paths[camera] = {}
@@ -903,7 +910,7 @@ def run(args: argparse.Namespace) -> None:
                 preds_dir = find_video_preds_dir(seed_path)
                 csv_path = find_seed_csv(preds_dir, session_id, camera)
                 csv_paths[camera][seed_name] = csv_path
-                print(f'  {camera}/{seed_name}: {csv_path}')
+                logger.info(f'  {camera}/{seed_name}: {csv_path}')
 
         if args.n_frames is not None:
             n_frames = args.n_frames
@@ -915,11 +922,11 @@ def run(args: argparse.Namespace) -> None:
                 for path in paths.values()
             )
             n_frames = available - start_frame
-            print(f'--n-frames not given; using all available frames: {n_frames}')
+            logger.info(f'--n-frames not given; using all available frames: {n_frames}')
         background_frame = args.background_frame or (start_frame + n_frames // 2)
 
         # Auto-discover videos
-        print('Resolving video paths...')
+        logger.info('Resolving video paths...')
         video_paths = {}
         video_overrides = {'left': args.video_left, 'right': args.video_right}
 
@@ -934,28 +941,28 @@ def run(args: argparse.Namespace) -> None:
                 if video_path:
                     video_paths[camera] = video_path
                 else:
-                    print(
-                        f'Error: Could not auto-discover video for {camera} camera '
-                        f'(session {session_id}).\n'
-                        f'Provide --video-{camera} with the path to the video.',
-                        file=sys.stderr,
+                    logger.error(
+                        f'Could not auto-discover video for {camera} camera '
+                        f'(session {session_id}). Provide --video-{camera} with the path to '
+                        'the video.',
                     )
                     sys.exit(1)
 
-            print(f'  {camera}: {video_paths[camera]}')
+            logger.info(f'  {camera}: {video_paths[camera]}')
 
         # Process per camera
         saved_median_csvs = {}
         median_sources = {}
 
-        for camera in args.cameras:
-            print(f'Processing {camera} camera...')
+        n_cameras = len(args.cameras)
+        for camera_idx, camera in enumerate(args.cameras, start=1):
+            logger.info(f'Processing {camera} camera... [{camera_idx}/{n_cameras}]')
 
             seed_names_sorted = sorted(csv_paths[camera].keys())
+            csv_stem = csv_paths[camera][seed_names_sorted[0]].stem
             keypoint_names = discover_keypoint_names(csv_paths[camera][seed_names_sorted[0]])
-            print(f'  discovered {len(keypoint_names)} keypoints')
+            logger.info(f'  discovered {len(keypoint_names)} keypoints')
 
-            # Load every seed's full keypoint set once per camera.
             xy_seeds_all = []
             conf_seeds_all = []
             for seed_name in seed_names_sorted:
@@ -966,11 +973,11 @@ def run(args: argparse.Namespace) -> None:
                 conf_seeds_all.append(conf)
 
             existing_median_path = (
-                Path(args.ensemble_median_dir) / f'ensemble_median_{session_id[:8]}_{camera}.csv'
+                Path(args.ensemble_median_dir) / f'{csv_stem}.csv'
                 if args.ensemble_median_dir else None
             )
             if existing_median_path and existing_median_path.exists():
-                print(f'  Reusing ensemble median: {existing_median_path}')
+                logger.info(f'  Reusing ensemble median: {existing_median_path}')
                 median_keypoint_names = discover_keypoint_names(existing_median_path)
                 if median_keypoint_names != keypoint_names:
                     raise ValueError(
@@ -988,12 +995,12 @@ def run(args: argparse.Namespace) -> None:
                 median_sources[camera] = 'computed'
 
                 if args.save_ensemble_median:
-                    median_csv_path = csv_dir / f'ensemble_median_{session_id[:8]}_{camera}.csv'
+                    median_csv_path = csv_dir / f'{csv_stem}.csv'
                     write_ensemble_median_csv(
                         xy_median_all, conf_median_all, keypoint_names, median_csv_path,
                     )
                     saved_median_csvs[camera] = str(median_csv_path)
-                    print(f'  Saved ensemble median: {median_csv_path}')
+                    logger.info(f'  Saved ensemble median: {median_csv_path}')
 
             # Resolve each group's real columns for this camera.
             groups_resolved = {}
@@ -1008,7 +1015,7 @@ def run(args: argparse.Namespace) -> None:
                     'indices': indices,
                     'colors': colors_for_landmarks(landmarks),
                 }
-                print(f'  {group_name}: {len(landmarks)} landmarks ({landmarks})')
+                logger.info(f'  {group_name}: {len(landmarks)} landmarks ({landmarks})')
 
             # Get background frame
             bg_frame = get_background_frame(
@@ -1024,7 +1031,7 @@ def run(args: argparse.Namespace) -> None:
 
             for gated in [False, True]:
                 mode = 'matched-conf-gt07' if gated else 'ungated'
-                print(f'  Rendering {mode}...')
+                logger.info(f'  Rendering {mode}...')
 
                 rows_data = []
                 for group_name, resolved in groups_resolved.items():
@@ -1049,17 +1056,16 @@ def run(args: argparse.Namespace) -> None:
                                     rtol=1e-5, atol=1e-3,
                                 )
                             except AssertionError as e:
-                                print(
-                                    f'Warning: EKS observation_medians do not match seed median '
-                                    f'for {session_id}/{camera}/{group_name}:\n{e}',
-                                    file=sys.stderr,
+                                logger.warning(
+                                    f'EKS observation_medians do not match seed median '
+                                    f'for {session_id}/{camera}/{group_name}: {e}',
                                 )
 
                             xy_list.append(xy_eks)
                             method_names.append('Pose-EKS (rank 4)')
-                            print(f'    EKS loaded for {session_id}/{camera}/{group_name}')
+                            logger.info(f'    EKS loaded for {session_id}/{camera}/{group_name}')
                         else:
-                            print(
+                            logger.info(
                                 f'    EKS npz not found for {session_id}/{camera}/{group_name}; '
                                 'skipping',
                             )
@@ -1077,21 +1083,20 @@ def run(args: argparse.Namespace) -> None:
                     rows_data, bg_frame, session_id, camera, gated, conf_threshold, roi, n_frames,
                 )
 
-                # Save figure
+                # Save figure, named after the source csv (- is reserved for the UUID)
+                mode_safe = mode.replace('-', '_')
                 fig_name = (
-                    f'rainbow-bodyparts__{args.group_set}-{mode}'
-                    f'__{session_id[:8]}_{camera}_'
-                    f'frames{start_frame:06d}-{start_frame + n_frames - 1:06d}.png'
+                    f'{csv_stem}-bodyparts_{args.group_set}_{mode_safe}_{camera}_'
+                    f'frames{start_frame:06d}_{start_frame + n_frames - 1:06d}.png'
                 )
                 fig_path = fig_dir / fig_name
                 fig.savefig(fig_path, dpi=160, facecolor=fig.get_facecolor())
                 plt.close(fig)
 
-                # Add title canvas above and legend canvas below the plot
                 combined_img = compose_figure_canvas(fig_path, title_text, rows_legend)
                 combined_img.save(fig_path)
 
-                print(f'  Saved: {fig_path}')
+                logger.info(f'  Saved: {fig_path}')
 
                 # Record statistics
                 for group_name, stats_list in stats_by_group.items():
@@ -1131,12 +1136,17 @@ def run(args: argparse.Namespace) -> None:
             'ensemble_median_source': median_sources,
         }
 
+        logger.info(
+            f'=== [{session_idx}/{n_sessions}] Session {session_id} done in '
+            f'{time.time() - session_start:.1f}s (total elapsed {time.time() - run_start:.1f}s) ===',
+        )
+
     # Save statistics CSV
     if all_stats:
         stats_df = pd.DataFrame(all_stats)
         stats_csv = csv_dir / 'distribution_diagnostics.csv'
         stats_df.to_csv(stats_csv, index=False)
-        print(f'Saved: {stats_csv}')
+        logger.info(f'Saved: {stats_csv}')
 
     # Save manifest
     manifest = {
@@ -1164,22 +1174,23 @@ def run(args: argparse.Namespace) -> None:
     }
     manifest_path = out_dir / 'qc_manifest.json'
     manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
-    print(f'Saved: {manifest_path}')
+    logger.info(f'Saved: {manifest_path}')
 
     registry_path = model_dir / 'rainbow_qc' / 'registry.json'
     append_entry(registry_path, run_name, manifest)
-    print(f'Updated registry: {registry_path}')
+    logger.info(f'Updated registry: {registry_path}')
 
-    print(f'Done. Output in: {out_dir}')
+    logger.info(f'Done. Output in: {out_dir}')
 
 
 def main() -> None:
     """CLI entry point."""
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     try:
         args = parse_args()
         run(args)
     except Exception as e:
-        print(f'Error: {e}', file=sys.stderr)
+        logger.error(f'Error: {e}')
         sys.exit(1)
 
 
