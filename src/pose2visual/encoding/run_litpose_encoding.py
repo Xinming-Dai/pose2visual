@@ -12,31 +12,42 @@ Reads the yaml config (see ``configs/encoding/litpose_encoding.yaml``) and
 Keypoints listed in neither list are ``unused``. The held-out test R^2 and bits-per-spike (BPS),
 overall and per neuron, are compared; no significance test is run.
 
+The ``anatomical_group`` section holds the two lists and ``anatomical_group.name`` (default
+``all``) says what they hold. With ``all`` they are explicit keypoint names. With a group set of
+``paths.body_parts_json`` (e.g. ``nonoverlapping_analysis_groups``) they are group names, e.g.
+``base_keypoints: [eye_related]`` and ``additional_keypoints: [mouth_related]``: each group is resolved to its usable keypoints of
+the session (those in ``dynamic_vars.npz``, see ``litpose_keypoints.expand_groups``), so the
+resolved keypoints can differ between sessions. The resolved names are what the encoders see and
+what ``encoding_params.json`` / ``encoding_result.npz`` store as ``base_keypoints`` /
+``additional_keypoints``; the group names are stored as ``base_groups`` / ``additional_groups``.
+
 Before fitting, the features of each condition are checked to be finite (step B already
-interpolates over masked frames, so there is nothing to impute) and, unless ``pca: false``,
-z-scored and rotated onto principal components (see ``litpose_preprocess``). The z-score
-statistics and the PCA basis are fit once on the train, val and test features pooled, so the
-splits share one coordinate system; test features influence the basis, spikes never do.
-``n_components`` is the number of keypoints of the condition unless ``pca_n_components_base`` /
-``pca_n_components_base_plus_additional`` set it (at most the condition's keypoint count).
-The pca settings enter the base cache key, so changing them refits the base.
+interpolates over masked frames, so there is nothing to impute). PCA is not done here: with
+``pca.enabled: true`` step B already reprojected the x/y of each body-part group onto its top
+principal components before taking the speed (see ``litpose_pca``; the number of components of
+each group is ``PCA_n_components`` in the ``paths.body_parts_json`` of the yaml), and the features
+keep their keypoint names. This step only checks that the yaml's ``pca.enabled`` equals the flag stored in
+``dynamic_vars.npz`` and records the group set and the effective number of components of step B's
+``params.json``; they enter the run signature and the base cache key, so a pca and a no-pca run
+(or other component counts) never replace each other.
 
 The base fit is written once to ``<eid>/base/<hash8>/encoding_result.npz`` (with
 ``base_key.json`` and ``ray_tune/``), ``<hash8>`` being a hash of the base inputs (keypoints,
-camera, seed, pca settings, data), and reused by every variant whose base inputs match, so trying another ``additional_keypoints`` set
-only needs a new ``additional_keypoints`` list; ``--rerun_base`` forces a refit. Each variant
+camera, seed, pca settings, data), and reused by every variant whose base inputs match, so trying
+another ``additional_keypoints`` set only needs a new ``additional_keypoints`` list;
+``--rerun_base`` forces a refit. Each variant
 writes to ``<eid>/<variant_name>/``: ``encoding_result.npz`` (metrics and deltas, loadable
 without pickle), ``encoding_params.json`` and ``encoding.log``, both recording the Lightning
 Pose checkpoint location and the base / additional / unused keypoints.
 
-``variant_name`` defaults (null or absent) to the sorted ``additional_keypoints`` joined by
-``_``; a string in the config overrides it. Either way an earlier result is never overwritten by
+``output.variant_name`` defaults (null or absent) to the sorted ``additional_keypoints`` (names or group
+names, as written in the config) joined by ``_``; a string in the config overrides it. Either way an earlier result is never overwritten by
 a run with other settings: if ``<variant_name>/`` already holds an ``encoding_result.npz`` whose
 ``run_signature`` (camera, base / additional keypoints, pca settings, seed) differs from this
 run's, or that predates ``run_signature``, the run goes to ``<variant_name>_<hash8>/`` instead.
 Re-running identical settings overwrites its own folder. The chosen folder and the reason are
-logged. A base fit is never replaced by a run with other inputs (e.g. ``pca: false``), it gets its own
-``base/<hash8>/``; only ``--rerun_base`` refits one in place. Every variant result also keeps its
+logged. A base fit is never replaced by a run with other inputs (e.g. ``pca.enabled: false``), it gets
+its own ``base/<hash8>/``; only ``--rerun_base`` refits one in place. Every variant result also keeps its
 own copy of the base metrics. A flat ``<eid>/base/encoding_result.npz`` from an earlier version
 is left untouched and no longer read.
 
@@ -55,24 +66,32 @@ from typing import Any
 
 import numpy as np
 import ray
-import yaml
 from sklearn.metrics import r2_score
 
 from pose2visual.encoding.encoder import train_cnn_encoder_with_tune, train_rrr_encoder_with_tune
 from pose2visual.encoding.litpose_keypoints import (
+    ANATOMICAL_GROUP_ALL,
     CAMERAS,
+    DEFAULT_PCA_GROUP_SET,
+    ENCODING_YAML_NESTED_NAMES,
     base_dir,
+    check_filter_settings_match,
+    expand_groups,
     keypoint_names_json_path,
+    load_encoding_yaml,
     session_output_dir,
+    validate_filter_settings,
     variant_dir,
 )
-from pose2visual.encoding.litpose_preprocess import check_finite, preprocess_splits
+from pose2visual.encoding.litpose_preprocess import check_finite
+from pose2visual.encoding.litpose_step_pipelines import resolve_step_pipeline
 from pose2visual.encoding.run_encoding import (
     _flatten_views,
     _maybe_assert_latent_intervals_match_neural,
     _resolve_ray_session_temp_dir,
 )
 from pose2visual.encoding.utils import bits_per_spike, set_seed, setup_logging
+from pose2visual.lightningpose.fit_eks_latent_model import load_groups
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +104,10 @@ _REQUIRED_CONFIG_KEYS = (
     'camera',
     'base_keypoints',
     'additional_keypoints',
+    'likelihood_threshold',
+    'max_masked_frac',
 )
 _SPLITS = ('train', 'val', 'test')
-# optional per-condition number of principal components (null = number of keypoints)
-_PCA_N_COMPONENTS_KEYS = ('pca_n_components_base', 'pca_n_components_base_plus_additional')
 _BASE_RESERVED_NAME = 'base'
 # derived variant names stay well below the 255-byte file name limit
 _MAX_VARIANT_NAME_LEN = 100
@@ -158,24 +177,70 @@ def derive_variant_name(additional: list[str]) -> str:
     return name
 
 
-def run_signature(cfg: dict[str, Any], seed: int) -> dict[str, Any]:
+def run_signature(
+    cfg: dict[str, Any],
+    seed: int,
+    pca_record: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Settings that make two runs with the same variant name different.
 
     Args:
         cfg: validated config from `load_config`.
         seed: random seed of the run.
+        pca_record: `pca` entry of step B's `params.json` (`read_pca_record`); its group set and
+            effective number of components per group are part of the signature when pca is on.
 
     Returns:
         Json-serializable dict, stored in `encoding_params.json` and compared with `==`.
+        `base_keypoints` / `additional_keypoints` are the entries of the config (group names in
+        group mode); `anatomical_group` is only present when it is not `all`, so results from
+        before it existed keep matching.
     """
-    return {
+    signature = {
         'camera': cfg['camera'],
         'base_keypoints': list(cfg['base_keypoints']),
         'additional_keypoints': sorted(cfg['additional_keypoints']),
         'pca': cfg['pca'],
-        'pca_n_components_base': cfg['pca_n_components_base'],
-        'pca_n_components_base_plus_additional': cfg['pca_n_components_base_plus_additional'],
+        'pca_group_set': cfg['pca_group_set'] if cfg['pca'] else None,
+        'pca_n_components': (
+            None if not cfg['pca'] or pca_record is None else pca_record['n_components']
+        ),
         'seed': int(seed),
+    }
+    if cfg['anatomical_group'] != ANATOMICAL_GROUP_ALL:
+        signature['anatomical_group'] = cfg['anatomical_group']
+    return signature
+
+
+def read_pca_record(
+    video_preds_dir: str | Path,
+    output_name: str,
+    eid: str,
+) -> dict[str, Any] | None:
+    """Read the PCA settings that step B stored next to `dynamic_vars.npz`.
+
+    Args:
+        video_preds_dir: directory holding the Lightning Pose prediction csvs.
+        output_name: user-chosen folder name.
+        eid: session id.
+
+    Returns:
+        `None` when step B's `params.json` is missing, has no `pca` entry (written before PCA
+        moved to step B) or pca was off; otherwise a dict with `group_set` and `n_components`
+        (group name -> effective number of components, `0` for a skipped group).
+    """
+    params_path = session_output_dir(video_preds_dir, output_name, eid) / 'params.json'
+    if not params_path.is_file():
+        return None
+    with params_path.open(encoding='utf-8') as f:
+        record = json.load(f).get('pca')
+    if not record or not record.get('enabled'):
+        return None
+    return {
+        'group_set': record['group_set'],
+        'n_components': {
+            name: group['n_components'] for name, group in record['groups'].items()
+        },
     }
 
 
@@ -224,39 +289,58 @@ def resolve_variant_dir(
 
 
 def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
-    """Load and validate the encoding yaml config.
+    """Load and validate the nested encoding yaml config.
+
+    The yaml is read by `load_encoding_yaml`; the returned dict is flat, keyed as
+    `load_encoding_yaml` documents.
 
     Args:
         path: path of the yaml file.
-        eid: if given, overrides the `eid` of the file.
+        eid: if given, overrides `session.eid` of the file.
 
     Returns:
-        Config dict with `base_keypoints` and `additional_keypoints` as lists of str,
+        Config dict with `base_keypoints` and `additional_keypoints` as lists of str (keypoint
+        names, or group names when `anatomical_group` is a group set),
+        `anatomical_group` as str (default `all`: the lists hold keypoint names; otherwise a
+        group-set key of `body_parts_json`),
         `variant_name` as str (the sorted additional keypoints joined by `_` when the file has
-        none or null), `pca` as bool (default `True`) and `pca_n_components_base` /
-        `pca_n_components_base_plus_additional` as int or `None` (default).
+        none or null), `likelihood_threshold` / `max_masked_frac` as floats (shared by all steps;
+        step A and B must have used the same values), `pca` as bool (default `False`; step B
+        applies it, step C checks it), `pca_group_set` as str, and `step_order` as
+        str or `None` (default) — a name from `litpose_step_pipelines.json`, purely
+        documentation/validation: it does not change what this config computes, it only checks
+        that `pca` agrees with the named pipeline's `2d_pose_pca` step. The actual keypoint
+        source is still `video_preds_dir`.
 
     Raises:
-        ValueError: if the yaml is not a mapping, a key is missing, the camera is unknown, a
-            given `variant_name` is not a plain folder name (or is `base`), a keypoint list is
-            empty,
-            `pca` is not a bool, a `pca_n_components_*` is not a positive int or null, or the
-            legacy `pca_n_components` key is present.
+        ValueError: if the yaml is invalid (see `load_encoding_yaml`: not nested, unknown key,
+            removed `pca_n_components*` key), a required key is missing,
+            `filter.likelihood_threshold` / `filter.max_masked_frac` is not a number in `[0, 1]`, the camera is unknown, a
+            given `output.variant_name` is not a plain folder name (or is `base`), a keypoint list
+            is empty, `anatomical_group.name` is a group set but `paths.body_parts_json` is
+            missing or does not hold it, a listed name is not a group of it, `pca.enabled` is not
+            a bool, or `step_order` is an unknown pipeline name or disagrees with `pca.enabled`.
     """
-    with Path(path).open(encoding='utf-8') as f:
-        cfg = yaml.safe_load(f)
-    if not isinstance(cfg, dict):
-        raise ValueError(f'{path}: expected a yaml mapping')
+    cfg = load_encoding_yaml(path)
     if eid is not None:
         cfg['eid'] = eid
-    missing = [key for key in _REQUIRED_CONFIG_KEYS if cfg.get(key) is None]
+    missing = [
+        ENCODING_YAML_NESTED_NAMES[key] for key in _REQUIRED_CONFIG_KEYS if cfg.get(key) is None
+    ]
     if missing:
         raise ValueError(f'{path}: missing config keys {missing}')
+    cfg['likelihood_threshold'], cfg['max_masked_frac'] = validate_filter_settings(
+        cfg['likelihood_threshold'], cfg['max_masked_frac'], path,
+    )
     if cfg['camera'] not in CAMERAS:
-        raise ValueError(f'{path}: camera must be one of {CAMERAS}, got {cfg["camera"]!r}')
+        raise ValueError(
+            f'{path}: session.camera must be one of {CAMERAS}, got {cfg["camera"]!r}',
+        )
     for key in ('base_keypoints', 'additional_keypoints'):
         if not isinstance(cfg[key], list) or not cfg[key]:
-            raise ValueError(f'{path}: {key} must be a non-empty list')
+            raise ValueError(
+                f'{path}: anatomical_group.{key} must be a non-empty list',
+            )
         cfg[key] = [str(name) for name in cfg[key]]
     if cfg.get('variant_name') is None:
         cfg['variant_name'] = derive_variant_name(cfg['additional_keypoints'])
@@ -269,25 +353,41 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
             or Path(variant_name).name != variant_name
         ):
             raise ValueError(
-                f'{path}: variant_name must be null or a plain folder name other than '
+                f'{path}: output.variant_name must be null or a plain folder name other than '
                 f'{_BASE_RESERVED_NAME!r}, got {variant_name!r}',
             )
         cfg['variant_name'] = variant_name
-    cfg['pca'] = cfg.get('pca', True)
+    cfg['pca'] = cfg.get('pca', False)
     if not isinstance(cfg['pca'], bool):
-        raise ValueError(f'{path}: pca must be true or false, got {cfg["pca"]!r}')
-    if 'pca_n_components' in cfg:
-        raise ValueError(
-            f'{path}: pca_n_components was replaced by one key per condition: '
-            f'{", ".join(_PCA_N_COMPONENTS_KEYS)}',
-        )
-    for key in _PCA_N_COMPONENTS_KEYS:
-        n_components = cfg.get(key)
-        if n_components is not None and (
-            isinstance(n_components, bool) or not isinstance(n_components, int) or n_components < 1
-        ):
-            raise ValueError(f'{path}: {key} must be a positive int or null')
-        cfg[key] = n_components
+        raise ValueError(f'{path}: pca.enabled must be true or false, got {cfg["pca"]!r}')
+    cfg['pca_group_set'] = str(cfg.get('pca_group_set', DEFAULT_PCA_GROUP_SET))
+    cfg['anatomical_group'] = str(cfg.get('anatomical_group', ANATOMICAL_GROUP_ALL))
+    if cfg['anatomical_group'] != ANATOMICAL_GROUP_ALL:
+        if cfg.get('body_parts_json') is None:
+            raise ValueError(
+                f'{path}: anatomical_group.name {cfg["anatomical_group"]!r} needs '
+                'paths.body_parts_json',
+            )
+        groups = load_groups(cfg['body_parts_json'], cfg['anatomical_group'])
+        for key in ('base_keypoints', 'additional_keypoints'):
+            unknown = sorted(set(cfg[key]) - set(groups))
+            if unknown:
+                raise ValueError(
+                    f'{path}: anatomical_group.{key} {unknown} are not groups of '
+                    f'{cfg["anatomical_group"]!r}; '
+                    f'groups: {sorted(groups)}',
+                )
+    cfg['step_order'] = cfg.get('step_order')
+    if cfg['step_order'] is not None:
+        try:
+            pipeline = resolve_step_pipeline(cfg['step_order'])
+        except ValueError as exc:
+            raise ValueError(f'{path}: {exc}') from exc
+        if cfg['pca'] != pipeline['use_pca']:
+            raise ValueError(
+                f'{path}: step_order {cfg["step_order"]!r} implies pca={pipeline["use_pca"]} '
+                f'({pipeline["steps"]}) but pca.enabled: {cfg["pca"]!r}',
+            )
     return cfg
 
 
@@ -353,48 +453,6 @@ def select_keypoints(
     """
     idx = [available.index(name) for name in names]
     return z_trials_time[..., idx]
-
-
-def preprocess_features(
-    z_trials_time: dict[str, np.ndarray],
-    cond: str,
-    use_pca: bool,
-    n_components: int | None,
-) -> tuple[dict[str, np.ndarray], dict[str, Any] | None]:
-    """Check the features are finite and, if enabled, z-score and PCA them.
-
-    Args:
-        z_trials_time: split name -> `[K, T, 1, D]` features of one condition.
-        cond: condition name used in log and error messages.
-        use_pca: whether to apply `preprocess_splits`.
-        n_components: number of components of this condition; `None` keeps all `D`.
-
-    Returns:
-        Tuple `(z, pca_info)`; `z` is the input when `use_pca` is false, `pca_info` is `None`
-        then, otherwise the `preprocess_splits` info dict.
-
-    Raises:
-        ValueError: if a split holds a non-finite value or `n_components` exceeds the number of
-            keypoints of the condition.
-    """
-    check_finite(z_trials_time, cond)
-    if not use_pca:
-        return z_trials_time, None
-    n_keypoints = z_trials_time['train'].shape[-1]
-    if n_components is None:
-        n_components = n_keypoints
-    elif n_components > n_keypoints:
-        raise ValueError(
-            f'pca_n_components for {cond} is {n_components} but the condition has only '
-            f'{n_keypoints} keypoints',
-        )
-    z_pca, info = preprocess_splits(z_trials_time, n_components)
-    logger.info(
-        f'{cond}: pooled z-score + PCA, {n_keypoints} keypoints -> {n_components} components, '
-        f'explained variance ratio {np.round(info["explained_variance_ratio"], 4).tolist()}, '
-        f'explained variance {np.sum(info["explained_variance_ratio"]):.4f}',
-    )
-    return z_pca, info
 
 
 def per_neuron_metrics(result: dict[str, Any]) -> dict[str, np.ndarray]:
@@ -581,9 +639,9 @@ def base_cache_key(
         likelihood_threshold: threshold used by step A / step B.
         z_base: split name -> `[K, T, 1, D]` features fed to the encoder (after preprocessing).
         neural_data_dict: loaded `<eid>_aligned.npz`.
-        pca_info: `preprocess_splits` info of the base condition, `None` when pca is off; the
-            `pca` entry is only added when pca is on, so a cache from before pca existed is
-            still reused by `pca: false`.
+        pca_info: `read_pca_record` of step B, `None` when pca is off; the `pca` entry is only
+            added when pca is on, so a cache from before pca existed is still reused by
+            `pca.enabled: false`.
 
     Returns:
         Json-serializable dict, compared with `==` against the cached `base_key.json`.
@@ -604,9 +662,8 @@ def base_cache_key(
     }
     if pca_info is not None:
         key['pca'] = {
+            'group_set': pca_info['group_set'],
             'n_components': pca_info['n_components'],
-            'scaling': pca_info['scaling'],
-            'fit_split': pca_info['fit_split'],
         }
     return key
 
@@ -685,12 +742,13 @@ def main(argv: list[str] | None = None) -> None:
     setup_logging()
     args = parse_args(argv)
     cfg = load_config(args.config, eid=args.eid)
+    pca_record = read_pca_record(cfg['video_preds_dir'], cfg['output_name'], cfg['eid'])
     out_dir, out_reason = resolve_variant_dir(
         cfg['video_preds_dir'],
         cfg['output_name'],
         cfg['eid'],
         cfg['variant_name'],
-        run_signature(cfg, args.seed),
+        run_signature(cfg, args.seed, pca_record),
     )
     # the folder name is the variant name from here on (it may carry a hash suffix)
     cfg['variant_name'] = out_dir.name
@@ -707,24 +765,31 @@ def main(argv: list[str] | None = None) -> None:
     root_logger.addHandler(file_handler)
     logger.info(f'results folder: {out_dir} ({out_reason})')
     try:
-        _run(args, cfg, out_dir)
+        _run(args, cfg, out_dir, pca_record)
     finally:
         root_logger.removeHandler(file_handler)
         root_logger.setLevel(level_before)
         file_handler.close()
 
 
-def _run(args: argparse.Namespace, cfg: dict[str, Any], out_dir: Path) -> None:
+def _run(
+    args: argparse.Namespace,
+    cfg: dict[str, Any],
+    out_dir: Path,
+    pca_record: dict[str, Any] | None,
+) -> None:
     """Body of `main` once the log file handler is attached.
 
     Args:
         args: parsed command-line arguments.
         cfg: validated config from `load_config`.
         out_dir: `<video_preds_dir>/<output_name>/<eid>/<variant_name>`.
+        pca_record: `read_pca_record` of step B, `None` when pca is off.
 
     Raises:
         FileNotFoundError: if `dynamic_vars.npz` or the step A json is missing.
-        ValueError: if the config camera differs from `dynamic_vars.npz`, or the selection is
+        ValueError: if the config camera or pca flag differs from `dynamic_vars.npz`, the step A
+            json was written with other filter settings than the config, or the selection is
             invalid.
     """
     eid = cfg['eid']
@@ -740,6 +805,9 @@ def _run(args: argparse.Namespace, cfg: dict[str, Any], out_dir: Path) -> None:
     json_path = keypoint_names_json_path(video_preds_dir, cfg['camera'], eid)
     with json_path.open(encoding='utf-8') as f:
         keypoint_info = json.load(f)
+    check_filter_settings_match(
+        keypoint_info, cfg['likelihood_threshold'], cfg['max_masked_frac'], json_path,
+    )
 
     latent_data_dict = np.load(dynamic_vars_path)
     camera = str(latent_data_dict['camera'])
@@ -747,27 +815,52 @@ def _run(args: argparse.Namespace, cfg: dict[str, Any], out_dir: Path) -> None:
         raise ValueError(
             f'config camera {cfg["camera"]!r} != camera {camera!r} of {dynamic_vars_path}',
         )
+    # an npz from before PCA moved to step B was built without pca
+    step_b_pca = bool(latent_data_dict['pca']) if 'pca' in latent_data_dict.files else False
+    if step_b_pca != cfg['pca']:
+        raise ValueError(
+            f'config pca.enabled: {cfg["pca"]} but {dynamic_vars_path} was built with '
+            f'pca: {step_b_pca}; '
+            'rerun extract_litpose_dynamic_vars_trials (step 1) with this config, or use the '
+            'output_name of the matching run',
+        )
     available = [str(name) for name in latent_data_dict['keypoint_names']]
-    base = cfg['base_keypoints']
-    additional = cfg['additional_keypoints']
+    if cfg['anatomical_group'] == ANATOMICAL_GROUP_ALL:
+        base_groups: list[str] = []
+        additional_groups: list[str] = []
+        base = cfg['base_keypoints']
+        additional = cfg['additional_keypoints']
+    else:
+        groups = load_groups(cfg['body_parts_json'], cfg['anatomical_group'])
+        base_groups = cfg['base_keypoints']
+        additional_groups = cfg['additional_keypoints']
+        base = expand_groups(base_groups, groups, available)
+        additional = expand_groups(additional_groups, groups, available)
+        logger.info(f'base groups {base_groups} -> keypoints {base}')
+        logger.info(f'additional groups {additional_groups} -> keypoints {additional}')
     unused = split_keypoints(base, additional, keypoint_info, available)
 
     params = {
         'eid': eid,
         'camera': camera,
         'variant_name': cfg['variant_name'],
-        'run_signature': run_signature(cfg, args.seed),
+        'run_signature': run_signature(cfg, args.seed, pca_record),
         'seed': args.seed,
         'config': str(Path(args.config).resolve()),
         'model_dir': keypoint_info['model_dir'],
         'video_preds_dir': str(video_preds_dir),
         'csv_path': keypoint_info['csv_path'],
         'dynamic_vars_npz': str(dynamic_vars_path),
+        'anatomical_group': cfg['anatomical_group'],
+        'base_groups': base_groups,
+        'additional_groups': additional_groups,
         'base_keypoints': base,
         'additional_keypoints': additional,
         'unused_keypoints': unused,
-        'likelihood_threshold': keypoint_info['likelihood_threshold'],
+        'likelihood_threshold': cfg['likelihood_threshold'],
+        'max_masked_frac': cfg['max_masked_frac'],
         'skipped_masked_keypoints': keypoint_info['skipped_masked'],
+        'step_order': cfg['step_order'],
     }
     for key, value in params.items():
         logger.info(f'{key}: {value}')
@@ -787,25 +880,20 @@ def _run(args: argparse.Namespace, cfg: dict[str, Any], out_dir: Path) -> None:
         split: select_keypoints(z_all[split], available, base + additional)
         for split in _SPLITS
     }
-    z_base, pca_base = preprocess_features(
-        z_base, 'base', cfg['pca'], cfg['pca_n_components_base'],
-    )
-    z_full, pca_full = preprocess_features(
-        z_full,
-        'base_plus_additional',
-        cfg['pca'],
-        cfg['pca_n_components_base_plus_additional'],
-    )
-    params['pca'] = {'enabled': cfg['pca'], 'base': pca_base, 'base_plus_additional': pca_full}
+    check_finite(z_base, 'base')
+    check_finite(z_full, 'base_plus_additional')
+    params['pca'] = {'enabled': cfg['pca'], 'group_set': None, 'n_components': None}
+    if pca_record is not None:
+        params['pca'].update(pca_record)
 
     key = base_cache_key(
         base,
         camera,
         args.seed,
-        keypoint_info['likelihood_threshold'],
+        cfg['likelihood_threshold'],
         z_base,
         neural_data_dict,
-        pca_base,
+        pca_record,
     )
     # one folder per distinct base input, so a pca / no-pca run never replaces the other's fit
     base_directory = base_dir(
@@ -852,6 +940,9 @@ def _run(args: argparse.Namespace, cfg: dict[str, Any], out_dir: Path) -> None:
     np.savez(
         result_path,
         variant_name=np.asarray(cfg['variant_name']),
+        anatomical_group=np.asarray(cfg['anatomical_group']),
+        base_groups=np.asarray(base_groups, dtype=str),
+        additional_groups=np.asarray(additional_groups, dtype=str),
         base_keypoints=np.asarray(base),
         additional_keypoints=np.asarray(additional),
         unused_keypoints=np.asarray(unused, dtype=str),

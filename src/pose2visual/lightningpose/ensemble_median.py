@@ -18,7 +18,7 @@ def compute_ensemble_median(
     xy_seeds: np.ndarray,
     conf_seeds: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute the per-frame, per-landmark median across seeds.
+    """Compute the mean/median over the ensemble members, independently for the 𝑥 and 𝑦 coordinates.
 
     Args:
         xy_seeds: seed coordinates, shape (n_seeds, n_frames, n_keypoints, 2).

@@ -2,15 +2,29 @@
 
 Replaces the ONE-derived ``DYNAMIC_VARS`` of ``extract_dynamic_vars_trials`` by the speed of
 every usable keypoint of one camera, predicted by your own Lightning Pose checkpoint. One call
-handles several sessions (``--eids``) and cameras (``--cameras``). The speed
-(pixels per second; low-likelihood frames masked and interpolated) is binned onto the same
-``train/val/test_intervals`` grid as the spikes in ``<eid>_aligned.npz`` (``linspace(beg + binsize,
-end, n_bins)``), so the output has the same contract as ``dynamic_vars_z_trials.npz``.
+handles several sessions and cameras (``--cameras``). The sessions are ``--eids``, else
+``--eid-group`` (a named group of an ``ibl_session_ids.json``-style file, ``--eid-groups-json``),
+else the ``session.eid_group`` of ``--config`` (file: ``paths.eid_groups_json``); the group of the
+yaml is a default, not a constraint.
+The speed (pixels per second; low-likelihood frames masked and interpolated) is binned onto the
+same ``train/val/test_intervals`` grid as the spikes in ``<eid>_aligned.npz`` (``linspace(beg +
+binsize, end, n_bins)``), so the output has the same contract as ``dynamic_vars_z_trials.npz``.
 
-Reads ``<video-preds-dir>/encoding/keypoint_names/<camera>_<eid>.json`` (step A) to decide which
-keypoints are usable and which likelihood threshold masks frames (set in step A). Writes
+Each keypoint goes through likelihood filtering (frames below ``filter.likelihood_threshold`` or
+with NaN x/y are masked), linear interpolation over the masked frames, optionally a PCA
+reprojection of the x/y of each body-part group (``pca.enabled: true`` in the yaml, see
+``litpose_pca``; the group counts come from ``PCA_n_components`` in the yaml's
+``paths.body_parts_json``), then speed extraction and binning. The speed is taken in the original
+pixel space on the reprojected positions, so the variables keep their keypoint names.
+``filter.likelihood_threshold``, ``filter.max_masked_frac`` and the PCA settings come from
+``--config`` (the nested encoding yaml, shared by all steps); the ``pca`` flag is stored in ``dynamic_vars.npz`` for step C to check. Reads
+``<video-preds-dir>/encoding/keypoint_names/<camera>_<eid>.json`` (step A) to decide which
+keypoints are usable, and fails if that json was written with other settings than the yaml (rerun
+step A). Writes
 ``<video-preds-dir>/<output-name>/<eid>/dynamic_vars.npz`` and
-``params.json`` (which records the Lightning Pose checkpoint directory). ``--output-name`` is a
+``params.json`` (which records the Lightning Pose checkpoint directory, and the config's
+``step_order`` if it has one — see ``litpose_step_pipelines``; this is provenance only, it does
+not change how the csv at ``--video-preds-dir`` is read). ``--output-name`` is a
 template whose ``{camera}`` placeholder is replaced by the camera, so the cameras get separate
 folders (default ``{camera}_encoding``, e.g. ``left_encoding``).
 
@@ -24,13 +38,20 @@ Usage::
 
     PYTHONPATH=src python -m pose2visual.encoding.extract_litpose_dynamic_vars_trials \\
       --eids <eid1> <eid2> --cameras left right --video-preds-dir <model_dir>/video_preds \\
-      --output-name '{camera}_encoding' --neural-input-dir <dir> --video-timestamps-dir <dir>
+      --output-name '{camera}_encoding' --neural-input-dir <dir> --video-timestamps-dir <dir> \\
+      --config configs/encoding/litpose_encoding.yaml
+
+    # or select a named group of eids instead of --eids; with neither flag the yaml's
+    # session.eid_group is used:
+    PYTHONPATH=src python -m pose2visual.encoding.extract_litpose_dynamic_vars_trials \\
+      --eid-group sable --eid-groups-json scripts/delta/data/ibl_session_ids.json ...
 """
 
 import argparse
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -38,13 +59,23 @@ import pandas as pd
 from pose2visual.encoding.litpose_keypoints import (
     CAMERAS,
     bin_to_intervals,
-    compute_keypoint_speed,
+    check_filter_settings_match,
     csv_filename,
     get_keypoint_coords,
+    interpolate_keypoint,
     keypoint_names_json_path,
+    load_config_eids,
+    load_encoding_yaml,
+    load_filter_settings,
     load_keypoint_csv,
+    load_pca_settings,
+    load_step_order,
+    load_video_preds_dir,
+    resolve_group_eids,
     session_output_dir,
+    speed_from_positions,
 )
+from pose2visual.encoding.litpose_pca import load_pca_n_components, reproject_keypoints
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +96,35 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description='Build dynamic_vars.npz from Lightning Pose keypoint speeds aligned to '
         'the neural intervals in <eid>_aligned.npz.',
     )
-    parser.add_argument('--eids', type=str, nargs='+', required=True, help='session ids')
+    parser.add_argument(
+        '--eids',
+        type=str,
+        nargs='+',
+        default=None,
+        help='session ids; mutually exclusive with --eid-group '
+        '(default: session.eid_group of --config)',
+    )
+    parser.add_argument(
+        '--eid-group',
+        type=str,
+        default=None,
+        help='name of a group in --eid-groups-json\'s `neural_sessions` (e.g. `sable`, `all`, '
+        '`ear_both`, `ear_left`); mutually exclusive with --eids',
+    )
+    parser.add_argument(
+        '--eid-groups-json',
+        type=str,
+        default=None,
+        help='path to an `ibl_session_ids.json`-style file; '
+        'default: paths.eid_groups_json of --config',
+    )
+    parser.add_argument(
+        '--config',
+        type=str,
+        required=True,
+        help='encoding yaml holding likelihood_threshold and max_masked_frac (the same numbers '
+        'step A used)',
+    )
     parser.add_argument(
         '--cameras',
         type=str,
@@ -77,8 +136,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         '--video-preds-dir',
         type=str,
-        required=True,
-        help='directory holding the Lightning Pose prediction csvs (<model_dir>/video_preds)',
+        default=None,
+        help='directory holding the Lightning Pose prediction csvs (<model_dir>/video_preds); '
+        'default: video_preds_dir of --config',
     )
     parser.add_argument(
         '--output-name',
@@ -123,14 +183,41 @@ def load_frame_times(
     video_timestamps_dir = Path(video_timestamps_dir)
     for cam in dict.fromkeys((camera, 'left')):
         path = video_timestamps_dir / f'_ibl_{cam}Camera.times.{eid}.npy'
+        # the IBL cameras are synchronized, so using the left file for the right camera is the
+        # normal case and not worth a warning; the file used is recorded in params.json
         if path.is_file():
-            if cam != camera:
-                logger.warning(f'{camera} camera timestamps not found; using {path.name}')
             return np.load(path), path
     raise FileNotFoundError(
         f'no _ibl_{camera}Camera.times.{eid}.npy or _ibl_leftCamera.times.{eid}.npy in '
         f'{video_timestamps_dir}',
     )
+
+
+def resolve_pca(config_path: str | Path) -> dict[str, Any] | None:
+    """Read the PCA settings of the yaml and load the groups they refer to.
+
+    Args:
+        config_path: path of the encoding yaml.
+
+    Returns:
+        `None` when `pca.enabled` is false, otherwise a dict with `body_parts_json`, `group_set`,
+        `groups` (group name -> tokens) and `n_components` (group name -> requested count).
+
+    Raises:
+        ValueError: if the yaml settings or the `PCA_n_components` of the json are invalid.
+    """
+    settings = load_pca_settings(config_path)
+    if not settings['enabled']:
+        return None
+    groups, n_components = load_pca_n_components(
+        settings['body_parts_json'], settings['group_set'],
+    )
+    return {
+        'body_parts_json': settings['body_parts_json'],
+        'group_set': settings['group_set'],
+        'groups': groups,
+        'n_components': n_components,
+    }
 
 
 def build_dynamic_vars(
@@ -141,7 +228,8 @@ def build_dynamic_vars(
     likelihood_threshold: float,
     binsize: float,
     n_bins: int,
-) -> tuple[dict[str, np.ndarray], dict[str, float]]:
+    pca: dict[str, Any] | None = None,
+) -> tuple[dict[str, np.ndarray], dict[str, float], dict[str, Any] | None]:
     """Bin the speed of each keypoint onto every split's intervals.
 
     Args:
@@ -152,20 +240,30 @@ def build_dynamic_vars(
         likelihood_threshold: frames below this likelihood are masked.
         binsize: bin size in seconds.
         n_bins: bins per interval.
+        pca: output of `resolve_pca`; `None` takes the speed of the interpolated positions as
+            they are, otherwise the positions are first reprojected per body-part group.
 
     Returns:
-        Tuple `(z_trials_time, masked_fraction)`: split name -> `[K_split, n_bins, 1, D]` float32
-        array, and keypoint name -> fraction of masked frames.
+        Tuple `(z_trials_time, masked_fraction, pca_info)`: split name -> `[K_split, n_bins, 1,
+        D]` float32 array, keypoint name -> fraction of masked frames, and the
+        `reproject_keypoints` info (`None` without pca).
     """
     splits = list(intervals)
     all_intervals = np.concatenate([intervals[split] for split in splits], axis=0)
     binned = np.zeros((len(all_intervals), n_bins, len(keypoints)), dtype=np.float32)
     masked_fraction: dict[str, float] = {}
-    for idx_kp, name in enumerate(keypoints):
+    positions: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    for name in keypoints:
         x, y, likelihood = get_keypoint_coords(df, name)
-        speed, masked_fraction[name] = compute_keypoint_speed(
+        x_interp, y_interp, masked_fraction[name] = interpolate_keypoint(
             x, y, likelihood, times, likelihood_threshold,
         )
+        positions[name] = (x_interp, y_interp)
+    pca_info = None
+    if pca is not None:
+        positions, pca_info = reproject_keypoints(positions, pca['groups'], pca['n_components'])
+    for idx_kp, name in enumerate(keypoints):
+        speed = speed_from_positions(*positions[name], times)
         binned[:, :, idx_kp] = bin_to_intervals(speed, times, all_intervals, binsize, n_bins)
 
     out: dict[str, np.ndarray] = {}
@@ -174,7 +272,7 @@ def build_dynamic_vars(
         n_split = len(intervals[split])
         out[split] = binned[start:start + n_split, :, None, :]
         start += n_split
-    return out, masked_fraction
+    return out, masked_fraction, pca_info
 
 
 def extract_session(
@@ -184,23 +282,40 @@ def extract_session(
     output_name: str,
     neural_input_dir: str | Path,
     video_timestamps_dir: str | Path,
+    likelihood_threshold: float,
+    max_masked_frac: float,
+    step_order: str | None = None,
+    config_path: str | Path | None = None,
+    pca: dict[str, Any] | None = None,
 ) -> Path:
     """Build `dynamic_vars.npz` for one session and camera.
 
     Args:
         eid: session id.
         camera: `'left'` or `'right'`.
-        video_preds_dir: directory holding the Lightning Pose prediction csvs.
+        video_preds_dir: directory holding the Lightning Pose prediction csvs. Point this at the
+            combined csv's folder (see `litpose_step_pipelines`) when `step_order` names a
+            pipeline whose first step is `ensemble_median` or `eks_mean`; this function does not
+            resolve or build that csv itself.
         output_name: output folder name (no placeholder left in it).
         neural_input_dir: root dir containing `<eid>/<eid>_aligned.npz` and `<eid>/params.json`.
         video_timestamps_dir: directory containing `_ibl_{left,right}Camera.times.<eid>.npy`.
+        likelihood_threshold: frames below this likelihood are masked and interpolated over;
+            from the config, must equal the value in the step A json.
+        max_masked_frac: from the config, must equal the value in the step A json.
+        step_order: the `--config` yaml's `step_order` (from `load_step_order`), recorded in
+            `params.json` for provenance only; does not change how `dynamic_vars.npz` is built.
+        config_path: encoding yaml the settings came from, recorded in `params.json`.
+        pca: output of `resolve_pca` (`None` = no pca); the flag and the effective number of
+            components of each group are stored for step C.
 
     Returns:
         Path of the written `dynamic_vars.npz`.
 
     Raises:
         FileNotFoundError: if the step A json is missing.
-        ValueError: if the csv row count differs from the number of frame timestamps, or the
+        ValueError: if the step A json was written with other filter settings than the config,
+            the csv row count differs from the number of frame timestamps, or the
             number of bins disagrees with the spikes in `<eid>_aligned.npz`.
     """
     video_preds_dir = Path(video_preds_dir)
@@ -212,8 +327,8 @@ def extract_session(
         )
     with json_path.open(encoding='utf-8') as f:
         keypoint_info = json.load(f)
+    check_filter_settings_match(keypoint_info, likelihood_threshold, max_masked_frac, json_path)
     keypoints = keypoint_info['usable']
-    likelihood_threshold = keypoint_info['likelihood_threshold']
 
     csv_path = video_preds_dir / csv_filename(camera, eid)
     logger.info(f'loading keypoints from {csv_path}')
@@ -243,8 +358,8 @@ def extract_session(
         for split in _SPLITS
     }
 
-    z_trials_time, masked_fraction = build_dynamic_vars(
-        df, keypoints, times, intervals, likelihood_threshold, binsize, n_bins,
+    z_trials_time, masked_fraction, pca_info = build_dynamic_vars(
+        df, keypoints, times, intervals, likelihood_threshold, binsize, n_bins, pca,
     )
 
     output_dir = session_output_dir(video_preds_dir, output_name, eid)
@@ -275,6 +390,7 @@ def extract_session(
     npz_kwargs['neural_trial_idx'] = np.concatenate(neural_trial_idx_parts)
     npz_kwargs['keypoint_names'] = np.asarray(keypoints)
     npz_kwargs['camera'] = np.asarray(camera)
+    npz_kwargs['pca'] = np.asarray(pca is not None)
     np.savez(npz_path, **npz_kwargs)
     logger.info(f'wrote {npz_path}')
 
@@ -286,13 +402,24 @@ def extract_session(
         'model_dir': keypoint_info['model_dir'],
         'timestamps_path': str(times_path),
         'neural_aligned_npz': str(neural_aligned_npz),
+        'config': None if config_path is None else str(Path(config_path).resolve()),
         'likelihood_threshold': likelihood_threshold,
+        'max_masked_frac': max_masked_frac,
         'speed_unit': 'pixels/second of the downsampled video frames',
         'binsize': binsize,
         'n_bins': n_bins,
         'keypoints': keypoints,
         'masked_fraction': masked_fraction,
         'split_sizes': split_sizes,
+        'step_order': step_order,
+        'pca': (
+            {'enabled': False} if pca is None else {
+                'enabled': True,
+                'body_parts_json': pca['body_parts_json'],
+                'group_set': pca['group_set'],
+                **pca_info,
+            }
+        ),
     }
     with params_path.open('w', encoding='utf-8') as f:
         json.dump(params, f, indent=2)
@@ -309,14 +436,48 @@ def main(argv: list[str] | None = None) -> None:
         argv: argument list; `None` uses `sys.argv`.
 
     Raises:
-        ValueError: if several cameras are requested but `--output-name` has no `{camera}`
+        ValueError: if the config lacks a valid `likelihood_threshold` / `max_masked_frac`, its
+            pca settings or the `PCA_n_components` of its `body_parts_json` are invalid, its
+            `step_order` is not a known pipeline, both `--eids` and `--eid-group` are
+            given, none of `--eids`, `--eid-group` and the config's `session.eid_group` is given,
+            `--eid-group` is given without `--eid-groups-json` or `paths.eid_groups_json`, the
+            group is unknown, neither `--video-preds-dir` nor the config's `video_preds_dir` is
+            given, or several cameras are requested but `--output-name` has no `{camera}`
             placeholder (the cameras would overwrite each other).
         RuntimeError: after all runs, if any session/camera failed; the message lists them.
     """
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     args = parse_args(argv)
-    # drop duplicates, keep order
-    eids = list(dict.fromkeys(args.eids))
+    likelihood_threshold, max_masked_frac = load_filter_settings(args.config)
+    step_order = load_step_order(args.config)
+    pca = resolve_pca(args.config)
+    video_preds_dir = args.video_preds_dir or load_video_preds_dir(args.config)
+    if video_preds_dir is None:
+        raise ValueError(
+            f'no video_preds_dir: pass --video-preds-dir or set video_preds_dir in {args.config}',
+        )
+    if args.eids is not None and args.eid_group is not None:
+        raise ValueError('exactly one of --eids or --eid-group must be given')
+    if args.eids is not None:
+        # drop duplicates, keep order
+        eids = list(dict.fromkeys(args.eids))
+    elif args.eid_group is not None:
+        eid_groups_json = args.eid_groups_json or load_encoding_yaml(args.config).get(
+            'eid_groups_json',
+        )
+        if eid_groups_json is None:
+            raise ValueError(
+                '--eid-groups-json is required when --eid-group is given '
+                f'(or set paths.eid_groups_json in {args.config})',
+            )
+        eids = resolve_group_eids(eid_groups_json, args.eid_group)
+    else:
+        eids = load_config_eids(args.config)
+        if eids is None:
+            raise ValueError(
+                f'no sessions: pass --eids or --eid-group, or set session.eid_group in '
+                f'{args.config}',
+            )
     cameras = list(dict.fromkeys(args.cameras))
     if len(cameras) > 1 and _CAMERA_PLACEHOLDER not in args.output_name:
         raise ValueError(
@@ -334,10 +495,15 @@ def main(argv: list[str] | None = None) -> None:
                 extract_session(
                     eid,
                     camera,
-                    args.video_preds_dir,
+                    video_preds_dir,
                     output_name,
                     args.neural_input_dir,
                     args.video_timestamps_dir,
+                    likelihood_threshold,
+                    max_masked_frac,
+                    step_order=step_order,
+                    config_path=args.config,
+                    pca=pca,
                 )
             except Exception as exc:  # keep going; failures are reported below
                 logger.exception(f'[{eid} {camera}] failed')

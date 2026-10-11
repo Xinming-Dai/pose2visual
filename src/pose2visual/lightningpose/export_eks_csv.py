@@ -21,6 +21,14 @@ Usage::
       --eks-dir /path/to/eks/<hash8>/<session>
 
 Default output: ``<eks-dir>/smoothed_<camera>.csv``. Pass ``--out-dir`` to override.
+
+Pass ``--standard-naming`` to instead write ``_iblrig_<camera>Camera.downsampled.<eid>.csv``
+(``<eid>`` taken from ``<eks-dir>``'s own folder name, since ``fit_eks_latent_model.py`` writes
+its output under ``<out_root>/<session>/<group>/...``) -- the same filename
+``pose2visual.encoding.list_litpose_keypoints``/``extract_litpose_dynamic_vars_trials`` already
+scan for, so the encoding pipeline's ``eks_mean`` step order (see
+``pose2visual.encoding.litpose_step_pipelines``) just means pointing ``video_preds_dir`` at this
+csv's folder, exactly like the plain single-seed case.
 """
 
 import argparse
@@ -131,6 +139,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help='Output directory (default: same as --eks-dir)',
     )
+    parser.add_argument(
+        '--standard-naming',
+        action='store_true',
+        help='write _iblrig_<camera>Camera.downsampled.<eid>.csv (<eid> from --eks-dir\'s own '
+        'folder name) instead of smoothed_<camera>.csv, so the csv can be pointed at directly '
+        'as a video_preds_dir for the encoding pipeline\'s eks_mean step order',
+    )
     return parser
 
 
@@ -148,6 +163,7 @@ def main(argv: list[str] | None = None) -> None:
 
     eks_dir = Path(args.eks_dir).resolve()
     out_dir = Path(args.out_dir).resolve() if args.out_dir is not None else eks_dir
+    eid = eks_dir.name
 
     for camera in args.cameras:
         npz_paths = sorted(eks_dir.glob(f'*/*_{camera}_latent-model.npz'))
@@ -157,7 +173,12 @@ def main(argv: list[str] | None = None) -> None:
         logger.info(f'{camera}: merging {len(npz_paths)} groups: {group_names}')
 
         xy, landmarks = merge_group_npzs(npz_paths)
-        out_path = out_dir / f'smoothed_{camera}.csv'
+        out_name = (
+            f'_iblrig_{camera}Camera.downsampled.{eid}.csv'
+            if args.standard_naming
+            else f'smoothed_{camera}.csv'
+        )
+        out_path = out_dir / out_name
         write_smoothed_csv(xy, landmarks, out_path)
         logger.info(f'wrote {out_path} ({xy.shape[0]} frames, {len(landmarks)} landmarks)')
 

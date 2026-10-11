@@ -17,13 +17,48 @@ Directory layout under ``video_preds_dir`` (``<model_dir>/video_preds``)::
         that folder holds a run with other settings)
 """
 
+import json
 import re
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
+import yaml
+
+from pose2visual.encoding.litpose_step_pipelines import resolve_step_pipeline
 
 CAMERAS = ('left', 'right')
+DEFAULT_PCA_GROUP_SET = 'nonoverlapping_analysis_groups'
+# `anatomical_group` value meaning "base / additional lists hold explicit keypoint names"
+ANATOMICAL_GROUP_ALL = 'all'
+# nested yaml layout: section -> {key in the section: key of the flat dict `load_encoding_yaml`
+# returns}; `step_order` is the only top-level key outside the sections
+ENCODING_YAML_SECTIONS = {
+    'session': {'eid': 'eid', 'eid_group': 'eid_group', 'camera': 'camera'},
+    'paths': {
+        'video_preds_dir': 'video_preds_dir',
+        'body_parts_json': 'body_parts_json',
+        'eid_groups_json': 'eid_groups_json',
+    },
+    'output': {'output_name': 'output_name', 'variant_name': 'variant_name'},
+    'filter': {
+        'likelihood_threshold': 'likelihood_threshold',
+        'max_masked_frac': 'max_masked_frac',
+    },
+    'pca': {'enabled': 'pca', 'group_set': 'pca_group_set'},
+    'anatomical_group': {
+        'name': 'anatomical_group',
+        'base_keypoints': 'base_keypoints',
+        'additional_keypoints': 'additional_keypoints',
+    },
+}
+# key of the flat dict -> its place in the yaml, e.g. `output_name` -> `output.output_name`
+ENCODING_YAML_NESTED_NAMES = {
+    flat: f'{section}.{key}'
+    for section, keys in ENCODING_YAML_SECTIONS.items()
+    for key, flat in keys.items()
+}
 
 # <eid> never contains an underscore, which keeps ``*_temporal_norm.csv`` files out
 _CSV_PATTERN = re.compile(r'^_iblrig_(left|right)Camera\.downsampled\.([^_]+)\.csv$')
@@ -127,6 +162,342 @@ def variant_dir(
         `<video_preds_dir>/<output_name>/<eid>/<variant_name>`.
     """
     return session_output_dir(video_preds_dir, output_name, eid) / variant_name
+
+
+def validate_filter_settings(
+    likelihood_threshold: Any,
+    max_masked_frac: Any,
+    source: str | Path,
+) -> tuple[float, float]:
+    """Check the two keypoint filter settings shared by steps A, B and C.
+
+    Args:
+        likelihood_threshold: frames below this likelihood are masked.
+        max_masked_frac: keypoints with a larger masked fraction are not usable.
+        source: where the values came from, used in error messages.
+
+    Returns:
+        Tuple `(likelihood_threshold, max_masked_frac)` as floats.
+
+    Raises:
+        ValueError: if a value is missing, not a number (booleans included) or outside `[0, 1]`.
+    """
+    values = {
+        'likelihood_threshold': likelihood_threshold,
+        'max_masked_frac': max_masked_frac,
+    }
+    for key, value in values.items():
+        if value is None:
+            raise ValueError(f'{source}: missing {key}')
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f'{source}: {key} must be a number, got {value!r}')
+        if not 0 <= value <= 1:
+            raise ValueError(f'{source}: {key} must be in [0, 1], got {value!r}')
+    return float(likelihood_threshold), float(max_masked_frac)
+
+
+def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
+    """Read the nested encoding yaml and flatten it.
+
+    This is the one place that knows the yaml layout (`ENCODING_YAML_SECTIONS`); every step reads
+    the yaml through it. Sections and keys that are absent are simply left out, so callers decide
+    which ones they require and which defaults apply.
+
+    Args:
+        config_path: path of the encoding yaml (`configs/encoding/litpose_encoding.yaml`).
+
+    Returns:
+        Flat dict of the keys present: `step_order`, `eid`, `eid_group`, `camera`,
+        `video_preds_dir`, `body_parts_json`, `eid_groups_json`, `output_name`, `variant_name`,
+        `likelihood_threshold`, `max_masked_frac`, `pca` (`pca.enabled`), `pca_group_set`
+        (`pca.group_set`), `anatomical_group` (`anatomical_group.name`), `base_keypoints` and
+        `additional_keypoints`.
+
+    Raises:
+        ValueError: if the yaml is not a mapping, a section is not a mapping, a key is unknown, a
+            key of the old flat layout is used (the error names its new place), or a removed
+            `pca_n_components*` key is present.
+    """
+    with Path(config_path).open(encoding='utf-8') as f:
+        raw = yaml.safe_load(f)
+    if not isinstance(raw, dict):
+        raise ValueError(f'{config_path}: expected a yaml mapping')
+    cfg: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key == 'step_order':
+            cfg[key] = value
+        elif key in ENCODING_YAML_SECTIONS and isinstance(value, dict):
+            unknown = sorted(str(k) for k in value if k not in ENCODING_YAML_SECTIONS[key])
+            if unknown:
+                raise ValueError(
+                    f'{config_path}: unknown keys {unknown} in `{key}`; '
+                    f'allowed: {sorted(ENCODING_YAML_SECTIONS[key])}',
+                )
+            for sub_key, flat in ENCODING_YAML_SECTIONS[key].items():
+                if sub_key in value:
+                    cfg[flat] = value[sub_key]
+        elif key in ENCODING_YAML_SECTIONS:
+            # `pca: true` and `anatomical_group: <name>` of the old flat layout
+            raise ValueError(
+                f'{config_path}: `{key}` must be a mapping with keys '
+                f'{sorted(ENCODING_YAML_SECTIONS[key])}, got {value!r}',
+            )
+        elif str(key).startswith('pca_n_components'):
+            raise ValueError(
+                f'{config_path}: {key} was removed; the number of components of each body-part '
+                'group is now `PCA_n_components` in the body_parts_json file',
+            )
+        elif key in ENCODING_YAML_NESTED_NAMES:
+            raise ValueError(
+                f'{config_path}: top-level `{key}` is no longer supported; '
+                f'move it to `{ENCODING_YAML_NESTED_NAMES[key]}`',
+            )
+        else:
+            raise ValueError(f'{config_path}: unknown top-level key {key!r}')
+    return cfg
+
+
+def resolve_group_eids(eid_groups_json: str | Path, group: str) -> list[str]:
+    """Look up a named group's eids from an `ibl_session_ids.json`-style file.
+
+    Args:
+        eid_groups_json: path to the json file (top-level `neural_sessions` key maps a group
+            name to a flat list of eid strings).
+        group: group name, e.g. `'sable'`, `'all'`, `'ear_both'`, `'ear_left'`.
+
+    Returns:
+        eids in the file's order.
+
+    Raises:
+        ValueError: if `group` is not a key of `neural_sessions`.
+    """
+    with Path(eid_groups_json).open(encoding='utf-8') as f:
+        groups = json.load(f)['neural_sessions']
+    if group not in groups:
+        raise ValueError(f'unknown group {group!r}; available: {sorted(groups)}')
+    return list(groups[group])
+
+
+def load_config_eids(config_path: str | Path) -> list[str] | None:
+    """Read the sessions of the yaml's `session.eid_group`.
+
+    Args:
+        config_path: path of the encoding yaml.
+
+    Returns:
+        The eids of the group in the file's order, or `None` when the yaml sets no group.
+
+    Raises:
+        ValueError: if the yaml is invalid (see `load_encoding_yaml`), a group is set without
+            `paths.eid_groups_json`, or the group is not in that file.
+    """
+    cfg = load_encoding_yaml(config_path)
+    group = cfg.get('eid_group')
+    if group is None:
+        return None
+    if cfg.get('eid_groups_json') is None:
+        raise ValueError(
+            f'{config_path}: session.eid_group is set but paths.eid_groups_json is missing',
+        )
+    return resolve_group_eids(cfg['eid_groups_json'], str(group))
+
+
+def nest_encoding_config(flat: dict[str, Any]) -> dict[str, Any]:
+    """Inverse of `load_encoding_yaml`: arrange a flat settings dict into the nested yaml layout.
+
+    Args:
+        flat: settings keyed as `load_encoding_yaml` returns them.
+
+    Returns:
+        Dict that `yaml.safe_dump` writes as a valid encoding yaml; keys of `flat` that are
+        absent stay absent.
+
+    Raises:
+        ValueError: if a key of `flat` is not a setting of the encoding yaml.
+    """
+    unknown = sorted(set(flat) - set(ENCODING_YAML_NESTED_NAMES) - {'step_order'})
+    if unknown:
+        raise ValueError(f'unknown encoding settings {unknown}')
+    nested: dict[str, Any] = {}
+    if 'step_order' in flat:
+        nested['step_order'] = flat['step_order']
+    for section, keys in ENCODING_YAML_SECTIONS.items():
+        entries = {key: flat[name] for key, name in keys.items() if name in flat}
+        if entries:
+            nested[section] = entries
+    return nested
+
+
+def load_filter_settings(config_path: str | Path) -> tuple[float, float]:
+    """Read the shared keypoint filter settings from the encoding yaml.
+
+    The yaml is the single source of these two numbers for the whole pipeline: step A uses them
+    to pick the usable keypoints, step B to mask and interpolate low-likelihood frames, and step C
+    checks that they still match what steps A and B used.
+
+    Args:
+        config_path: path of the encoding yaml (`configs/encoding/litpose_encoding.yaml`).
+
+    Returns:
+        Tuple `(likelihood_threshold, max_masked_frac)`.
+
+    Raises:
+        ValueError: if the yaml is not a mapping, or a setting is missing or invalid.
+    """
+    cfg = load_encoding_yaml(config_path)
+    return validate_filter_settings(
+        cfg.get('likelihood_threshold'), cfg.get('max_masked_frac'), config_path,
+    )
+
+
+def load_video_preds_dir(config_path: str | Path) -> str | None:
+    """Read the optional `video_preds_dir` from the encoding yaml.
+
+    Args:
+        config_path: path of the encoding yaml.
+
+    Returns:
+        The `video_preds_dir` value, or `None` if absent/null.
+
+    Raises:
+        ValueError: if the yaml is not a mapping.
+    """
+    value = load_encoding_yaml(config_path).get('video_preds_dir')
+    return None if value is None else str(value)
+
+
+def load_pca_settings(config_path: str | Path) -> dict[str, Any]:
+    """Read the PCA reprojection settings from the encoding yaml.
+
+    Step B applies them (see `litpose_pca`); step C only checks that its `pca` flag agrees with
+    the one step B stored in `dynamic_vars.npz`.
+
+    Args:
+        config_path: path of the encoding yaml.
+
+    Returns:
+        Dict with `enabled` (bool, `pca.enabled`, default `False`), `body_parts_json`
+        (`paths.body_parts_json` as written in the yaml, `None` when absent) and `group_set`
+        (`pca.group_set`, default `'nonoverlapping_analysis_groups'`).
+
+    Raises:
+        ValueError: if the yaml is invalid (see `load_encoding_yaml`), `pca.enabled` is not a
+            bool, or pca is enabled without `paths.body_parts_json`.
+    """
+    cfg = load_encoding_yaml(config_path)
+    enabled = cfg.get('pca', False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f'{config_path}: pca.enabled must be true or false, got {enabled!r}')
+    body_parts_json = cfg.get('body_parts_json')
+    if enabled and body_parts_json is None:
+        raise ValueError(
+            f'{config_path}: pca.enabled is true but paths.body_parts_json is missing',
+        )
+    return {
+        'enabled': enabled,
+        'body_parts_json': None if body_parts_json is None else str(body_parts_json),
+        'group_set': str(cfg.get('pca_group_set', DEFAULT_PCA_GROUP_SET)),
+    }
+
+
+def expand_groups(
+    group_names: list[str],
+    groups: dict[str, list[str]],
+    available: list[str],
+) -> list[str]:
+    """Resolve body-part group names to the usable keypoints they contain.
+
+    A keypoint belongs to a group when the first `_`-separated segment of its name is one of the
+    group's tokens (`ear_top_left` -> `ear`), the rule `litpose_pca.assign_keypoints_to_groups`
+    uses. Unlike that function, groups may overlap: a keypoint of several named groups is listed
+    once.
+
+    Args:
+        group_names: names of the groups to expand, e.g. `['eye_related', 'mouth_related']`.
+        groups: group name -> keypoint name tokens, as from `load_groups`.
+        available: usable keypoint names (those of `dynamic_vars.npz`).
+
+    Returns:
+        The keypoints of `available` that belong to any of the groups, in `available` order.
+
+    Raises:
+        ValueError: if a group name is unknown or a group has no keypoint in `available`.
+    """
+    unknown = sorted(set(group_names) - set(groups))
+    if unknown:
+        raise ValueError(f'unknown groups {unknown}; available: {sorted(groups)}')
+    selected: set[str] = set()
+    for name in group_names:
+        members = [kp for kp in available if kp.split('_')[0] in groups[name]]
+        if not members:
+            raise ValueError(
+                f'group {name!r} (tokens {groups[name]}) has no usable keypoint; '
+                f'usable keypoints: {available}',
+            )
+        selected.update(members)
+    return [kp for kp in available if kp in selected]
+
+
+def load_step_order(config_path: str | Path) -> str | None:
+    """Read the optional `step_order` pipeline name from the encoding yaml.
+
+    This is the single source of `step_order` for the whole pipeline, the same way
+    `load_filter_settings` is for `likelihood_threshold` / `max_masked_frac`: step B reads it
+    here (for provenance only, in `params.json`) instead of taking its own separate flag, so it
+    can never drift from what step C's `run_litpose_encoding.load_config` sees.
+
+    Args:
+        config_path: path of the encoding yaml.
+
+    Returns:
+        The `step_order` value, or `None` if absent/null.
+
+    Raises:
+        ValueError: if the yaml is not a mapping, or `step_order` is not a known pipeline name
+            (see `litpose_step_pipelines`).
+    """
+    cfg = load_encoding_yaml(config_path)
+    step_order = cfg.get('step_order')
+    if step_order is not None:
+        try:
+            resolve_step_pipeline(step_order)
+        except ValueError as exc:
+            raise ValueError(f'{config_path}: {exc}') from exc
+    return step_order
+
+
+def check_filter_settings_match(
+    keypoint_info: dict[str, Any],
+    likelihood_threshold: float,
+    max_masked_frac: float,
+    json_path: str | Path,
+) -> None:
+    """Fail when the step A json was written with other filter settings than the yaml holds.
+
+    Args:
+        keypoint_info: contents of the step A json.
+        likelihood_threshold: value from the yaml.
+        max_masked_frac: value from the yaml.
+        json_path: path of the step A json, used in the error message.
+
+    Raises:
+        ValueError: if the json's `likelihood_threshold` or `max_masked_frac` differs from the
+            yaml; the usable-keypoint list in the json is then stale, so step A must be rerun.
+    """
+    mismatches = [
+        f'{key}: yaml {expected} vs json {keypoint_info.get(key)}'
+        for key, expected in (
+            ('likelihood_threshold', likelihood_threshold),
+            ('max_masked_frac', max_masked_frac),
+        )
+        if keypoint_info.get(key) != expected
+    ]
+    if mismatches:
+        raise ValueError(
+            f'{json_path} was written with other filter settings than the config ('
+            f'{"; ".join(mismatches)}); rerun pose2visual.encoding.list_litpose_keypoints '
+            '(step 0) with this config',
+        )
 
 
 def load_keypoint_csv(csv_path: str | Path) -> pd.DataFrame:
@@ -241,6 +612,58 @@ def masked_fraction(df: pd.DataFrame, name: str, likelihood_threshold: float) ->
     return float(np.mean(masked_frames(x, y, likelihood, likelihood_threshold)))
 
 
+def interpolate_keypoint(
+    x: np.ndarray,
+    y: np.ndarray,
+    likelihood: np.ndarray,
+    times: np.ndarray,
+    likelihood_threshold: float,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Mask the unusable frames of one keypoint and interpolate its position over them.
+
+    Frames flagged by `masked_frames` (low likelihood or NaN) are masked and the position is
+    linearly interpolated over them.
+
+    Args:
+        x: x position per frame.
+        y: y position per frame.
+        likelihood: likelihood per frame.
+        times: frame timestamps in seconds, strictly increasing.
+        likelihood_threshold: frames below this likelihood are masked.
+
+    Returns:
+        Tuple `(x_interp, y_interp, masked_fraction)`: finite positions per frame
+        `[n_frames]` and the fraction of masked frames.
+
+    Raises:
+        ValueError: if fewer than two frames remain unmasked.
+    """
+    masked = masked_frames(x, y, likelihood, likelihood_threshold)
+    idx_valid = np.flatnonzero(~masked)
+    if idx_valid.size < 2:
+        raise ValueError(
+            f'fewer than 2 frames with likelihood >= {likelihood_threshold}; '
+            'cannot compute keypoint speed',
+        )
+    x_interp = np.interp(times, times[idx_valid], x[idx_valid])
+    y_interp = np.interp(times, times[idx_valid], y[idx_valid])
+    return x_interp, y_interp, float(masked.mean())
+
+
+def speed_from_positions(x: np.ndarray, y: np.ndarray, times: np.ndarray) -> np.ndarray:
+    """Speed of a keypoint trajectory in pixels per second.
+
+    Args:
+        x: finite x position per frame.
+        y: finite y position per frame.
+        times: frame timestamps in seconds, strictly increasing.
+
+    Returns:
+        Speed per frame `[n_frames]`.
+    """
+    return np.hypot(np.gradient(x, times), np.gradient(y, times))
+
+
 def compute_keypoint_speed(
     x: np.ndarray,
     y: np.ndarray,
@@ -267,17 +690,10 @@ def compute_keypoint_speed(
     Raises:
         ValueError: if fewer than two frames remain unmasked.
     """
-    masked = masked_frames(x, y, likelihood, likelihood_threshold)
-    idx_valid = np.flatnonzero(~masked)
-    if idx_valid.size < 2:
-        raise ValueError(
-            f'fewer than 2 frames with likelihood >= {likelihood_threshold}; '
-            'cannot compute keypoint speed',
-        )
-    x_interp = np.interp(times, times[idx_valid], x[idx_valid])
-    y_interp = np.interp(times, times[idx_valid], y[idx_valid])
-    speed = np.hypot(np.gradient(x_interp, times), np.gradient(y_interp, times))
-    return speed, float(masked.mean())
+    x_interp, y_interp, masked_fraction = interpolate_keypoint(
+        x, y, likelihood, times, likelihood_threshold,
+    )
+    return speed_from_positions(x_interp, y_interp, times), masked_fraction
 
 
 def bin_to_intervals(

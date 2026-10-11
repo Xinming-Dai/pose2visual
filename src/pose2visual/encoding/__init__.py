@@ -24,7 +24,11 @@ model) and compares base keypoints against base + additional keypoints:
     run_litpose_encoding: step C (gpu). Fit RRR and CNN on base and base + additional keypoints
         and write ``encoding_result.npz``.
     litpose_keypoints: csv reading, naming conventions, speed and binning shared by A-C.
-    litpose_preprocess: finite check and pooled z-score + PCA of the keypoint speeds, used by C.
+    litpose_pca: per body-part group PCA reprojection of the keypoint x/y, applied by B.
+    litpose_preprocess: finite check of the keypoint speed features, used by C.
+    litpose_step_pipelines: named preprocessing recipes (``litpose_step_pipelines.json``); a
+        ``step_order`` config value resolves to which keypoint-combination method
+        (``ensemble_median`` / ``eks_mean``) and whether the PCA reprojection is used.
 
 Slurm wrappers live in ``scripts/delta/encoding/`` (ONE pipeline) and
 ``scripts/delta/lightningpose_encoding/`` (Lightning Pose keypoint pipeline).

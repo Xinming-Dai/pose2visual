@@ -7,6 +7,11 @@ sessions (non-finite BPS dropped), the error bar is the standard error over thos
 base and additional keypoint names are printed under the axes, so a saved figure says which
 keypoints it compares.
 
+With ``anatomical_group`` set to a group set of ``body_parts_json`` (e.g.
+``nonoverlapping_analysis_groups``), the two keypoint lists of the config hold group names such as
+``eye_related``; the figure then prints the group names (the keypoints a group resolved to can
+differ between sessions, they are listed per session in the json next to the figure).
+
 Result layout (see ``pose2visual.encoding.litpose_keypoints``)::
 
     <video_preds_dir>/<output_name>/<eid>/<variant>/encoding_result.npz
@@ -14,10 +19,15 @@ Result layout (see ``pose2visual.encoding.litpose_keypoints``)::
 
 A session can hold several variants (e.g. a pca and a no-pca run of the same keypoints), and
 folder names carry hash suffixes, so the variant is chosen by its ``run_signature`` in
-``encoding_params.json``: camera, base / additional keypoints and pca settings. These come from the
-same yaml the run used (``configs/encoding/litpose_encoding.yaml``); flags override single entries.
-Every session must hold exactly one finished matching variant, otherwise the script raises; use
-``--eids`` to restrict the sessions.
+``encoding_params.json``: camera, base / additional keypoints (or groups), ``anatomical_group``
+and pca settings (flag and group set). These come from the same yaml the run used (``configs/encoding/litpose_encoding.yaml``);
+flags override single entries.
+Every session must hold exactly one finished matching variant, otherwise the script raises.
+The sessions are ``--eids``, else ``--eid-group``, else the ``session.eid_group`` of the config
+(file: ``paths.eid_groups_json``), else every session folder with a ``dynamic_vars.npz``. With
+``--only-if-complete`` the script logs the sessions that are not finished and exits without
+plotting; ``step2_run_encoding.sh`` calls it that way after every session, so the plot appears
+when the last session of the group finishes.
 
 Usage::
 
@@ -33,15 +43,19 @@ import argparse
 import json
 import logging
 import textwrap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
-import yaml
 
-from pose2visual.encoding.litpose_keypoints import session_output_dir
+from pose2visual.encoding.litpose_keypoints import (
+    ENCODING_YAML_NESTED_NAMES,
+    load_encoding_yaml,
+    resolve_group_eids,
+    session_output_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +71,9 @@ _REQUIRED_CONFIG_KEYS = (
     'base_keypoints',
     'additional_keypoints',
 )
-_PCA_N_COMPONENTS_KEYS = ('pca_n_components_base', 'pca_n_components_base_plus_additional')
+_DEFAULT_PCA_GROUP_SET = 'nonoverlapping_analysis_groups'
+# `anatomical_group` value meaning "the keypoint lists hold keypoint names"
+_ANATOMICAL_GROUP_ALL = 'all'
 # folder of `output_name` that holds the plots, never a session
 _PLOTS_DIRNAME = 'plots'
 _KEYPOINT_TEXT_WIDTH = 46
@@ -71,8 +87,12 @@ class SessionResult:
         eid: session id.
         variant_dir: folder holding the `encoding_result.npz` that was read.
         bps: `(condition, model)` -> per-neuron BPS array of shape `[n_neurons]`.
-        base_keypoints: base keypoint names as stored in the result.
+        base_keypoints: base keypoint names as stored in the result (the keypoints the base
+            groups resolved to in group mode).
         additional_keypoints: additional keypoint names as stored in the result.
+        anatomical_group: `all` or the group set the run was fitted with.
+        base_groups: base group names; empty when `anatomical_group` is `all`.
+        additional_groups: additional group names; empty when `anatomical_group` is `all`.
     """
 
     eid: str
@@ -80,6 +100,9 @@ class SessionResult:
     bps: dict[tuple[str, str], np.ndarray]
     base_keypoints: list[str]
     additional_keypoints: list[str]
+    anatomical_group: str = _ANATOMICAL_GROUP_ALL
+    base_groups: list[str] = field(default_factory=list)
+    additional_groups: list[str] = field(default_factory=list)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -110,16 +133,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help='overrides additional_keypoints of the config',
     )
     parser.add_argument(
+        '--anatomical-group',
+        type=str,
+        default=None,
+        help=(
+            'overrides anatomical_group of the config: all (keypoint names) or a group set of '
+            'body_parts_json (group names)'
+        ),
+    )
+    parser.add_argument(
         '--pca',
         action=argparse.BooleanOptionalAction,
         default=None,
-        help='select the pca / no-pca run (default: `pca` of the config, true if absent)',
+        help='select the pca / no-pca run (default: `pca` of the config, false if absent)',
     )
     parser.add_argument(
         '--seed', type=int, default=None, help='only match runs of this seed (default: any)',
     )
     parser.add_argument(
-        '--eids', nargs='+', default=None, help='sessions to plot (default: all with results)',
+        '--eids',
+        nargs='+',
+        default=None,
+        help='sessions to plot (default: the eid group, else every session with a '
+        'dynamic_vars.npz)',
+    )
+    parser.add_argument(
+        '--eid-group',
+        type=str,
+        default=None,
+        help='eid group to plot, a key of paths.eid_groups_json (default: session.eid_group of '
+        'the config); ignored when --eids is given',
+    )
+    parser.add_argument(
+        '--only-if-complete',
+        action='store_true',
+        help='plot only when every session has a finished matching result; otherwise log the '
+        'unfinished ones and exit without error (for the end of each step 2 job)',
     )
     parser.add_argument(
         '-o', '--output', type=Path, default=None, help='output png path (default: see docstring)',
@@ -136,6 +185,8 @@ def load_wanted_settings(
     additional_keypoints: list[str] | None = None,
     pca: bool | None = None,
     seed: int | None = None,
+    anatomical_group: str | None = None,
+    eid_group: str | None = None,
 ) -> dict[str, Any]:
     """Read the settings that identify the wanted run from the encoding yaml.
 
@@ -145,22 +196,31 @@ def load_wanted_settings(
         additional_keypoints: replaces `additional_keypoints` of the file when given.
         pca: replaces `pca` of the file when given.
         seed: only runs of this seed match; `None` matches any seed.
+        anatomical_group: replaces `anatomical_group` of the file when given.
+        eid_group: replaces `session.eid_group` of the file when given.
 
     Returns:
         Dict with `video_preds_dir`, `output_name`, `camera`, `base_keypoints`,
-        `additional_keypoints`, `pca`, `pca_n_components_base`,
-        `pca_n_components_base_plus_additional` and `seed`.
+        `additional_keypoints` (group names when `anatomical_group` is a group set),
+        `anatomical_group` (default `all`), `pca`, `pca_group_set`, `seed` and `eids` (the sessions
+        of the eid group, `None` when there is no group).
 
     Raises:
-        ValueError: if the yaml is not a mapping or a required key is missing.
+        ValueError: if the yaml is invalid (see `load_encoding_yaml`), a required key is
+            missing, or an eid group is set without `paths.eid_groups_json` or is unknown.
     """
-    with Path(config_path).open(encoding='utf-8') as f:
-        cfg = yaml.safe_load(f)
-    if not isinstance(cfg, dict):
-        raise ValueError(f'{config_path}: expected a yaml mapping')
-    missing = [key for key in _REQUIRED_CONFIG_KEYS if cfg.get(key) is None]
+    cfg = load_encoding_yaml(config_path)
+    missing = [
+        ENCODING_YAML_NESTED_NAMES[key] for key in _REQUIRED_CONFIG_KEYS if cfg.get(key) is None
+    ]
     if missing:
         raise ValueError(f'{config_path}: missing config keys {missing}')
+    group = eid_group if eid_group is not None else cfg.get('eid_group')
+    eids = None
+    if group is not None:
+        if cfg.get('eid_groups_json') is None:
+            raise ValueError(f'{config_path}: an eid group needs paths.eid_groups_json')
+        eids = resolve_group_eids(cfg['eid_groups_json'], str(group))
     wanted: dict[str, Any] = {
         'video_preds_dir': str(cfg['video_preds_dir']),
         'output_name': str(cfg['output_name']),
@@ -169,36 +229,41 @@ def load_wanted_settings(
         'additional_keypoints': [
             str(name) for name in (additional_keypoints or cfg['additional_keypoints'])
         ],
-        'pca': cfg.get('pca', True) if pca is None else pca,
+        'anatomical_group': str(
+            cfg.get('anatomical_group', _ANATOMICAL_GROUP_ALL)
+            if anatomical_group is None else anatomical_group,
+        ),
+        'pca': cfg.get('pca', False) if pca is None else pca,
+        'pca_group_set': str(cfg.get('pca_group_set', _DEFAULT_PCA_GROUP_SET)),
         'seed': seed,
+        'eids': eids,
     }
-    for key in _PCA_N_COMPONENTS_KEYS:
-        wanted[key] = cfg.get(key)
     return wanted
 
 
 def signature_matches(signature: dict[str, Any], wanted: dict[str, Any]) -> bool:
     """Whether the `run_signature` of a finished run is the wanted run.
 
-    Keypoint lists are compared as sets of names. The pca component counts only matter when pca
-    is on, and the seed only when `wanted['seed']` is set.
+    Keypoint lists (group names in group mode) are compared as sets of names, together with the
+    anatomical group; a signature without one is an `all` run. The pca group set only matters
+    when pca is on, and the seed only when `wanted['seed']` is set.
 
     Args:
         signature: `run_signature` stored in `encoding_params.json`.
         wanted: output of `load_wanted_settings`.
 
     Returns:
-        `True` if camera, keypoints, pca settings (and seed) agree.
+        `True` if camera, keypoints, anatomical group, pca settings (and seed) agree.
     """
     for key in ('base_keypoints', 'additional_keypoints'):
         if sorted(signature.get(key, [])) != sorted(wanted[key]):
             return False
     if signature.get('camera') != wanted['camera'] or signature.get('pca') != wanted['pca']:
         return False
-    if wanted['pca']:
-        for key in _PCA_N_COMPONENTS_KEYS:
-            if signature.get(key) != wanted[key]:
-                return False
+    if signature.get('anatomical_group', _ANATOMICAL_GROUP_ALL) != wanted['anatomical_group']:
+        return False
+    if wanted['pca'] and signature.get('pca_group_set') != wanted['pca_group_set']:
+        return False
     return wanted['seed'] is None or signature.get('seed') == wanted['seed']
 
 
@@ -239,6 +304,35 @@ def find_variant_dir(session_dir: Path, wanted: dict[str, Any]) -> Path:
     return matches[0]
 
 
+def unfinished_eids(
+    video_preds_dir: str | Path,
+    output_name: str,
+    eids: list[str],
+    wanted: dict[str, Any],
+) -> list[str]:
+    """List the sessions that have no finished matching result yet.
+
+    Args:
+        video_preds_dir: directory holding the Lightning Pose prediction csvs.
+        output_name: user-chosen folder name.
+        eids: sessions to check.
+        wanted: output of `load_wanted_settings`.
+
+    Returns:
+        The eids, in order, without a finished variant that matches `wanted`.
+
+    Raises:
+        ValueError: if a session has several matching variants.
+    """
+    unfinished = []
+    for eid in eids:
+        try:
+            find_variant_dir(session_output_dir(video_preds_dir, output_name, eid), wanted)
+        except FileNotFoundError:
+            unfinished.append(eid)
+    return unfinished
+
+
 def load_session_result(eid: str, variant_path: Path) -> SessionResult:
     """Load the per-neuron test BPS and the keypoint names of one finished variant.
 
@@ -255,12 +349,23 @@ def load_session_result(eid: str, variant_path: Path) -> SessionResult:
         for cond in CONDITIONS
         for model in MODELS
     }
+    # results from before group mode have none of the group entries
+    files = data.files
     return SessionResult(
         eid=eid,
         variant_dir=variant_path,
         bps=bps,
         base_keypoints=[str(name) for name in data['base_keypoints']],
         additional_keypoints=[str(name) for name in data['additional_keypoints']],
+        anatomical_group=(
+            str(data['anatomical_group']) if 'anatomical_group' in files
+            else _ANATOMICAL_GROUP_ALL
+        ),
+        base_groups=[str(name) for name in data['base_groups']] if 'base_groups' in files else [],
+        additional_groups=(
+            [str(name) for name in data['additional_groups']]
+            if 'additional_groups' in files else []
+        ),
     )
 
 
@@ -324,24 +429,38 @@ def load_all_sessions(
 def check_same_keypoints(results: list[SessionResult]) -> None:
     """Check that all sessions were fitted with the same base and additional keypoints.
 
+    In group mode the usable keypoints a group resolves to differ between sessions, so the group
+    names are compared instead of the keypoints.
+
     Args:
         results: sessions to compare.
 
     Raises:
-        ValueError: if `results` is empty or the keypoint lists differ between sessions.
+        ValueError: if `results` is empty or the keypoints (groups) differ between sessions.
     """
     if not results:
         raise ValueError('no sessions to plot')
     first = results[0]
     for result in results[1:]:
-        if (
-            sorted(result.base_keypoints) != sorted(first.base_keypoints)
-            or sorted(result.additional_keypoints) != sorted(first.additional_keypoints)
-        ):
+        if first.anatomical_group != _ANATOMICAL_GROUP_ALL:
+            same = (
+                result.anatomical_group == first.anatomical_group
+                and sorted(result.base_groups) == sorted(first.base_groups)
+                and sorted(result.additional_groups) == sorted(first.additional_groups)
+            )
+        else:
+            same = (
+                result.anatomical_group == first.anatomical_group
+                and sorted(result.base_keypoints) == sorted(first.base_keypoints)
+                and sorted(result.additional_keypoints) == sorted(first.additional_keypoints)
+            )
+        if not same:
             raise ValueError(
                 f'keypoints of {result.eid} differ from {first.eid}: '
-                f'{result.base_keypoints} + {result.additional_keypoints} vs '
-                f'{first.base_keypoints} + {first.additional_keypoints}',
+                f'{result.base_groups or result.base_keypoints} + '
+                f'{result.additional_groups or result.additional_keypoints} vs '
+                f'{first.base_groups or first.base_keypoints} + '
+                f'{first.additional_groups or first.additional_keypoints}',
             )
 
 
@@ -351,7 +470,7 @@ def collect_stats(
     """Pool the finite per-neuron BPS of all sessions and take mean and standard error.
 
     Args:
-        results: sessions with identical keypoints (`check_same_keypoints` is applied).
+        results: sessions with identical keypoints or groups (`check_same_keypoints` is applied).
 
     Returns:
         `(condition, model)` -> dict with `mean`, `se` (std with ddof=1 over sqrt of the number
@@ -359,7 +478,7 @@ def collect_stats(
         finite value.
 
     Raises:
-        ValueError: if `results` is empty or the keypoints differ between sessions.
+        ValueError: if `results` is empty or the keypoints (groups) differ between sessions.
     """
     check_same_keypoints(results)
     stats: dict[tuple[str, str], dict[str, float]] = {}
@@ -403,10 +522,10 @@ def keypoint_text(
     """Text printed under the axes: the compared keypoints and the data behind the bars.
 
     Args:
-        base_keypoints: base keypoint names.
-        additional_keypoints: additional keypoint names.
+        base_keypoints: base keypoint names, or group names in group mode.
+        additional_keypoints: additional keypoint names, or group names in group mode.
         camera: camera of the keypoints.
-        pca: whether the keypoint speeds were z-scored and PCA-rotated.
+        pca: whether the keypoint positions were PCA-reprojected before the speed.
         n_sessions: number of pooled sessions.
         stats: output of `collect_stats`.
 
@@ -535,9 +654,12 @@ def default_output_path(wanted: dict[str, Any]) -> Path:
 
     Returns:
         `<video_preds_dir>/<output_name>/plots/encoding_base_vs_additional_<additional>_<pca>/
-        encoding_barplot.png`.
+        encoding_barplot.png`; `<additional>` is prefixed by the group set in group mode, so the
+        same group names of two group sets do not share a folder.
     """
     additional = '_'.join(sorted(wanted['additional_keypoints']))[:60]
+    if wanted['anatomical_group'] != _ANATOMICAL_GROUP_ALL:
+        additional = f'{wanted["anatomical_group"]}_{additional}'
     pca = 'pca' if wanted['pca'] else 'nopca'
     return (
         Path(wanted['video_preds_dir'])
@@ -564,8 +686,19 @@ def write_summary_json(
     """
     summary = {
         'wanted': wanted,
+        'anatomical_group': results[0].anatomical_group,
+        'base_groups': results[0].base_groups,
+        'additional_groups': results[0].additional_groups,
         'base_keypoints': results[0].base_keypoints,
         'additional_keypoints': results[0].additional_keypoints,
+        # in group mode the resolved keypoints can differ between sessions
+        'session_keypoints': {
+            result.eid: {
+                'base_keypoints': result.base_keypoints,
+                'additional_keypoints': result.additional_keypoints,
+            }
+            for result in results
+        },
         'stats': {f'{cond}_{model}': entry for (cond, model), entry in stats.items()},
         'sessions': {result.eid: str(result.variant_dir) for result in results},
     }
@@ -592,9 +725,26 @@ def main(argv: list[str] | None = None) -> None:
         additional_keypoints=args.additional_keypoints,
         pca=args.pca,
         seed=args.seed,
+        anatomical_group=args.anatomical_group,
+        eid_group=args.eid_group,
     )
     output_root = Path(wanted['video_preds_dir']) / wanted['output_name']
-    eids = args.eids if args.eids is not None else list_session_eids(output_root)
+    if args.eids is not None:
+        eids = args.eids
+    elif wanted['eids'] is not None:
+        eids = wanted['eids']
+    else:
+        eids = list_session_eids(output_root)
+    if args.only_if_complete:
+        unfinished = unfinished_eids(
+            wanted['video_preds_dir'], wanted['output_name'], eids, wanted,
+        )
+        if unfinished:
+            logger.info(
+                f'plot skipped: {len(unfinished)} of {len(eids)} sessions have no finished '
+                f'matching result yet: {unfinished}',
+            )
+            return
     results = load_all_sessions(wanted['video_preds_dir'], wanted['output_name'], eids, wanted)
     stats = collect_stats(results)
     for (cond, model), entry in stats.items():
@@ -606,8 +756,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.no_show:
         plt.switch_backend('Agg')
     text = keypoint_text(
-        results[0].base_keypoints,
-        results[0].additional_keypoints,
+        results[0].base_groups or results[0].base_keypoints,
+        results[0].additional_groups or results[0].additional_keypoints,
         wanted['camera'],
         wanted['pca'],
         len(results),
