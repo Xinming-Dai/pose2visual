@@ -28,7 +28,7 @@ under `"neural_sessions"`) in one invocation, sharing one output run folder. Use
 `--sessions <uuid> [<uuid> ...]` instead to name sessions explicitly.
 
 Usage:
-    python plot_comparison.py --session-group sable
+    python plot_comparison.py --session-group sable --num-workers 4
 
     python plot_comparison.py \\
         --model-dir /path/to/mighty-mouse-models/E6c-LOO... \\
@@ -54,8 +54,12 @@ Folder name is `YYYYMMDD_HHMMSS`, suffixed with `__<tag>` when `--tag` is given.
 import argparse
 import json
 import logging
+import multiprocessing
+import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -783,9 +787,10 @@ Examples:
     )
     parser.add_argument(
         '--group-set',
-        choices=['nonoverlapping_analysis_groups', 'overlapping_analysis_groups'],
         default='nonoverlapping_analysis_groups',
-        help='Top-level key to load from --groups-file (default: nonoverlapping_analysis_groups)',
+        help='Top-level key to load from --groups-file, e.g. nonoverlapping_analysis_groups, '
+        'overlapping_analysis_groups or nonoverlapping_analysis_groups_ibl_ears '
+        '(default: nonoverlapping_analysis_groups)',
     )
     parser.add_argument(
         '--groups',
@@ -815,6 +820,13 @@ Examples:
         "subdirectories, as written by fit_eks_latent_model.py (optional)",
     )
     parser.add_argument(
+        '--num-workers',
+        type=int,
+        default=None,
+        help='Worker processes; each handles one (session, camera) pair at a time '
+        '(default: $SLURM_CPUS_PER_TASK if set, else 1, i.e. serial)',
+    )
+    parser.add_argument(
         '--roi-left',
         type=int,
         nargs=4,
@@ -829,7 +841,312 @@ Examples:
         help='Right camera ROI (x0 y0 x1 y1) for statistics',
     )
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.num_workers is not None and args.num_workers < 1:
+        parser.error('--num-workers must be >= 1')
+    return args
+
+
+@dataclass
+class CameraTask:
+    """Inputs for processing one (session, camera) pair in a worker process.
+
+    Attributes:
+        session_id: session UUID.
+        camera: camera name ('left' or 'right').
+        csv_paths: seed name -> prediction csv path for this session and camera.
+        video_path: video used for the background frame.
+        n_frames: number of frames to process.
+        start_frame: starting frame index.
+        background_frame: frame index used as the scatter background.
+        groups: body-part group name -> token list.
+        group_set: name of the group set (used in figure filenames).
+        conf_threshold: confidence threshold for gating.
+        roi: optional ROI (x0, y0, x1, y1) for statistics.
+        eks_npz_dir: optional out-root of Pose-EKS latent-model npz files.
+        ensemble_median_dir: optional directory of already-saved median csvs to reuse.
+        save_ensemble_median: whether to write the computed ensemble median csv.
+        fig_dir: directory the figures are written to.
+        csv_dir: directory the ensemble median csvs are written to.
+    """
+
+    session_id: str
+    camera: str
+    csv_paths: dict[str, Path]
+    video_path: Path
+    n_frames: int
+    start_frame: int
+    background_frame: int
+    groups: dict[str, list[str]]
+    group_set: str
+    conf_threshold: float
+    roi: tuple[int, int, int, int] | None
+    eks_npz_dir: Path | None
+    ensemble_median_dir: Path | None
+    save_ensemble_median: bool
+    fig_dir: Path
+    csv_dir: Path
+
+
+def process_camera(task: CameraTask) -> dict[str, Any]:
+    """Load, ensemble, render and save everything for one (session, camera) pair.
+
+    Runs in a worker process (or in the main process when a single worker is used), so it
+    only touches files unique to its (session, camera) and returns its records to the caller
+    instead of mutating shared state.
+
+    Args:
+        task: inputs for this (session, camera) pair.
+
+    Returns:
+        Dict with `stats` (list of per-keypoint statistics records), `audit` (dict keyed
+        `{session}_{camera}_{group}_{mode}`), `saved_median_csv` (path string or None) and
+        `median_source` ('reused' or 'computed').
+    """
+    session_id = task.session_id
+    camera = task.camera
+    start_frame = task.start_frame
+    n_frames = task.n_frames
+    conf_threshold = task.conf_threshold
+    prefix = f'[{session_id[:8]}/{camera}]'
+
+    seed_names_sorted = sorted(task.csv_paths.keys())
+    csv_stem = task.csv_paths[seed_names_sorted[0]].stem
+    keypoint_names = discover_keypoint_names(task.csv_paths[seed_names_sorted[0]])
+    logger.info(f'{prefix} discovered {len(keypoint_names)} keypoints')
+
+    xy_seeds_all = []
+    conf_seeds_all = []
+    for seed_name in seed_names_sorted:
+        xy, conf = load_all_keypoints(
+            task.csv_paths[seed_name], keypoint_names, start_frame, n_frames,
+        )
+        xy_seeds_all.append(xy)
+        conf_seeds_all.append(conf)
+
+    saved_median_csv = None
+    existing_median_path = (
+        task.ensemble_median_dir / f'{csv_stem}.csv' if task.ensemble_median_dir else None
+    )
+    if existing_median_path and existing_median_path.exists():
+        logger.info(f'{prefix} reusing ensemble median: {existing_median_path}')
+        median_keypoint_names = discover_keypoint_names(existing_median_path)
+        if median_keypoint_names != keypoint_names:
+            raise ValueError(
+                f'{existing_median_path} keypoints {median_keypoint_names} do not match '
+                f'the seeds\' keypoints {keypoint_names} for {session_id}/{camera}',
+            )
+        xy_median_all, conf_median_all = load_all_keypoints(
+            existing_median_path, keypoint_names, start_frame, n_frames,
+        )
+        median_source = 'reused'
+    else:
+        xy_median_all, conf_median_all = compute_ensemble_median(
+            np.stack(xy_seeds_all, axis=0), np.stack(conf_seeds_all, axis=0),
+        )
+        median_source = 'computed'
+
+        if task.save_ensemble_median:
+            median_csv_path = task.csv_dir / f'{csv_stem}.csv'
+            write_ensemble_median_csv(
+                xy_median_all, conf_median_all, keypoint_names, median_csv_path,
+            )
+            saved_median_csv = str(median_csv_path)
+            logger.info(f'{prefix} saved ensemble median: {median_csv_path}')
+
+    # resolve each group's real columns for this camera
+    groups_resolved = {}
+    for group_name, tokens in task.groups.items():
+        bases = resolve_group_bases(keypoint_names, tokens)
+        columns = group_columns_for_camera(bases, camera)
+        landmarks = [base for base, _ in bases]
+        indices = [keypoint_names.index(c) for c in columns]
+        groups_resolved[group_name] = {
+            'columns': columns,
+            'landmarks': landmarks,
+            'indices': indices,
+            'colors': colors_for_landmarks(landmarks),
+        }
+        logger.info(f'{prefix} {group_name}: {len(landmarks)} landmarks ({landmarks})')
+
+    bg_frame = get_background_frame(
+        task.csv_paths[seed_names_sorted[0]],
+        task.video_path,
+        frame_idx=task.background_frame,
+    )
+
+    stats_records = []
+    audit = {}
+    for gated in [False, True]:
+        mode = 'matched-conf-gt07' if gated else 'ungated'
+        logger.info(f'{prefix} rendering {mode}...')
+
+        rows_data = []
+        for group_name, resolved in groups_resolved.items():
+            idx = resolved['indices']
+            xy_list = [xy[:, idx, :] for xy in xy_seeds_all] + [xy_median_all[:, idx, :]]
+            confidences_list = [conf[:, idx] for conf in conf_seeds_all]
+            method_names = [f'Single network: seed {i}' for i in range(len(seed_names_sorted))]
+            method_names.append('Ensemble median')
+
+            if task.eks_npz_dir:
+                group_eks_dir = task.eks_npz_dir / session_id / group_name
+                result = load_eks(group_eks_dir, camera, n_frames)
+                if result:
+                    xy_eks, model = result
+
+                    try:
+                        np.testing.assert_allclose(
+                            xy_median_all[:, idx, :].reshape(n_frames, len(idx) * 2),
+                            model['observation_medians'],
+                            rtol=1e-5, atol=1e-3,
+                        )
+                    except AssertionError as e:
+                        logger.warning(
+                            f'{prefix} EKS observation_medians do not match seed median '
+                            f'for {group_name}: {e}',
+                        )
+
+                    xy_list.append(xy_eks)
+                    method_names.append('Pose-EKS (rank 4)')
+                    logger.info(f'{prefix} EKS loaded for {group_name}')
+                else:
+                    logger.info(f'{prefix} EKS npz not found for {group_name}; skipping')
+
+            rows_data.append({
+                'group_name': group_name,
+                'landmarks': resolved['landmarks'],
+                'colors': resolved['colors'],
+                'xy_list': xy_list,
+                'confidences_list': confidences_list,
+                'method_names': method_names,
+            })
+
+        fig, stats_by_group, title_text, rows_legend = render_combined_figure(
+            rows_data, bg_frame, session_id, camera, gated, conf_threshold, task.roi, n_frames,
+        )
+
+        # save figure, named after the source csv (- is reserved for the UUID)
+        mode_safe = mode.replace('-', '_')
+        fig_name = (
+            f'{csv_stem}.bodyparts_{task.group_set}_{mode_safe}_{camera}_'
+            f'frames{start_frame:06d}_{start_frame + n_frames - 1:06d}.png'
+        )
+        fig_path = task.fig_dir / fig_name
+        fig.savefig(fig_path, dpi=160, facecolor=fig.get_facecolor())
+        plt.close(fig)
+
+        combined_img = compose_figure_canvas(fig_path, title_text, rows_legend)
+        combined_img.save(fig_path)
+
+        logger.info(f'{prefix} saved: {fig_path}')
+
+        for group_name, stats_list in stats_by_group.items():
+            method_names = rows_data[list(groups_resolved).index(group_name)]['method_names']
+            for method_name, stats_dict in zip(method_names, stats_list):
+                for landmark, stat in stats_dict.items():
+                    record = {
+                        'session': session_id,
+                        'camera': camera,
+                        'group': group_name,
+                        'mode': mode,
+                        'method': method_name,
+                        'keypoint': landmark,
+                    }
+                    record.update(stat)
+                    stats_records.append(record)
+
+            idx = groups_resolved[group_name]['indices']
+            seeds_conf = np.stack([conf[:, idx] for conf in conf_seeds_all], axis=0)
+            audit[f'{session_id}_{camera}_{group_name}_{mode}'] = {
+                'methods': method_names,
+                'frame_range': f'{start_frame}-{start_frame + n_frames - 1}',
+                'n_frames_kept': int((seeds_conf > conf_threshold).all(axis=0).sum())
+                if gated else n_frames,
+            }
+
+    return {
+        'stats': stats_records,
+        'audit': audit,
+        'saved_median_csv': saved_median_csv,
+        'median_source': median_source,
+    }
+
+
+def _init_worker() -> None:
+    """Configure logging and cv2 threading in a freshly spawned worker process."""
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    cv2.setNumThreads(1)
+
+
+def resolve_num_workers(requested: int | None, n_tasks: int) -> int:
+    """Pick the number of worker processes.
+
+    Args:
+        requested: value of `--num-workers`; when None, falls back to the SLURM allocation
+            (`SLURM_CPUS_PER_TASK`) and finally to 1, so a bare login-node run stays serial.
+        n_tasks: number of (session, camera) tasks; more workers than this are useless.
+
+    Returns:
+        worker count in `[1, max(n_tasks, 1)]`.
+    """
+    if requested is None:
+        requested = int(os.environ.get('SLURM_CPUS_PER_TASK', 1))
+    return max(1, min(requested, n_tasks))
+
+
+def run_tasks(tasks: list[CameraTask], num_workers: int) -> list[dict[str, Any]]:
+    """Run every task, in-process for one worker or in a process pool otherwise.
+
+    Args:
+        tasks: (session, camera) tasks to process.
+        num_workers: number of worker processes (1 runs serially in this process).
+
+    Returns:
+        one result dict per task (see `process_camera`), in the same order as `tasks`.
+    """
+    n_tasks = len(tasks)
+    results: list[dict[str, Any] | None] = [None] * n_tasks
+    run_start = time.time()
+
+    if num_workers == 1:
+        for task_idx, task in enumerate(tasks):
+            results[task_idx] = process_camera(task)
+            logger.info(
+                f'[done {task_idx + 1}/{n_tasks}] {task.session_id}/{task.camera} '
+                f'(total elapsed {time.time() - run_start:.1f}s)',
+            )
+        return results
+
+    # keep numpy/BLAS from spawning num_cpus threads in each worker; spawned children
+    # inherit this environment before they import numpy
+    for var in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
+        os.environ[var] = '1'
+
+    executor = ProcessPoolExecutor(
+        max_workers=num_workers,
+        mp_context=multiprocessing.get_context('spawn'),
+        initializer=_init_worker,
+    )
+    try:
+        future_to_idx = {
+            executor.submit(process_camera, task): task_idx
+            for task_idx, task in enumerate(tasks)
+        }
+        for n_done, future in enumerate(as_completed(future_to_idx), start=1):
+            task_idx = future_to_idx[future]
+            results[task_idx] = future.result()  # re-raises any worker exception
+            task = tasks[task_idx]
+            logger.info(
+                f'[done {n_done}/{n_tasks}] {task.session_id}/{task.camera} '
+                f'(total elapsed {time.time() - run_start:.1f}s)',
+            )
+    except BaseException:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    executor.shutdown()
+
+    return results
 
 
 def run(args: argparse.Namespace) -> None:
@@ -916,18 +1233,22 @@ def run(args: argparse.Namespace) -> None:
     append_entry(registry_path, run_name, {**base_manifest, 'status': 'running'})
     logger.info(f'Registered run (status=running): {registry_path}')
 
-    all_stats = []
-    audit = {}
+    ensemble_median_dir = Path(args.ensemble_median_dir) if args.ensemble_median_dir else None
+    rois = {
+        'left': tuple(args.roi_left) if args.roi_left else None,
+        'right': tuple(args.roi_right) if args.roi_right else None,
+    }
+    video_overrides = {'left': args.video_left, 'right': args.video_right}
+
+    # prep (serial): resolve csvs, frame counts and videos for every session, then build one
+    # task per (session, camera)
+    tasks = []
     sessions_manifest = {}
     n_sessions = len(sessions)
-    run_start = time.time()
-
     for session_idx, session_id in enumerate(sessions, start=1):
-        session_start = time.time()
         logger.info(f'=== [{session_idx}/{n_sessions}] Session {session_id} ===')
 
         # Find video_preds directories and CSVs
-        logger.info('Resolving seed predictions...')
         csv_paths = {}  # {camera: {seed_name: path}}
         for camera in args.cameras:
             csv_paths[camera] = {}
@@ -951,10 +1272,7 @@ def run(args: argparse.Namespace) -> None:
         background_frame = args.background_frame or (start_frame + n_frames // 2)
 
         # Auto-discover videos
-        logger.info('Resolving video paths...')
         video_paths = {}
-        video_overrides = {'left': args.video_left, 'right': args.video_right}
-
         for camera in args.cameras:
             if video_overrides[camera]:
                 video_paths[camera] = Path(video_overrides[camera]).resolve()
@@ -975,178 +1293,24 @@ def run(args: argparse.Namespace) -> None:
 
             logger.info(f'  {camera}: {video_paths[camera]}')
 
-        # Process per camera
-        saved_median_csvs = {}
-        median_sources = {}
-
-        n_cameras = len(args.cameras)
-        for camera_idx, camera in enumerate(args.cameras, start=1):
-            logger.info(f'Processing {camera} camera... [{camera_idx}/{n_cameras}]')
-
-            seed_names_sorted = sorted(csv_paths[camera].keys())
-            csv_stem = csv_paths[camera][seed_names_sorted[0]].stem
-            keypoint_names = discover_keypoint_names(csv_paths[camera][seed_names_sorted[0]])
-            logger.info(f'  discovered {len(keypoint_names)} keypoints')
-
-            xy_seeds_all = []
-            conf_seeds_all = []
-            for seed_name in seed_names_sorted:
-                xy, conf = load_all_keypoints(
-                    csv_paths[camera][seed_name], keypoint_names, start_frame, n_frames,
-                )
-                xy_seeds_all.append(xy)
-                conf_seeds_all.append(conf)
-
-            existing_median_path = (
-                Path(args.ensemble_median_dir) / f'{csv_stem}.csv'
-                if args.ensemble_median_dir else None
-            )
-            if existing_median_path and existing_median_path.exists():
-                logger.info(f'  Reusing ensemble median: {existing_median_path}')
-                median_keypoint_names = discover_keypoint_names(existing_median_path)
-                if median_keypoint_names != keypoint_names:
-                    raise ValueError(
-                        f'{existing_median_path} keypoints {median_keypoint_names} do not match '
-                        f'the seeds\' keypoints {keypoint_names} for {session_id}/{camera}',
-                    )
-                xy_median_all, conf_median_all = load_all_keypoints(
-                    existing_median_path, keypoint_names, start_frame, n_frames,
-                )
-                median_sources[camera] = 'reused'
-            else:
-                xy_median_all, conf_median_all = compute_ensemble_median(
-                    np.stack(xy_seeds_all, axis=0), np.stack(conf_seeds_all, axis=0),
-                )
-                median_sources[camera] = 'computed'
-
-                if args.save_ensemble_median:
-                    median_csv_path = csv_dir / f'{csv_stem}.csv'
-                    write_ensemble_median_csv(
-                        xy_median_all, conf_median_all, keypoint_names, median_csv_path,
-                    )
-                    saved_median_csvs[camera] = str(median_csv_path)
-                    logger.info(f'  Saved ensemble median: {median_csv_path}')
-
-            # Resolve each group's real columns for this camera.
-            groups_resolved = {}
-            for group_name, tokens in groups.items():
-                bases = resolve_group_bases(keypoint_names, tokens)
-                columns = group_columns_for_camera(bases, camera)
-                landmarks = [base for base, _ in bases]
-                indices = [keypoint_names.index(c) for c in columns]
-                groups_resolved[group_name] = {
-                    'columns': columns,
-                    'landmarks': landmarks,
-                    'indices': indices,
-                    'colors': colors_for_landmarks(landmarks),
-                }
-                logger.info(f'  {group_name}: {len(landmarks)} landmarks ({landmarks})')
-
-            # Get background frame
-            bg_frame = get_background_frame(
-                csv_paths[camera][seed_names_sorted[0]],
-                video_paths[camera],
-                frame_idx=background_frame,
-            )
-
-            roi = {
-                'left': tuple(args.roi_left) if args.roi_left else None,
-                'right': tuple(args.roi_right) if args.roi_right else None,
-            }[camera]
-
-            for gated in [False, True]:
-                mode = 'matched-conf-gt07' if gated else 'ungated'
-                logger.info(f'  Rendering {mode}...')
-
-                rows_data = []
-                for group_name, resolved in groups_resolved.items():
-                    idx = resolved['indices']
-                    xy_list = [xy[:, idx, :] for xy in xy_seeds_all] + [xy_median_all[:, idx, :]]
-                    confidences_list = [conf[:, idx] for conf in conf_seeds_all]
-                    method_names = [
-                        f'Single network: seed {i}' for i in range(len(seed_names_sorted))
-                    ]
-                    method_names.append('Ensemble median')
-
-                    if eks_npz_dir:
-                        group_eks_dir = eks_npz_dir / session_id / group_name
-                        result = load_eks(group_eks_dir, camera, n_frames)
-                        if result:
-                            xy_eks, model = result
-
-                            try:
-                                np.testing.assert_allclose(
-                                    xy_median_all[:, idx, :].reshape(n_frames, len(idx) * 2),
-                                    model['observation_medians'],
-                                    rtol=1e-5, atol=1e-3,
-                                )
-                            except AssertionError as e:
-                                logger.warning(
-                                    f'EKS observation_medians do not match seed median '
-                                    f'for {session_id}/{camera}/{group_name}: {e}',
-                                )
-
-                            xy_list.append(xy_eks)
-                            method_names.append('Pose-EKS (rank 4)')
-                            logger.info(f'    EKS loaded for {session_id}/{camera}/{group_name}')
-                        else:
-                            logger.info(
-                                f'    EKS npz not found for {session_id}/{camera}/{group_name}; '
-                                'skipping',
-                            )
-
-                    rows_data.append({
-                        'group_name': group_name,
-                        'landmarks': resolved['landmarks'],
-                        'colors': resolved['colors'],
-                        'xy_list': xy_list,
-                        'confidences_list': confidences_list,
-                        'method_names': method_names,
-                    })
-
-                fig, stats_by_group, title_text, rows_legend = render_combined_figure(
-                    rows_data, bg_frame, session_id, camera, gated, conf_threshold, roi, n_frames,
-                )
-
-                # Save figure, named after the source csv (- is reserved for the UUID)
-                mode_safe = mode.replace('-', '_')
-                fig_name = (
-                    f'{csv_stem}.bodyparts_{args.group_set}_{mode_safe}_{camera}_'
-                    f'frames{start_frame:06d}_{start_frame + n_frames - 1:06d}.png'
-                )
-                fig_path = fig_dir / fig_name
-                fig.savefig(fig_path, dpi=160, facecolor=fig.get_facecolor())
-                plt.close(fig)
-
-                combined_img = compose_figure_canvas(fig_path, title_text, rows_legend)
-                combined_img.save(fig_path)
-
-                logger.info(f'  Saved: {fig_path}')
-
-                # Record statistics
-                for group_name, stats_list in stats_by_group.items():
-                    method_names = rows_data[list(groups_resolved).index(group_name)]['method_names']
-                    for method_name, stats_dict in zip(method_names, stats_list):
-                        for landmark, stat in stats_dict.items():
-                            record = {
-                                'session': session_id,
-                                'camera': camera,
-                                'group': group_name,
-                                'mode': mode,
-                                'method': method_name,
-                                'keypoint': landmark,
-                            }
-                            record.update(stat)
-                            all_stats.append(record)
-
-                    idx = groups_resolved[group_name]['indices']
-                    seeds_conf = np.stack([conf[:, idx] for conf in conf_seeds_all], axis=0)
-                    audit[f'{session_id}_{camera}_{group_name}_{mode}'] = {
-                        'methods': method_names,
-                        'frame_range': f'{start_frame}-{start_frame + n_frames - 1}',
-                        'n_frames_kept': int((seeds_conf > conf_threshold).all(axis=0).sum())
-                        if gated else n_frames,
-                    }
+            tasks.append(CameraTask(
+                session_id=session_id,
+                camera=camera,
+                csv_paths=csv_paths[camera],
+                video_path=video_paths[camera],
+                n_frames=n_frames,
+                start_frame=start_frame,
+                background_frame=background_frame,
+                groups=groups,
+                group_set=args.group_set,
+                conf_threshold=conf_threshold,
+                roi=rois[camera],
+                eks_npz_dir=eks_npz_dir,
+                ensemble_median_dir=ensemble_median_dir,
+                save_ensemble_median=args.save_ensemble_median,
+                fig_dir=fig_dir,
+                csv_dir=csv_dir,
+            ))
 
         sessions_manifest[session_id] = {
             'csv_paths': {
@@ -1157,14 +1321,25 @@ def run(args: argparse.Namespace) -> None:
             'background_frame': background_frame,
             'frame_range': f'{start_frame}-{start_frame + n_frames - 1}',
             'n_frames': n_frames,
-            'ensemble_median_csvs': saved_median_csvs,
-            'ensemble_median_source': median_sources,
+            'ensemble_median_csvs': {},
+            'ensemble_median_source': {},
         }
 
-        logger.info(
-            f'=== [{session_idx}/{n_sessions}] Session {session_id} done in '
-            f'{time.time() - session_start:.1f}s (total elapsed {time.time() - run_start:.1f}s) ===',
-        )
+    # execute (parallel): one worker per (session, camera)
+    num_workers = resolve_num_workers(args.num_workers, len(tasks))
+    logger.info(f'Processing {len(tasks)} (session, camera) tasks with {num_workers} worker(s)')
+    results = run_tasks(tasks, num_workers)
+
+    # aggregate in task order so outputs match a serial run
+    all_stats = []
+    audit = {}
+    for task, result in zip(tasks, results):
+        all_stats.extend(result['stats'])
+        audit.update(result['audit'])
+        session_manifest = sessions_manifest[task.session_id]
+        session_manifest['ensemble_median_source'][task.camera] = result['median_source']
+        if result['saved_median_csv'] is not None:
+            session_manifest['ensemble_median_csvs'][task.camera] = result['saved_median_csv']
 
     # Save statistics CSV
     if all_stats:
