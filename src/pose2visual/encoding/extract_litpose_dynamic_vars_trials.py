@@ -66,8 +66,6 @@ from pose2visual.encoding.litpose_keypoints import (
     get_keypoint_coords,
     interpolate_keypoint,
     keypoint_names_json_path,
-    load_config_eids,
-    load_encoding_yaml,
     load_filter_settings,
     load_keypoint_csv,
     load_output_name,
@@ -75,7 +73,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_step_order,
     load_video_preds_dir,
     output_folder_name,
-    resolve_group_eids,
+    resolve_session_eids,
     session_output_dir,
     speed_from_positions,
 )
@@ -462,28 +460,12 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError(
             f'no video_preds_dir: pass --video-preds-dir or set video_preds_dir in {args.config}',
         )
-    if args.eids is not None and args.eid_group is not None:
-        raise ValueError('exactly one of --eids or --eid-group must be given')
-    if args.eids is not None:
-        # drop duplicates, keep order
-        eids = list(dict.fromkeys(args.eids))
-    elif args.eid_group is not None:
-        eid_groups_json = args.eid_groups_json or load_encoding_yaml(args.config).get(
-            'eid_groups_json',
+    eids = resolve_session_eids(args.config, args.eids, args.eid_group, args.eid_groups_json)
+    if eids is None:
+        raise ValueError(
+            f'no sessions: pass --eids or --eid-group, or set session.eid_group in '
+            f'{args.config}',
         )
-        if eid_groups_json is None:
-            raise ValueError(
-                '--eid-groups-json is required when --eid-group is given '
-                f'(or set paths.eid_groups_json in {args.config})',
-            )
-        eids = resolve_group_eids(eid_groups_json, args.eid_group)
-    else:
-        eids = load_config_eids(args.config)
-        if eids is None:
-            raise ValueError(
-                f'no sessions: pass --eids or --eid-group, or set session.eid_group in '
-                f'{args.config}',
-            )
     output_name = args.output_name or load_output_name(args.config)
     if output_name is None:
         raise ValueError(

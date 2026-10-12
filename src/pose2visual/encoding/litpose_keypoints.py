@@ -344,6 +344,46 @@ def load_config_eids(config_path: str | Path) -> list[str] | None:
     return resolve_group_eids(cfg['eid_groups_json'], str(group))
 
 
+def resolve_session_eids(
+    config_path: str | Path,
+    eids: list[str] | None,
+    eid_group: str | None,
+    eid_groups_json: str | Path | None,
+) -> list[str] | None:
+    """Pick the sessions of a run: explicit eids, else a named group, else the yaml's group.
+
+    Args:
+        config_path: path of the encoding yaml.
+        eids: session ids given on the command line, or `None`.
+        eid_group: group name given on the command line, or `None`.
+        eid_groups_json: `ibl_session_ids.json`-style file for `eid_group`; `None` uses
+            `paths.eid_groups_json` of the yaml.
+
+    Returns:
+        The eids without duplicates in the given order, or `None` when neither `eids`, `eid_group`
+        nor the yaml's `session.eid_group` selects any.
+
+    Raises:
+        ValueError: if both `eids` and `eid_group` are given, `eid_group` is given without a
+            groups file, or a group is unknown (see `load_config_eids`).
+    """
+    if eids is not None and eid_group is not None:
+        raise ValueError('exactly one of --eids or --eid-group must be given')
+    if eids is not None:
+        return list(dict.fromkeys(eids))
+    if eid_group is not None:
+        eid_groups_json = eid_groups_json or load_encoding_yaml(config_path).get(
+            'eid_groups_json',
+        )
+        if eid_groups_json is None:
+            raise ValueError(
+                '--eid-groups-json is required when --eid-group is given '
+                f'(or set paths.eid_groups_json in {config_path})',
+            )
+        return resolve_group_eids(eid_groups_json, eid_group)
+    return load_config_eids(config_path)
+
+
 def nest_encoding_config(flat: dict[str, Any]) -> dict[str, Any]:
     """Inverse of `load_encoding_yaml`: arrange a flat settings dict into the nested yaml layout.
 

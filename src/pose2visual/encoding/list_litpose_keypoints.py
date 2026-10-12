@@ -5,8 +5,11 @@ For each ``_iblrig_<camera>Camera.downsampled.<eid>.csv`` in ``--video-preds-dir
 ``<video-preds-dir>/encoding/keypoint_names/<camera>_<eid>.json`` with the keypoint names (second
 csv header row), the keypoints that are usable, and the keypoints skipped because too many of
 their frames are masked (NaN ``x``/``y`` or ``likelihood`` below the likelihood threshold;
-keypoints on the far side of the animal have likelihood near 0 and are skipped this way). Run once
-per ``video_preds`` directory; the json files tell
+keypoints on the far side of the animal have likelihood near 0 and are skipped this way). The
+sessions are ``--eids``, else ``--eid-group`` (a named group of an ``ibl_session_ids.json``-style
+file, ``--eid-groups-json``), else the ``session.eid_group`` of ``--config`` (file:
+``paths.eid_groups_json``); with none of them every csv in the directory is listed. Jsons of
+sessions that are not selected are left untouched. The json files tell
 which keypoints can go in the ``base_keypoints`` / ``additional_keypoints`` lists of the
 encoding config, and are read by ``extract_litpose_dynamic_vars_trials``.
 
@@ -20,7 +23,7 @@ Usage::
     PYTHONPATH=src python -m pose2visual.encoding.list_litpose_keypoints \\
       --config configs/encoding/litpose_encoding.yaml \\
       [--video-preds-dir <model_dir>/video_preds] [--likelihood-threshold 0.9] \\
-      [--max-masked-frac 0.3]
+      [--max-masked-frac 0.3] [--eids <eid1> <eid2> | --eid-group sable]
 """
 
 import argparse
@@ -36,6 +39,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_filter_settings,
     load_keypoint_csv,
     load_video_preds_dir,
+    resolve_session_eids,
     validate_filter_settings,
 )
 
@@ -66,6 +70,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help='directory holding _iblrig_<camera>Camera.downsampled.<eid>.csv files (default: '
         'video_preds_dir of --config)',
+    )
+    parser.add_argument(
+        '--eids',
+        type=str,
+        nargs='+',
+        default=None,
+        help='session ids; mutually exclusive with --eid-group '
+        '(default: session.eid_group of --config, else every csv in the directory)',
+    )
+    parser.add_argument(
+        '--eid-group',
+        type=str,
+        default=None,
+        help='name of a group in --eid-groups-json\'s `neural_sessions` (e.g. `sable`, `all`, '
+        '`ear_both`, `ear_left`); mutually exclusive with --eids',
+    )
+    parser.add_argument(
+        '--eid-groups-json',
+        type=str,
+        default=None,
+        help='path to an `ibl_session_ids.json`-style file; '
+        'default: paths.eid_groups_json of --config',
     )
     parser.add_argument(
         '--likelihood-threshold',
@@ -147,15 +173,18 @@ def build_keypoint_info(
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Write one keypoint-names json per prediction csv in a `video_preds` directory.
+    """Write one keypoint-names json per selected prediction csv in a `video_preds` directory.
 
     Args:
         argv: argument list; `None` uses `sys.argv`.
 
     Raises:
-        FileNotFoundError: if the directory contains no prediction csv.
-        ValueError: if the config lacks a valid `likelihood_threshold` / `max_masked_frac`, or
-            neither `--video-preds-dir` nor the config's `video_preds_dir` is given.
+        FileNotFoundError: if the directory contains no prediction csv, or a selected session has
+            none.
+        ValueError: if the config lacks a valid `likelihood_threshold` / `max_masked_frac`,
+            neither `--video-preds-dir` nor the config's `video_preds_dir` is given, both
+            `--eids` and `--eid-group` are given, `--eid-group` is given without
+            `--eid-groups-json` or `paths.eid_groups_json`, or the group is unknown.
     """
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     args = parse_args(argv)
@@ -190,6 +219,21 @@ def main(argv: list[str] | None = None) -> None:
         raise FileNotFoundError(
             f'no _iblrig_<camera>Camera.downsampled.<eid>.csv found in {video_preds_dir}',
         )
+    selected_eids = resolve_session_eids(
+        args.config, args.eids, args.eid_group, args.eid_groups_json,
+    )
+    if selected_eids is None:
+        logger.info(f'no session selection: listing all {len(csvs)} csvs in {video_preds_dir}')
+    else:
+        eids_found = {eid for _, eid, _ in csvs}
+        eids_missing = [eid for eid in selected_eids if eid not in eids_found]
+        if eids_missing:
+            raise FileNotFoundError(
+                f'no _iblrig_<camera>Camera.downsampled.<eid>.csv in {video_preds_dir} for '
+                f'{len(eids_missing)} selected session(s): {eids_missing}',
+            )
+        csvs = [item for item in csvs if item[1] in selected_eids]
+        logger.info(f'selected {len(selected_eids)} session(s), {len(csvs)} csvs')
     for camera, eid, csv_path in csvs:
         info = build_keypoint_info(
             csv_path, camera, eid, likelihood_threshold, max_masked_frac,
