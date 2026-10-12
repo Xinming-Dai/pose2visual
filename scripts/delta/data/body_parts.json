@@ -45,10 +45,10 @@
   },
   "PCA_n_components": {
     "nonoverlapping_analysis_groups": {
-      "eye_related": 10,
-      "mouth_related": 8,
+      "eye_related": 5,
+      "mouth_related": 4,
       "nose_pad_related": 4,
-      "ear_related": 8,
+      "ear_related": 5,
       "digits": 10,
       "forelimb": 2
     }
