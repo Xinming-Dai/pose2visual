@@ -142,12 +142,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        '--pca',
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help='select the pca / no-pca run (default: `pca` of the config, false if absent)',
-    )
-    parser.add_argument(
         '--seed', type=int, default=None, help='only match runs of this seed (default: any)',
     )
     parser.add_argument(
@@ -183,7 +177,6 @@ def load_wanted_settings(
     config_path: str | Path,
     base_keypoints: list[str] | None = None,
     additional_keypoints: list[str] | None = None,
-    pca: bool | None = None,
     seed: int | None = None,
     anatomical_group: str | None = None,
     eid_group: str | None = None,
@@ -194,7 +187,6 @@ def load_wanted_settings(
         config_path: path of the yaml the encoding was run with.
         base_keypoints: replaces `base_keypoints` of the file when given.
         additional_keypoints: replaces `additional_keypoints` of the file when given.
-        pca: replaces `pca` of the file when given.
         seed: only runs of this seed match; `None` matches any seed.
         anatomical_group: replaces `anatomical_group` of the file when given.
         eid_group: replaces `session.eid_group` of the file when given.
@@ -202,8 +194,8 @@ def load_wanted_settings(
     Returns:
         Dict with `video_preds_dir`, `output_name`, `camera`, `base_keypoints`,
         `additional_keypoints` (group names when `anatomical_group` is a group set),
-        `anatomical_group` (default `all`), `pca`, `pca_group_set`, `seed` and `eids` (the sessions
-        of the eid group, `None` when there is no group).
+        `anatomical_group` (default `all`), `pca`, `pca_group_set`, `step_order`, `seed` and `eids`
+        (the sessions of the eid group, `None` when there is no group).
 
     Raises:
         ValueError: if the yaml is invalid (see `load_encoding_yaml`), a required key is
@@ -233,8 +225,9 @@ def load_wanted_settings(
             cfg.get('anatomical_group', _ANATOMICAL_GROUP_ALL)
             if anatomical_group is None else anatomical_group,
         ),
-        'pca': cfg.get('pca', False) if pca is None else pca,
+        'pca': cfg.get('pca', False),
         'pca_group_set': str(cfg.get('pca_group_set', _DEFAULT_PCA_GROUP_SET)),
+        'step_order': str(cfg.get('step_order', 'unknown')),
         'seed': seed,
         'eids': eids,
     }
@@ -515,7 +508,7 @@ def keypoint_text(
     base_keypoints: list[str],
     additional_keypoints: list[str],
     camera: str,
-    pca: bool,
+    step_order: str,
     n_sessions: int,
     stats: dict[tuple[str, str], dict[str, float]],
 ) -> str:
@@ -525,7 +518,7 @@ def keypoint_text(
         base_keypoints: base keypoint names, or group names in group mode.
         additional_keypoints: additional keypoint names, or group names in group mode.
         camera: camera of the keypoints.
-        pca: whether the keypoint positions were PCA-reprojected before the speed.
+        step_order: step pipeline name that encodes preprocessing (e.g., ensemble_median_01 with PCA).
         n_sessions: number of pooled sessions.
         stats: output of `collect_stats`.
 
@@ -541,7 +534,7 @@ def keypoint_text(
             width=_KEYPOINT_TEXT_WIDTH,
             subsequent_indent='    ',
         ))
-    lines.append(f'{camera} camera, pca {"on" if pca else "off"}, {n_sessions} sessions')
+    lines.append(f'{camera} camera, {step_order}, {n_sessions} sessions')
     lines.append(f'{n_neurons} neurons; mean ± SE over neurons')
     return '\n'.join(lines)
 
@@ -723,7 +716,6 @@ def main(argv: list[str] | None = None) -> None:
         args.config,
         base_keypoints=args.base_keypoints,
         additional_keypoints=args.additional_keypoints,
-        pca=args.pca,
         seed=args.seed,
         anatomical_group=args.anatomical_group,
         eid_group=args.eid_group,
@@ -759,7 +751,7 @@ def main(argv: list[str] | None = None) -> None:
         results[0].base_groups or results[0].base_keypoints,
         results[0].additional_groups or results[0].additional_keypoints,
         wanted['camera'],
-        wanted['pca'],
+        wanted['step_order'],
         len(results),
         stats,
     )
