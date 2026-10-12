@@ -31,8 +31,8 @@ when the last session of the group finishes.
 
 Usage::
 
-    PYTHONPATH=src python scripts/delta/analysis/plotting/plot_encoding_base_vs_additional.py \\
-      --config configs/encoding/litpose_encoding.yaml --no-pca --no-show
+    PYTHONPATH=src python scripts/delta/analysis/encoding_plotting/plot_encoding_base_vs_additional.py \\
+      --config configs/encoding/litpose_encoding.yaml --no-show
 
 Outputs ``<video_preds_dir>/<output_name>/plots/encoding_base_vs_additional_<...>/`` with
 ``encoding_barplot.png`` and ``encoding_barplot.json`` (numbers and provenance), unless ``-o`` is
