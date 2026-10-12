@@ -6,7 +6,7 @@
 #SBATCH --gpus-per-task=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=7G
-#SBATCH -t 0-4:59:00
+#SBATCH -t 0-2:59:00
 #SBATCH -J litpose
 #SBATCH -o /u/xdai3/project3d/pose2visual/pose2visual/scripts/delta/lightningpose/litpose_predict_ibl_%j.log
 #SBATCH --export=ALL
