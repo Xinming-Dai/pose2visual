@@ -9,12 +9,16 @@ csv reading, keypoint speed computation and trial binning shared by
 
 Directory layout under ``video_preds_dir`` (``<model_dir>/video_preds``)::
 
-    encoding/keypoint_names/<camera>_<eid>.json           step A, one per csv
-    <output_name>/<eid>/dynamic_vars.npz                  step B
-    <output_name>/<eid>/base/encoding_result.npz          step C, base fit, reused by variants
-    <output_name>/<eid>/<variant_name>/encoding_result.npz  step C, one per additional set (the
-        default name is the sorted additional keypoints joined by ``_``, plus a hash suffix when
-        that folder holds a run with other settings)
+    encoding/keypoint_names/<camera>_<eid>.json     step A, one per csv
+    <camera>_<output_name>/<eid>/dynamic_vars.npz   step B
+    <camera>_<output_name>/<eid>/base/encoding_result.npz
+        step C, base fit, reused by variants
+    <camera>_<output_name>/<eid>/<variant_name>/encoding_result.npz
+        step C, one per additional set (the default name is the sorted additional keypoints
+        joined by ``_``, plus a hash suffix when that folder holds a run with other settings)
+
+``<camera>_<output_name>`` is built by ``output_folder_name`` from the camera and the yaml's
+camera-free ``output.output_name``.
 """
 
 import json
@@ -26,10 +30,14 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from pose2visual.encoding.litpose_step_pipelines import resolve_step_pipeline
+from pose2visual.encoding.litpose_step_pipelines import (
+    load_step_pipelines,
+    resolve_step_pipeline,
+)
 
 CAMERAS = ('left', 'right')
 DEFAULT_PCA_GROUP_SET = 'nonoverlapping_analysis_groups'
+_PCA_STEP = '2d_pose_pca'
 # `anatomical_group` value meaning "base / additional lists hold explicit keypoint names"
 ANATOMICAL_GROUP_ALL = 'all'
 # nested yaml layout: section -> {key in the section: key of the flat dict `load_encoding_yaml`
@@ -46,7 +54,7 @@ ENCODING_YAML_SECTIONS = {
         'likelihood_threshold': 'likelihood_threshold',
         'max_masked_frac': 'max_masked_frac',
     },
-    'pca': {'enabled': 'pca', 'group_set': 'pca_group_set'},
+    'pca': {'group_set': 'pca_group_set'},
     'anatomical_group': {
         'name': 'anatomical_group',
         'base_keypoints': 'base_keypoints',
@@ -108,23 +116,39 @@ def keypoint_names_json_path(video_preds_dir: str | Path, camera: str, eid: str)
     return Path(video_preds_dir) / 'encoding' / 'keypoint_names' / f'{camera}_{eid}.json'
 
 
-def session_output_dir(video_preds_dir: str | Path, output_name: str, eid: str) -> Path:
+def output_folder_name(camera: str, output_name: str) -> str:
+    """Name of the folder under ``video_preds_dir`` that holds the results of one camera.
+
+    This is the one place that knows the rule: the yaml's camera-free `output.output_name` gets
+    the camera as prefix, so both cameras of a step B job get their own folder.
+
+    Args:
+        camera: `'left'` or `'right'`.
+        output_name: camera-free name from the yaml (`output.output_name`).
+
+    Returns:
+        `<camera>_<output_name>`, e.g. `left_encoding`.
+    """
+    return f'{camera}_{output_name}'
+
+
+def session_output_dir(video_preds_dir: str | Path, output_folder: str, eid: str) -> Path:
     """Directory holding the step B / step C outputs of one session.
 
     Args:
         video_preds_dir: directory holding the Lightning Pose prediction csvs.
-        output_name: user-chosen folder name.
+        output_folder: folder name, see `output_folder_name`.
         eid: session id.
 
     Returns:
-        `<video_preds_dir>/<output_name>/<eid>`.
+        `<video_preds_dir>/<output_folder>/<eid>`.
     """
-    return Path(video_preds_dir) / output_name / eid
+    return Path(video_preds_dir) / output_folder / eid
 
 
 def base_dir(
     video_preds_dir: str | Path,
-    output_name: str,
+    output_folder: str,
     eid: str,
     key_hash: str | None = None,
 ) -> Path:
@@ -132,21 +156,21 @@ def base_dir(
 
     Args:
         video_preds_dir: directory holding the Lightning Pose prediction csvs.
-        output_name: user-chosen folder name.
+        output_folder: folder name, see `output_folder_name`.
         eid: session id.
         key_hash: hash of the base cache key; each distinct base input (pca on / off, number of
             components, seed, ...) gets its own subfolder so one fit never replaces another.
 
     Returns:
-        `<video_preds_dir>/<output_name>/<eid>/base`, plus `/<key_hash>` when given.
+        `<video_preds_dir>/<output_folder>/<eid>/base`, plus `/<key_hash>` when given.
     """
-    root = session_output_dir(video_preds_dir, output_name, eid) / 'base'
+    root = session_output_dir(video_preds_dir, output_folder, eid) / 'base'
     return root if key_hash is None else root / key_hash
 
 
 def variant_dir(
     video_preds_dir: str | Path,
-    output_name: str,
+    output_folder: str,
     eid: str,
     variant_name: str,
 ) -> Path:
@@ -154,14 +178,14 @@ def variant_dir(
 
     Args:
         video_preds_dir: directory holding the Lightning Pose prediction csvs.
-        output_name: user-chosen folder name.
+        output_folder: folder name, see `output_folder_name`.
         eid: session id.
         variant_name: name of the additional-keypoints variant.
 
     Returns:
-        `<video_preds_dir>/<output_name>/<eid>/<variant_name>`.
+        `<video_preds_dir>/<output_folder>/<eid>/<variant_name>`.
     """
-    return session_output_dir(video_preds_dir, output_name, eid) / variant_name
+    return session_output_dir(video_preds_dir, output_folder, eid) / variant_name
 
 
 def validate_filter_settings(
@@ -209,14 +233,16 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
     Returns:
         Flat dict of the keys present: `step_order`, `eid`, `eid_group`, `camera`,
         `video_preds_dir`, `body_parts_json`, `eid_groups_json`, `output_name`, `variant_name`,
-        `likelihood_threshold`, `max_masked_frac`, `pca` (`pca.enabled`), `pca_group_set`
-        (`pca.group_set`), `anatomical_group` (`anatomical_group.name`), `base_keypoints` and
-        `additional_keypoints`.
+        `likelihood_threshold`, `max_masked_frac`, `pca_group_set` (`pca.group_set`),
+        `anatomical_group` (`anatomical_group.name`), `base_keypoints`, `additional_keypoints`
+        and `pca`. `pca` is not a yaml key: it is derived from `step_order` (True when the named
+        pipeline contains the `2d_pose_pca` step), so the two can never disagree.
 
     Raises:
         ValueError: if the yaml is not a mapping, a section is not a mapping, a key is unknown, a
-            key of the old flat layout is used (the error names its new place), or a removed
-            `pca_n_components*` key is present.
+            key of the old flat layout is used (the error names its new place), a removed
+            `pca.enabled` or `pca_n_components*` key is present, or `step_order` is missing or
+            not a known pipeline name (see `litpose_step_pipelines`).
     """
     with Path(config_path).open(encoding='utf-8') as f:
         raw = yaml.safe_load(f)
@@ -227,6 +253,12 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
         if key == 'step_order':
             cfg[key] = value
         elif key in ENCODING_YAML_SECTIONS and isinstance(value, dict):
+            if key == 'pca' and 'enabled' in value:
+                raise ValueError(
+                    f'{config_path}: pca.enabled was removed; delete it and set `step_order` '
+                    f'instead: PCA runs exactly when the pipeline contains the {_PCA_STEP!r} '
+                    'step (see litpose_step_pipelines.json)',
+                )
             unknown = sorted(str(k) for k in value if k not in ENCODING_YAML_SECTIONS[key])
             if unknown:
                 raise ValueError(
@@ -254,6 +286,16 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
             )
         else:
             raise ValueError(f'{config_path}: unknown top-level key {key!r}')
+    step_order = cfg.get('step_order')
+    if step_order is None:
+        raise ValueError(
+            f'{config_path}: step_order is required; available: '
+            f'{sorted(load_step_pipelines())}',
+        )
+    try:
+        cfg['pca'] = resolve_step_pipeline(str(step_order))['use_pca']
+    except ValueError as exc:
+        raise ValueError(f'{config_path}: {exc}') from exc
     return cfg
 
 
@@ -306,7 +348,8 @@ def nest_encoding_config(flat: dict[str, Any]) -> dict[str, Any]:
     """Inverse of `load_encoding_yaml`: arrange a flat settings dict into the nested yaml layout.
 
     Args:
-        flat: settings keyed as `load_encoding_yaml` returns them.
+        flat: settings keyed as `load_encoding_yaml` returns them, except `pca`: it is derived
+            from `step_order`, so pass the `step_order` you want instead.
 
     Returns:
         Dict that `yaml.safe_dump` writes as a valid encoding yaml; keys of `flat` that are
@@ -366,32 +409,48 @@ def load_video_preds_dir(config_path: str | Path) -> str | None:
     return None if value is None else str(value)
 
 
-def load_pca_settings(config_path: str | Path) -> dict[str, Any]:
-    """Read the PCA reprojection settings from the encoding yaml.
-
-    Step B applies them (see `litpose_pca`); step C only checks that its `pca` flag agrees with
-    the one step B stored in `dynamic_vars.npz`.
+def load_output_name(config_path: str | Path) -> str | None:
+    """Read the optional camera-free `output_name` from the encoding yaml.
 
     Args:
         config_path: path of the encoding yaml.
 
     Returns:
-        Dict with `enabled` (bool, `pca.enabled`, default `False`), `body_parts_json`
-        (`paths.body_parts_json` as written in the yaml, `None` when absent) and `group_set`
-        (`pca.group_set`, default `'nonoverlapping_analysis_groups'`).
+        The `output.output_name` value, or `None` if absent/null.
 
     Raises:
-        ValueError: if the yaml is invalid (see `load_encoding_yaml`), `pca.enabled` is not a
-            bool, or pca is enabled without `paths.body_parts_json`.
+        ValueError: if the yaml is not a mapping.
+    """
+    value = load_encoding_yaml(config_path).get('output_name')
+    return None if value is None else str(value)
+
+
+def load_pca_settings(config_path: str | Path) -> dict[str, Any]:
+    """Read the PCA reprojection settings from the encoding yaml.
+
+    Step B applies them (see `litpose_pca`); step C only checks that its `pca` flag agrees with
+    the one step B stored in `dynamic_vars.npz`. Whether PCA runs is not a setting of its own: it
+    follows from `step_order`, whose pipeline either contains the `2d_pose_pca` step or not.
+
+    Args:
+        config_path: path of the encoding yaml.
+
+    Returns:
+        Dict with `enabled` (bool, whether the `step_order` pipeline has the `2d_pose_pca`
+        step), `body_parts_json` (`paths.body_parts_json` as written in the yaml, `None` when
+        absent) and `group_set` (`pca.group_set`, default `'nonoverlapping_analysis_groups'`).
+
+    Raises:
+        ValueError: if the yaml is invalid (see `load_encoding_yaml`), or the `step_order`
+            pipeline has PCA but `paths.body_parts_json` is missing.
     """
     cfg = load_encoding_yaml(config_path)
-    enabled = cfg.get('pca', False)
-    if not isinstance(enabled, bool):
-        raise ValueError(f'{config_path}: pca.enabled must be true or false, got {enabled!r}')
+    enabled = cfg['pca']
     body_parts_json = cfg.get('body_parts_json')
     if enabled and body_parts_json is None:
         raise ValueError(
-            f'{config_path}: pca.enabled is true but paths.body_parts_json is missing',
+            f'{config_path}: step_order {cfg["step_order"]!r} includes {_PCA_STEP} but '
+            'paths.body_parts_json is missing',
         )
     return {
         'enabled': enabled,
@@ -438,32 +497,26 @@ def expand_groups(
     return [kp for kp in available if kp in selected]
 
 
-def load_step_order(config_path: str | Path) -> str | None:
-    """Read the optional `step_order` pipeline name from the encoding yaml.
+def load_step_order(config_path: str | Path) -> str:
+    """Read the required `step_order` pipeline name from the encoding yaml.
 
     This is the single source of `step_order` for the whole pipeline, the same way
     `load_filter_settings` is for `likelihood_threshold` / `max_masked_frac`: step B reads it
-    here (for provenance only, in `params.json`) instead of taking its own separate flag, so it
-    can never drift from what step C's `run_litpose_encoding.load_config` sees.
+    here instead of taking its own separate flag, so it can never drift from what step C's
+    `run_litpose_encoding.load_config` sees. It also decides whether PCA runs (see
+    `load_pca_settings`).
 
     Args:
         config_path: path of the encoding yaml.
 
     Returns:
-        The `step_order` value, or `None` if absent/null.
+        The `step_order` value.
 
     Raises:
-        ValueError: if the yaml is not a mapping, or `step_order` is not a known pipeline name
-            (see `litpose_step_pipelines`).
+        ValueError: if the yaml is invalid (see `load_encoding_yaml`), or `step_order` is
+            missing or not a known pipeline name (see `litpose_step_pipelines`).
     """
-    cfg = load_encoding_yaml(config_path)
-    step_order = cfg.get('step_order')
-    if step_order is not None:
-        try:
-            resolve_step_pipeline(step_order)
-        except ValueError as exc:
-            raise ValueError(f'{config_path}: {exc}') from exc
-    return step_order
+    return str(load_encoding_yaml(config_path)['step_order'])
 
 
 def check_filter_settings_match(

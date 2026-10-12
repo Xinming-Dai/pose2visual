@@ -1,7 +1,7 @@
 """Step C: neural encoding from Lightning Pose keypoints, base vs base + additional keypoints.
 
 Reads the yaml config (see ``configs/encoding/litpose_encoding.yaml``) and
-``<video_preds_dir>/<output_name>/<eid>/dynamic_vars.npz`` from
+``<video_preds_dir>/<camera>_<output_name>/<eid>/dynamic_vars.npz`` from
 ``extract_litpose_dynamic_vars_trials``, then fits RRR and CNN encoders (Ray Tune, as in
 ``run_encoding``) on two input sets; the train/val/test split is the one already stored in
 ``<eid>_aligned.npz``, so it is identical for both:
@@ -22,12 +22,12 @@ what ``encoding_params.json`` / ``encoding_result.npz`` store as ``base_keypoint
 ``additional_keypoints``; the group names are stored as ``base_groups`` / ``additional_groups``.
 
 Before fitting, the features of each condition are checked to be finite (step B already
-interpolates over masked frames, so there is nothing to impute). PCA is not done here: with
-``pca.enabled: true`` step B already reprojected the x/y of each body-part group onto its top
+interpolates over masked frames, so there is nothing to impute). PCA is not done here: when the yaml's
+``step_order`` pipeline contains ``2d_pose_pca``, step B already reprojected the x/y of each body-part group onto its top
 principal components before taking the speed (see ``litpose_pca``; the number of components of
 each group is ``PCA_n_components`` in the ``paths.body_parts_json`` of the yaml), and the features
-keep their keypoint names. This step only checks that the yaml's ``pca.enabled`` equals the flag stored in
-``dynamic_vars.npz`` and records the group set and the effective number of components of step B's
+keep their keypoint names. This step only checks that the PCA flag the yaml's ``step_order`` implies
+equals the one stored in ``dynamic_vars.npz`` and records the group set and the effective number of components of step B's
 ``params.json``; they enter the run signature and the base cache key, so a pca and a no-pca run
 (or other component counts) never replace each other.
 
@@ -46,7 +46,7 @@ a run with other settings: if ``<variant_name>/`` already holds an ``encoding_re
 ``run_signature`` (camera, base / additional keypoints, pca settings, seed) differs from this
 run's, or that predates ``run_signature``, the run goes to ``<variant_name>_<hash8>/`` instead.
 Re-running identical settings overwrites its own folder. The chosen folder and the reason are
-logged. A base fit is never replaced by a run with other inputs (e.g. ``pca.enabled: false``), it gets
+logged. A base fit is never replaced by a run with other inputs (e.g. a ``step_order`` without ``2d_pose_pca``), it gets
 its own ``base/<hash8>/``; only ``--rerun_base`` refits one in place. Every variant result also keeps its
 own copy of the base metrics. A flat ``<eid>/base/encoding_result.npz`` from an earlier version
 is left untouched and no longer read.
@@ -79,12 +79,12 @@ from pose2visual.encoding.litpose_keypoints import (
     expand_groups,
     keypoint_names_json_path,
     load_encoding_yaml,
+    output_folder_name,
     session_output_dir,
     validate_filter_settings,
     variant_dir,
 )
 from pose2visual.encoding.litpose_preprocess import check_finite
-from pose2visual.encoding.litpose_step_pipelines import resolve_step_pipeline
 from pose2visual.encoding.run_encoding import (
     _flatten_views,
     _maybe_assert_latent_intervals_match_neural,
@@ -214,14 +214,14 @@ def run_signature(
 
 def read_pca_record(
     video_preds_dir: str | Path,
-    output_name: str,
+    output_folder: str,
     eid: str,
 ) -> dict[str, Any] | None:
     """Read the PCA settings that step B stored next to `dynamic_vars.npz`.
 
     Args:
         video_preds_dir: directory holding the Lightning Pose prediction csvs.
-        output_name: user-chosen folder name.
+        output_folder: folder name, see `output_folder_name`.
         eid: session id.
 
     Returns:
@@ -229,7 +229,7 @@ def read_pca_record(
         moved to step B) or pca was off; otherwise a dict with `group_set` and `n_components`
         (group name -> effective number of components, `0` for a skipped group).
     """
-    params_path = session_output_dir(video_preds_dir, output_name, eid) / 'params.json'
+    params_path = session_output_dir(video_preds_dir, output_folder, eid) / 'params.json'
     if not params_path.is_file():
         return None
     with params_path.open(encoding='utf-8') as f:
@@ -246,7 +246,7 @@ def read_pca_record(
 
 def resolve_variant_dir(
     video_preds_dir: str | Path,
-    output_name: str,
+    output_folder: str,
     eid: str,
     variant_name: str,
     signature: dict[str, Any],
@@ -260,7 +260,7 @@ def resolve_variant_dir(
 
     Args:
         video_preds_dir: directory holding the Lightning Pose prediction csvs.
-        output_name: user-chosen folder name.
+        output_folder: folder name, see `output_folder_name`.
         eid: session id.
         variant_name: wanted folder name (derived or set in the config).
         signature: `run_signature` of this run.
@@ -268,7 +268,7 @@ def resolve_variant_dir(
     Returns:
         Tuple `(directory, reason)` with a short text for the log.
     """
-    plain = variant_dir(video_preds_dir, output_name, eid, variant_name)
+    plain = variant_dir(video_preds_dir, output_folder, eid, variant_name)
     if not (plain / 'encoding_result.npz').is_file():
         return plain, 'new folder'
     previous = None
@@ -283,7 +283,7 @@ def resolve_variant_dir(
         return plain, 'same settings as the existing result, which is overwritten'
     suffixed = f'{variant_name}_{_short_hash(json.dumps(signature, sort_keys=True))}'
     return (
-        variant_dir(video_preds_dir, output_name, eid, suffixed),
+        variant_dir(video_preds_dir, output_folder, eid, suffixed),
         f'{variant_name!r} already holds a result with other settings, kept untouched',
     )
 
@@ -304,13 +304,12 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
         `anatomical_group` as str (default `all`: the lists hold keypoint names; otherwise a
         group-set key of `body_parts_json`),
         `variant_name` as str (the sorted additional keypoints joined by `_` when the file has
-        none or null), `likelihood_threshold` / `max_masked_frac` as floats (shared by all steps;
-        step A and B must have used the same values), `pca` as bool (default `False`; step B
-        applies it, step C checks it), `pca_group_set` as str, and `step_order` as
-        str or `None` (default) — a name from `litpose_step_pipelines.json`, purely
-        documentation/validation: it does not change what this config computes, it only checks
-        that `pca` agrees with the named pipeline's `2d_pose_pca` step. The actual keypoint
-        source is still `video_preds_dir`.
+        none or null), `output_folder` as str (`<camera>_<output_name>`, the folder under
+        `video_preds_dir`), `likelihood_threshold` / `max_masked_frac` as floats (shared by all
+        steps; step A and B must have used the same values), `step_order` as str (required; a name from
+        `litpose_step_pipelines.json`), `pca` as bool (derived from `step_order`: whether the
+        pipeline has the `2d_pose_pca` step; step B applies it, step C checks it) and
+        `pca_group_set` as str. The actual keypoint source is still `video_preds_dir`.
 
     Raises:
         ValueError: if the yaml is invalid (see `load_encoding_yaml`: not nested, unknown key,
@@ -318,8 +317,8 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
             `filter.likelihood_threshold` / `filter.max_masked_frac` is not a number in `[0, 1]`, the camera is unknown, a
             given `output.variant_name` is not a plain folder name (or is `base`), a keypoint list
             is empty, `anatomical_group.name` is a group set but `paths.body_parts_json` is
-            missing or does not hold it, a listed name is not a group of it, `pca.enabled` is not
-            a bool, or `step_order` is an unknown pipeline name or disagrees with `pca.enabled`.
+            missing or does not hold it, a listed name is not a group of it, `pca.enabled` is still
+            in the yaml (removed), or `step_order` is missing or an unknown pipeline name.
     """
     cfg = load_encoding_yaml(path)
     if eid is not None:
@@ -336,6 +335,7 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
         raise ValueError(
             f'{path}: session.camera must be one of {CAMERAS}, got {cfg["camera"]!r}',
         )
+    cfg['output_folder'] = output_folder_name(cfg['camera'], str(cfg['output_name']))
     for key in ('base_keypoints', 'additional_keypoints'):
         if not isinstance(cfg[key], list) or not cfg[key]:
             raise ValueError(
@@ -357,9 +357,6 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
                 f'{_BASE_RESERVED_NAME!r}, got {variant_name!r}',
             )
         cfg['variant_name'] = variant_name
-    cfg['pca'] = cfg.get('pca', False)
-    if not isinstance(cfg['pca'], bool):
-        raise ValueError(f'{path}: pca.enabled must be true or false, got {cfg["pca"]!r}')
     cfg['pca_group_set'] = str(cfg.get('pca_group_set', DEFAULT_PCA_GROUP_SET))
     cfg['anatomical_group'] = str(cfg.get('anatomical_group', ANATOMICAL_GROUP_ALL))
     if cfg['anatomical_group'] != ANATOMICAL_GROUP_ALL:
@@ -377,17 +374,6 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
                     f'{cfg["anatomical_group"]!r}; '
                     f'groups: {sorted(groups)}',
                 )
-    cfg['step_order'] = cfg.get('step_order')
-    if cfg['step_order'] is not None:
-        try:
-            pipeline = resolve_step_pipeline(cfg['step_order'])
-        except ValueError as exc:
-            raise ValueError(f'{path}: {exc}') from exc
-        if cfg['pca'] != pipeline['use_pca']:
-            raise ValueError(
-                f'{path}: step_order {cfg["step_order"]!r} implies pca={pipeline["use_pca"]} '
-                f'({pipeline["steps"]}) but pca.enabled: {cfg["pca"]!r}',
-            )
     return cfg
 
 
@@ -641,7 +627,7 @@ def base_cache_key(
         neural_data_dict: loaded `<eid>_aligned.npz`.
         pca_info: `read_pca_record` of step B, `None` when pca is off; the `pca` entry is only
             added when pca is on, so a cache from before pca existed is still reused by
-            `pca.enabled: false`.
+            runs without pca.
 
     Returns:
         Json-serializable dict, compared with `==` against the cached `base_key.json`.
@@ -742,10 +728,10 @@ def main(argv: list[str] | None = None) -> None:
     setup_logging()
     args = parse_args(argv)
     cfg = load_config(args.config, eid=args.eid)
-    pca_record = read_pca_record(cfg['video_preds_dir'], cfg['output_name'], cfg['eid'])
+    pca_record = read_pca_record(cfg['video_preds_dir'], cfg['output_folder'], cfg['eid'])
     out_dir, out_reason = resolve_variant_dir(
         cfg['video_preds_dir'],
-        cfg['output_name'],
+        cfg['output_folder'],
         cfg['eid'],
         cfg['variant_name'],
         run_signature(cfg, args.seed, pca_record),
@@ -783,7 +769,7 @@ def _run(
     Args:
         args: parsed command-line arguments.
         cfg: validated config from `load_config`.
-        out_dir: `<video_preds_dir>/<output_name>/<eid>/<variant_name>`.
+        out_dir: `<video_preds_dir>/<camera>_<output_name>/<eid>/<variant_name>`.
         pca_record: `read_pca_record` of step B, `None` when pca is off.
 
     Raises:
@@ -795,7 +781,7 @@ def _run(
     eid = cfg['eid']
     video_preds_dir = Path(cfg['video_preds_dir'])
     dynamic_vars_path = (
-        session_output_dir(video_preds_dir, cfg['output_name'], eid) / 'dynamic_vars.npz'
+        session_output_dir(video_preds_dir, cfg['output_folder'], eid) / 'dynamic_vars.npz'
     )
     if not dynamic_vars_path.is_file():
         raise FileNotFoundError(
@@ -819,8 +805,8 @@ def _run(
     step_b_pca = bool(latent_data_dict['pca']) if 'pca' in latent_data_dict.files else False
     if step_b_pca != cfg['pca']:
         raise ValueError(
-            f'config pca.enabled: {cfg["pca"]} but {dynamic_vars_path} was built with '
-            f'pca: {step_b_pca}; '
+            f'config step_order {cfg["step_order"]!r} implies pca: {cfg["pca"]} but '
+            f'{dynamic_vars_path} was built with pca: {step_b_pca}; '
             'rerun extract_litpose_dynamic_vars_trials (step 1) with this config, or use the '
             'output_name of the matching run',
         )
@@ -897,7 +883,7 @@ def _run(
     )
     # one folder per distinct base input, so a pca / no-pca run never replaces the other's fit
     base_directory = base_dir(
-        video_preds_dir, cfg['output_name'], eid, _short_hash(json.dumps(key, sort_keys=True)),
+        video_preds_dir, cfg['output_folder'], eid, _short_hash(json.dumps(key, sort_keys=True)),
     )
     params['base_dir'] = str(base_directory)
     logger.info(f'condition base: {len(base)} keypoints')

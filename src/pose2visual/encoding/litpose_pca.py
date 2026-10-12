@@ -1,7 +1,7 @@
 """PCA reprojection of Lightning Pose keypoint positions, one fit per body-part group.
 
-Used by step B (``extract_litpose_dynamic_vars_trials``) when the encoding yaml has
-``pca.enabled: true``.
+Used by step B (``extract_litpose_dynamic_vars_trials``) when the encoding yaml's
+``step_order`` pipeline contains the ``2d_pose_pca`` step.
 After the low-likelihood frames are masked and interpolated, the x/y positions of all usable
 keypoints of a body-part group (a group of a ``body_parts.json``-style file, e.g.
 ``eye_related``) are stacked into a ``[n_frames, 2 * n_keypoints]`` matrix, projected onto its top

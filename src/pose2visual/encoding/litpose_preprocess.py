@@ -1,7 +1,7 @@
 """Checks on the Lightning Pose keypoint speed features before the encoders.
 
 ``dynamic_vars.npz`` (``extract_litpose_dynamic_vars_trials``) already masks NaN and
-low-likelihood frames, interpolates over them and, with ``pca: true``, reprojects the keypoint
+low-likelihood frames, interpolates over them and, with a ``step_order`` that has ``2d_pose_pca``, reprojects the keypoint
 positions of each body-part group onto its top principal components (``litpose_pca``), so the
 binned features are finite and nothing is imputed or rotated here; this module only verifies
 that (`check_finite`).

@@ -17,13 +17,13 @@ produced by a separate, already-existing tool
 (``skills/pose-video/plot_comparison.py --save-ensemble-median`` for ``ensemble_median``,
 ``pose2visual.lightningpose.export_eks_csv --standard-naming`` for ``eks_mean``) and consumed by
 pointing ``video_preds_dir`` at its output folder, exactly as for the plain single-seed case —
-this module does not resolve or build that csv itself. ``2d_pose_pca`` (optional) and
-``encoding`` map directly onto the ``pca.enabled`` flag of the config and the RRR/CNN fit of
-``run_litpose_encoding``.
+this module does not resolve or build that csv itself. ``2d_pose_pca`` (optional) decides whether the
+config applies PCA (there is no separate ``pca.enabled`` yaml key) and ``encoding`` maps onto the
+RRR/CNN fit of ``run_litpose_encoding``.
 
 ``resolve_step_pipeline`` is this module's only real entry point: it looks up a name and derives
 the two flags that actually drive behavior (``combine_method``, for provenance/logging, and
-``use_pca``, cross-checked against ``run_litpose_encoding.load_config``'s ``pca.enabled``)
+``use_pca``, which ``litpose_keypoints.load_encoding_yaml`` turns into the config's ``pca`` flag)
 rather than interpreting the list as a generic, arbitrarily-ordered step sequence — there is nothing else
 for a step to vary within this fixed shape.
 
@@ -39,8 +39,8 @@ Adding a new named pipeline:
    ``_COMBINE_METHODS`` below, and write the new combination tool under
    ``src/pose2visual/lightningpose/`` (next to ``ensemble_median.py`` / ``fit_eks_latent_model.py``
    / ``export_eks_csv.py``), producing a ``video_preds_dir``-compatible standard-named csv.
-4. Point a ``litpose_encoding.yaml``'s ``step_order:`` at the new name (and set ``pca.enabled``
-   to match); ``run_litpose_encoding.load_config`` validates the pair automatically.
+4. Point a ``litpose_encoding.yaml``'s ``step_order:`` at the new name; PCA then
+   follows from whether its steps include ``2d_pose_pca``.
 5. Add a case to ``tests/encoding/test_litpose_step_pipelines.py``.
 """
 

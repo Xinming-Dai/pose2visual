@@ -1,6 +1,6 @@
 # config for pose2visual.encoding.run_litpose_encoding.
 
-# name of an entry in src/pose2visual/encoding/litpose_step_pipelines.json
+# required; name of an entry in src/pose2visual/encoding/litpose_step_pipelines.json
 step_order: ensemble_median_01
 
 session:
@@ -20,10 +20,11 @@ paths:
   # neural_sessions -> group name -> eids
   eid_groups_json: scripts/delta/data/ibl_session_ids.json
 
-# dynamic_vars.npz and the results live in <video_preds_dir>/<output_name>/<eid>/<variant_name>/
+# dynamic_vars.npz and the results live in
+# <video_preds_dir>/<camera>_<output_name>/<eid>/<variant_name>/
 output:
-  # put the camera in the name, e.g. left_encoding
-  output_name: left_encoding
+  # without the camera: step 1 runs both cameras, each writes into its own <camera>_ folder
+  output_name: encoding
   # null = the sorted additional_keypoints joined by "_"
   variant_name: null
 
@@ -32,9 +33,8 @@ filter:
   likelihood_threshold: 0.7
   max_masked_frac: 0.3
 
-# PCA reprojection, done in step 1
+# PCA reprojection, done in step 1. On/off comes from step_order; this is only the group set
 pca:
-  enabled: true
   group_set: nonoverlapping_analysis_groups
 
 anatomical_group:

@@ -3,7 +3,7 @@
 #SBATCH -p cpu
 #SBATCH -c 1
 #SBATCH --mem 10G
-#SBATCH -t 0-00:59:00
+#SBATCH -t 0-00:19:00
 #SBATCH -J litpose_dynamic_vars
 #SBATCH -o /u/xdai3/project3d/pose2visual/pose2visual/scripts/delta/lightningpose_encoding/step1_extract_dynamic_vars_trials_%j.log
 #SBATCH --export=ALL
@@ -15,7 +15,6 @@ conda activate beast
 REPO="/u/xdai3/project3d/pose2visual/pose2visual"
 cd "$REPO"
 
-# Builds <video_preds_dir>/<camera>_$OUTPUT_NAME_SUFFIX/<eid>/dynamic_vars.npz 
 # Examples:
 #   sbatch --export=ALL,EIDS="<eid1> <eid2>",CAMERAS=left scripts/delta/lightningpose_encoding/step1_extract_dynamic_vars_trials.sh
 #   sbatch --export=ALL,EID_GROUP=sable scripts/delta/lightningpose_encoding/step1_extract_dynamic_vars_trials.sh
@@ -23,7 +22,6 @@ cd "$REPO"
 
 NEURAL_INPUT_DIR="${NEURAL_INPUT_DIR:-/work/hdd/bfsr/xdai3/IBL_data/synchronized/extracted_frames/neural_data}"
 VIDEO_TIMESTAMPS_DIR="${VIDEO_TIMESTAMPS_DIR:-/work/hdd/bfsr/xdai3/IBL-2view/timestamps}"
-OUTPUT_NAME_SUFFIX="${OUTPUT_NAME_SUFFIX:-encoding}"
 CONFIG="${CONFIG:-$REPO/configs/encoding/litpose_encoding.yaml}"
 
 if [ -n "${EIDS:-}" ] && [ -n "${EID_GROUP:-}" ]; then
@@ -50,19 +48,25 @@ fi
 echo "[$(date +'%Y-%m-%d %H:%M:%S')] Extracting litpose keypoint dynamic vars"
 echo "VIDEO_PREDS_DIR=${VIDEO_PREDS_DIR:-from CONFIG}"
 echo "CONFIG=$CONFIG"
-echo "PCA (from CONFIG): $(grep -A2 -E '^pca:' "$CONFIG" || echo 'pca: not set (false)')"
+echo "step_order (decides PCA, from CONFIG): $(grep -E '^step_order:' "$CONFIG" || echo 'step_order: not set (step 1 will fail)')"
+echo "pca group set (from CONFIG): $(grep -E '^ +group_set:' "$CONFIG" || echo 'group_set: default')"
 echo "SESSION_ARGS: ${SESSION_ARGS[*]:-none, using session.eid_group of CONFIG}"
 echo "CAMERAS: ${CAMERA_LIST[*]}"
+echo "output folders: <camera>_${OUTPUT_NAME:-$(grep -E '^ +output_name:' "$CONFIG" | awk '{print $2}')}"
 
 DIR_ARGS=()
 if [ -n "${VIDEO_PREDS_DIR:-}" ]; then
     DIR_ARGS+=(--video-preds-dir "$VIDEO_PREDS_DIR")
 fi
+NAME_ARGS=()
+if [ -n "${OUTPUT_NAME:-}" ]; then
+    NAME_ARGS+=(--output-name "$OUTPUT_NAME")
+fi
 
 PYTHONPATH="${REPO}/src:${PYTHONPATH:-}" python -u -m pose2visual.encoding.extract_litpose_dynamic_vars_trials \
     "${SESSION_ARGS[@]}" \
     --cameras "${CAMERA_LIST[@]}" \
-    --output-name "{camera}_${OUTPUT_NAME_SUFFIX}" \
+    "${NAME_ARGS[@]}" \
     --neural-input-dir "$NEURAL_INPUT_DIR" \
     --video-timestamps-dir "$VIDEO_TIMESTAMPS_DIR" \
     --config "$CONFIG" \
@@ -76,4 +80,4 @@ if [ "$STATUS" -ne 0 ]; then
     exit "$STATUS"
 fi
 
-echo "[$(date +'%Y-%m-%d %H:%M:%S')] Job done -> <video_preds_dir>/<camera>_$OUTPUT_NAME_SUFFIX/<eid>/dynamic_vars.npz"
+echo "[$(date +'%Y-%m-%d %H:%M:%S')] Job done -> <video_preds_dir>/<camera>_<output_name>/<eid>/dynamic_vars.npz"

@@ -14,8 +14,8 @@ differ between sessions, they are listed per session in the json next to the fig
 
 Result layout (see ``pose2visual.encoding.litpose_keypoints``)::
 
-    <video_preds_dir>/<output_name>/<eid>/<variant>/encoding_result.npz
-    <video_preds_dir>/<output_name>/<eid>/<variant>/encoding_params.json
+    <video_preds_dir>/<camera>_<output_name>/<eid>/<variant>/encoding_result.npz
+    <video_preds_dir>/<camera>_<output_name>/<eid>/<variant>/encoding_params.json
 
 A session can hold several variants (e.g. a pca and a no-pca run of the same keypoints), and
 folder names carry hash suffixes, so the variant is chosen by its ``run_signature`` in
@@ -34,7 +34,7 @@ Usage::
     PYTHONPATH=src python scripts/delta/analysis/encoding_plotting/plot_encoding_base_vs_additional.py \\
       --config configs/encoding/litpose_encoding.yaml --no-show
 
-Outputs ``<video_preds_dir>/<output_name>/plots/encoding_base_vs_additional_<...>/`` with
+Outputs ``<video_preds_dir>/<camera>_<output_name>/plots/encoding_base_vs_additional_<...>/`` with
 ``encoding_barplot.png`` and ``encoding_barplot.json`` (numbers and provenance), unless ``-o`` is
 given.
 """
@@ -53,6 +53,7 @@ import numpy as np
 from pose2visual.encoding.litpose_keypoints import (
     ENCODING_YAML_NESTED_NAMES,
     load_encoding_yaml,
+    output_folder_name,
     resolve_group_eids,
     session_output_dir,
 )
@@ -74,7 +75,7 @@ _REQUIRED_CONFIG_KEYS = (
 _DEFAULT_PCA_GROUP_SET = 'nonoverlapping_analysis_groups'
 # `anatomical_group` value meaning "the keypoint lists hold keypoint names"
 _ANATOMICAL_GROUP_ALL = 'all'
-# folder of `output_name` that holds the plots, never a session
+# folder of `output_folder` that holds the plots, never a session
 _PLOTS_DIRNAME = 'plots'
 _KEYPOINT_TEXT_WIDTH = 46
 
@@ -192,7 +193,8 @@ def load_wanted_settings(
         eid_group: replaces `session.eid_group` of the file when given.
 
     Returns:
-        Dict with `video_preds_dir`, `output_name`, `camera`, `base_keypoints`,
+        Dict with `video_preds_dir`, `output_name`, `output_folder` (`<camera>_<output_name>`),
+        `camera`, `base_keypoints`,
         `additional_keypoints` (group names when `anatomical_group` is a group set),
         `anatomical_group` (default `all`), `pca`, `pca_group_set`, `step_order`, `seed` and `eids`
         (the sessions of the eid group, `None` when there is no group).
@@ -216,6 +218,7 @@ def load_wanted_settings(
     wanted: dict[str, Any] = {
         'video_preds_dir': str(cfg['video_preds_dir']),
         'output_name': str(cfg['output_name']),
+        'output_folder': output_folder_name(str(cfg['camera']), str(cfg['output_name'])),
         'camera': str(cfg['camera']),
         'base_keypoints': [str(name) for name in (base_keypoints or cfg['base_keypoints'])],
         'additional_keypoints': [
@@ -264,7 +267,7 @@ def find_variant_dir(session_dir: Path, wanted: dict[str, Any]) -> Path:
     """Find the finished variant folder of one session that matches the wanted run.
 
     Args:
-        session_dir: `<video_preds_dir>/<output_name>/<eid>`.
+        session_dir: `<video_preds_dir>/<camera>_<output_name>/<eid>`.
         wanted: output of `load_wanted_settings`.
 
     Returns:
@@ -299,7 +302,7 @@ def find_variant_dir(session_dir: Path, wanted: dict[str, Any]) -> Path:
 
 def unfinished_eids(
     video_preds_dir: str | Path,
-    output_name: str,
+    output_folder: str,
     eids: list[str],
     wanted: dict[str, Any],
 ) -> list[str]:
@@ -307,7 +310,7 @@ def unfinished_eids(
 
     Args:
         video_preds_dir: directory holding the Lightning Pose prediction csvs.
-        output_name: user-chosen folder name.
+        output_folder: folder name, see `output_folder_name`.
         eids: sessions to check.
         wanted: output of `load_wanted_settings`.
 
@@ -320,7 +323,7 @@ def unfinished_eids(
     unfinished = []
     for eid in eids:
         try:
-            find_variant_dir(session_output_dir(video_preds_dir, output_name, eid), wanted)
+            find_variant_dir(session_output_dir(video_preds_dir, output_folder, eid), wanted)
         except FileNotFoundError:
             unfinished.append(eid)
     return unfinished
@@ -363,10 +366,10 @@ def load_session_result(eid: str, variant_path: Path) -> SessionResult:
 
 
 def list_session_eids(output_root: Path) -> list[str]:
-    """List the sessions of an `output_name` folder.
+    """List the sessions of an output folder.
 
     Args:
-        output_root: `<video_preds_dir>/<output_name>`.
+        output_root: `<video_preds_dir>/<camera>_<output_name>`.
 
     Returns:
         Sorted names of the subfolders holding a `dynamic_vars.npz` (step B output).
@@ -380,7 +383,7 @@ def list_session_eids(output_root: Path) -> list[str]:
 
 def load_all_sessions(
     video_preds_dir: str | Path,
-    output_name: str,
+    output_folder: str,
     eids: list[str],
     wanted: dict[str, Any],
 ) -> list[SessionResult]:
@@ -388,7 +391,7 @@ def load_all_sessions(
 
     Args:
         video_preds_dir: directory holding the Lightning Pose prediction csvs.
-        output_name: user-chosen folder name.
+        output_folder: folder name, see `output_folder_name`.
         eids: sessions to load.
         wanted: output of `load_wanted_settings`.
 
@@ -403,7 +406,7 @@ def load_all_sessions(
     results = []
     missing = {}
     for eid in eids:
-        session_dir = session_output_dir(video_preds_dir, output_name, eid)
+        session_dir = session_output_dir(video_preds_dir, output_folder, eid)
         try:
             variant_path = find_variant_dir(session_dir, wanted)
         except FileNotFoundError as err:
@@ -640,13 +643,13 @@ def plot_encoding_bars(
 
 
 def default_output_path(wanted: dict[str, Any]) -> Path:
-    """Default png path under the `output_name` folder of the results.
+    """Default png path under the `output_folder` of the results.
 
     Args:
         wanted: output of `load_wanted_settings`.
 
     Returns:
-        `<video_preds_dir>/<output_name>/plots/encoding_base_vs_additional_<additional>_<pca>/
+        `<video_preds_dir>/<output_folder>/plots/encoding_base_vs_additional_<additional>_<pca>/
         encoding_barplot.png`; `<additional>` is prefixed by the group set in group mode, so the
         same group names of two group sets do not share a folder.
     """
@@ -656,7 +659,7 @@ def default_output_path(wanted: dict[str, Any]) -> Path:
     pca = 'pca' if wanted['pca'] else 'nopca'
     return (
         Path(wanted['video_preds_dir'])
-        / wanted['output_name']
+        / wanted['output_folder']
         / _PLOTS_DIRNAME
         / f'encoding_base_vs_additional_{additional}_{pca}'
         / 'encoding_barplot.png'
@@ -720,7 +723,7 @@ def main(argv: list[str] | None = None) -> None:
         anatomical_group=args.anatomical_group,
         eid_group=args.eid_group,
     )
-    output_root = Path(wanted['video_preds_dir']) / wanted['output_name']
+    output_root = Path(wanted['video_preds_dir']) / wanted['output_folder']
     if args.eids is not None:
         eids = args.eids
     elif wanted['eids'] is not None:
@@ -729,7 +732,7 @@ def main(argv: list[str] | None = None) -> None:
         eids = list_session_eids(output_root)
     if args.only_if_complete:
         unfinished = unfinished_eids(
-            wanted['video_preds_dir'], wanted['output_name'], eids, wanted,
+            wanted['video_preds_dir'], wanted['output_folder'], eids, wanted,
         )
         if unfinished:
             logger.info(
@@ -737,7 +740,7 @@ def main(argv: list[str] | None = None) -> None:
                 f'matching result yet: {unfinished}',
             )
             return
-    results = load_all_sessions(wanted['video_preds_dir'], wanted['output_name'], eids, wanted)
+    results = load_all_sessions(wanted['video_preds_dir'], wanted['output_folder'], eids, wanted)
     stats = collect_stats(results)
     for (cond, model), entry in stats.items():
         logger.info(

@@ -12,21 +12,23 @@ binsize, end, n_bins)``), so the output has the same contract as ``dynamic_vars_
 
 Each keypoint goes through likelihood filtering (frames below ``filter.likelihood_threshold`` or
 with NaN x/y are masked), linear interpolation over the masked frames, optionally a PCA
-reprojection of the x/y of each body-part group (``pca.enabled: true`` in the yaml, see
-``litpose_pca``; the group counts come from ``PCA_n_components`` in the yaml's
+reprojection of the x/y of each body-part group (when the yaml's ``step_order`` pipeline contains
+``2d_pose_pca``, see ``litpose_step_pipelines`` and ``litpose_pca``; the group counts come from ``PCA_n_components`` in the yaml's
 ``paths.body_parts_json``), then speed extraction and binning. The speed is taken in the original
 pixel space on the reprojected positions, so the variables keep their keypoint names.
 ``filter.likelihood_threshold``, ``filter.max_masked_frac`` and the PCA settings come from
-``--config`` (the nested encoding yaml, shared by all steps); the ``pca`` flag is stored in ``dynamic_vars.npz`` for step C to check. Reads
+``--config`` (the nested encoding yaml, shared by all steps). ``step_order`` is required there and
+also decides whether PCA runs, so a missing or unknown ``step_order`` fails before any session is
+processed; the ``pca`` flag is stored in ``dynamic_vars.npz`` for step C to check. Reads
 ``<video-preds-dir>/encoding/keypoint_names/<camera>_<eid>.json`` (step A) to decide which
 keypoints are usable, and fails if that json was written with other settings than the yaml (rerun
 step A). Writes
-``<video-preds-dir>/<output-name>/<eid>/dynamic_vars.npz`` and
-``params.json`` (which records the Lightning Pose checkpoint directory, and the config's
-``step_order`` if it has one — see ``litpose_step_pipelines``; this is provenance only, it does
-not change how the csv at ``--video-preds-dir`` is read). ``--output-name`` is a
-template whose ``{camera}`` placeholder is replaced by the camera, so the cameras get separate
-folders (default ``{camera}_encoding``, e.g. ``left_encoding``).
+``<video-preds-dir>/<camera>_<output-name>/<eid>/dynamic_vars.npz`` and
+``params.json`` (which records the Lightning Pose checkpoint directory and the config's
+``step_order``; ``step_order`` does not change how the csv at ``--video-preds-dir`` is read, it
+only decides the PCA). ``--output-name`` is camera-free (default: ``output.output_name`` of
+``--config``); the camera is always prefixed (see ``output_folder_name``), so the cameras get
+separate folders, e.g. ``left_encoding`` and ``right_encoding`` for ``--output-name encoding``.
 
 A failing session/camera does not stop the others; all failures are listed at the end and make
 the command exit non-zero.
@@ -38,7 +40,7 @@ Usage::
 
     PYTHONPATH=src python -m pose2visual.encoding.extract_litpose_dynamic_vars_trials \\
       --eids <eid1> <eid2> --cameras left right --video-preds-dir <model_dir>/video_preds \\
-      --output-name '{camera}_encoding' --neural-input-dir <dir> --video-timestamps-dir <dir> \\
+      --output-name encoding --neural-input-dir <dir> --video-timestamps-dir <dir> \\
       --config configs/encoding/litpose_encoding.yaml
 
     # or select a named group of eids instead of --eids; with neither flag the yaml's
@@ -68,9 +70,11 @@ from pose2visual.encoding.litpose_keypoints import (
     load_encoding_yaml,
     load_filter_settings,
     load_keypoint_csv,
+    load_output_name,
     load_pca_settings,
     load_step_order,
     load_video_preds_dir,
+    output_folder_name,
     resolve_group_eids,
     session_output_dir,
     speed_from_positions,
@@ -80,7 +84,6 @@ from pose2visual.encoding.litpose_pca import load_pca_n_components, reproject_ke
 logger = logging.getLogger(__name__)
 
 _SPLITS = ('train', 'val', 'test')
-_CAMERA_PLACEHOLDER = '{camera}'
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -143,9 +146,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         '--output-name',
         type=str,
-        default='{camera}_encoding',
-        help='folder name template; {camera} is replaced by the camera, outputs go to '
-        '<video-preds-dir>/<output-name>/<eid>/ (default: {camera}_encoding)',
+        default=None,
+        help='camera-free output name; outputs go to '
+        '<video-preds-dir>/<camera>_<output-name>/<eid>/ '
+        '(default: output.output_name of --config)',
     )
     parser.add_argument(
         '--neural-input-dir',
@@ -196,11 +200,13 @@ def load_frame_times(
 def resolve_pca(config_path: str | Path) -> dict[str, Any] | None:
     """Read the PCA settings of the yaml and load the groups they refer to.
 
+    PCA is on exactly when the `step_order` pipeline contains the `2d_pose_pca` step.
+
     Args:
         config_path: path of the encoding yaml.
 
     Returns:
-        `None` when `pca.enabled` is false, otherwise a dict with `body_parts_json`, `group_set`,
+        `None` when the `step_order` pipeline has no `2d_pose_pca` step, otherwise a dict with `body_parts_json`, `group_set`,
         `groups` (group name -> tokens) and `n_components` (group name -> requested count).
 
     Raises:
@@ -279,7 +285,7 @@ def extract_session(
     eid: str,
     camera: str,
     video_preds_dir: str | Path,
-    output_name: str,
+    output_folder: str,
     neural_input_dir: str | Path,
     video_timestamps_dir: str | Path,
     likelihood_threshold: float,
@@ -297,14 +303,14 @@ def extract_session(
             combined csv's folder (see `litpose_step_pipelines`) when `step_order` names a
             pipeline whose first step is `ensemble_median` or `eks_mean`; this function does not
             resolve or build that csv itself.
-        output_name: output folder name (no placeholder left in it).
+        output_folder: folder name under `video_preds_dir`, see `output_folder_name`.
         neural_input_dir: root dir containing `<eid>/<eid>_aligned.npz` and `<eid>/params.json`.
         video_timestamps_dir: directory containing `_ibl_{left,right}Camera.times.<eid>.npy`.
         likelihood_threshold: frames below this likelihood are masked and interpolated over;
             from the config, must equal the value in the step A json.
         max_masked_frac: from the config, must equal the value in the step A json.
         step_order: the `--config` yaml's `step_order` (from `load_step_order`), recorded in
-            `params.json` for provenance only; does not change how `dynamic_vars.npz` is built.
+            `params.json`; `None` when called outside the cli.
         config_path: encoding yaml the settings came from, recorded in `params.json`.
         pca: output of `resolve_pca` (`None` = no pca); the flag and the effective number of
             components of each group are stored for step C.
@@ -362,7 +368,7 @@ def extract_session(
         df, keypoints, times, intervals, likelihood_threshold, binsize, n_bins, pca,
     )
 
-    output_dir = session_output_dir(video_preds_dir, output_name, eid)
+    output_dir = session_output_dir(video_preds_dir, output_folder, eid)
     output_dir.mkdir(parents=True, exist_ok=True)
     npz_path = output_dir / 'dynamic_vars.npz'
     params_path = output_dir / 'params.json'
@@ -437,13 +443,13 @@ def main(argv: list[str] | None = None) -> None:
 
     Raises:
         ValueError: if the config lacks a valid `likelihood_threshold` / `max_masked_frac`, its
-            pca settings or the `PCA_n_components` of its `body_parts_json` are invalid, its
-            `step_order` is not a known pipeline, both `--eids` and `--eid-group` are
+            `step_order` is missing or not a known pipeline (this also decides the pca), its
+            `paths.body_parts_json` is missing for a pca pipeline or its `PCA_n_components` are
+            invalid, both `--eids` and `--eid-group` are
             given, none of `--eids`, `--eid-group` and the config's `session.eid_group` is given,
             `--eid-group` is given without `--eid-groups-json` or `paths.eid_groups_json`, the
             group is unknown, neither `--video-preds-dir` nor the config's `video_preds_dir` is
-            given, or several cameras are requested but `--output-name` has no `{camera}`
-            placeholder (the cameras would overwrite each other).
+            given, or neither `--output-name` nor the config's `output.output_name` is given.
         RuntimeError: after all runs, if any session/camera failed; the message lists them.
     """
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -478,25 +484,25 @@ def main(argv: list[str] | None = None) -> None:
                 f'no sessions: pass --eids or --eid-group, or set session.eid_group in '
                 f'{args.config}',
             )
-    cameras = list(dict.fromkeys(args.cameras))
-    if len(cameras) > 1 and _CAMERA_PLACEHOLDER not in args.output_name:
+    output_name = args.output_name or load_output_name(args.config)
+    if output_name is None:
         raise ValueError(
-            f'--output-name {args.output_name!r} must contain {_CAMERA_PLACEHOLDER} when '
-            f'several cameras are requested ({cameras}); they would overwrite each other',
+            f'no output name: pass --output-name or set output.output_name in {args.config}',
         )
+    cameras = list(dict.fromkeys(args.cameras))
 
     failures: list[str] = []
     n_total = len(eids) * len(cameras)
     for eid in eids:
         for camera in cameras:
-            output_name = args.output_name.replace(_CAMERA_PLACEHOLDER, camera)
-            logger.info(f'[{eid} {camera}] extracting keypoint dynamic vars -> {output_name}')
+            output_folder = output_folder_name(camera, output_name)
+            logger.info(f'[{eid} {camera}] extracting keypoint dynamic vars -> {output_folder}')
             try:
                 extract_session(
                     eid,
                     camera,
                     video_preds_dir,
-                    output_name,
+                    output_folder,
                     args.neural_input_dir,
                     args.video_timestamps_dir,
                     likelihood_threshold,
