@@ -51,6 +51,13 @@
       "ear_related": 5,
       "digits": 10,
       "forelimb": 2
+    },
+    "nonoverlapping_analysis_groups_ibl_ears": {
+      "eye_related": 2,
+      "mouth_related": 2,
+      "nose_pad_related": 2,
+      "ear_related": 5,
+      "forelimb": 2
     }
   },
   "overlapping_analysis_groups":{
@@ -84,5 +91,23 @@
       "d3",
       "d4"
     ]
+  },
+  "nonoverlapping_analysis_groups_ibl_ears": {
+    "eye_related": [
+      "pupil"
+    ],
+    "mouth_related": [
+      "tongue"
+    ],
+    "nose_pad_related": [
+      "nose"
+    ],
+    "ear_related": [
+      "ear"
+    ],
+    "forelimb": [
+      "paw"
+    ]
   }
 }
+
