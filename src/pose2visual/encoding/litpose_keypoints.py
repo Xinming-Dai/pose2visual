@@ -34,9 +34,11 @@ from pose2visual.encoding.litpose_step_pipelines import (
     load_step_pipelines,
     resolve_step_pipeline,
 )
+from pose2visual.lightningpose.fit_eks_latent_model import load_groups
 
 CAMERAS = ('left', 'right')
 DEFAULT_PCA_GROUP_SET = 'nonoverlapping_analysis_groups'
+DEFAULT_FILTER_GROUP_SET = 'nonoverlapping_analysis_groups'
 _PCA_STEP = '2d_pose_pca'
 # `anatomical_group` value meaning "base / additional lists hold explicit keypoint names"
 ANATOMICAL_GROUP_ALL = 'all'
@@ -61,11 +63,26 @@ ENCODING_YAML_SECTIONS = {
         'additional_keypoints': 'additional_keypoints',
     },
 }
+# keys of a section that are themselves mappings: (section, key) -> {key in the mapping: key of
+# the flat dict}, e.g. `filter.group_set.unfiltered_groups`
+ENCODING_YAML_SUBSECTIONS = {
+    ('filter', 'group_set'): {
+        'name': 'filter_group_set',
+        'unfiltered_groups': 'unfiltered_groups',
+    },
+}
 # key of the flat dict -> its place in the yaml, e.g. `output_name` -> `output.output_name`
 ENCODING_YAML_NESTED_NAMES = {
-    flat: f'{section}.{key}'
-    for section, keys in ENCODING_YAML_SECTIONS.items()
-    for key, flat in keys.items()
+    **{
+        flat: f'{section}.{key}'
+        for section, keys in ENCODING_YAML_SECTIONS.items()
+        for key, flat in keys.items()
+    },
+    **{
+        flat: f'{section}.{key}.{sub_key}'
+        for (section, key), sub_keys in ENCODING_YAML_SUBSECTIONS.items()
+        for sub_key, flat in sub_keys.items()
+    },
 }
 
 # <eid> never contains an underscore, which keeps ``*_temporal_norm.csv`` files out
@@ -220,6 +237,44 @@ def validate_filter_settings(
     return float(likelihood_threshold), float(max_masked_frac)
 
 
+def _flatten_subsection(
+    config_path: str | Path,
+    section: str,
+    key: str,
+    value: Any,
+) -> dict[str, Any]:
+    """Flatten one mapping-valued key of a yaml section (see `ENCODING_YAML_SUBSECTIONS`).
+
+    Args:
+        config_path: path of the encoding yaml, used in error messages.
+        section: top-level section, e.g. `'filter'`.
+        key: key of the section holding the mapping, e.g. `'group_set'`.
+        value: the yaml value; `None` (an empty `group_set:`) counts as an empty mapping.
+
+    Returns:
+        Flat dict of the keys of the mapping that are present.
+
+    Raises:
+        ValueError: if the value is not a mapping (for example the string of an older layout)
+            or holds an unknown key.
+    """
+    allowed = ENCODING_YAML_SUBSECTIONS[(section, key)]
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError(
+            f'{config_path}: `{section}.{key}` must be a mapping with keys {sorted(allowed)}, '
+            f'got {value!r}',
+        )
+    unknown = sorted(str(k) for k in value if k not in allowed)
+    if unknown:
+        raise ValueError(
+            f'{config_path}: unknown keys {unknown} in `{section}.{key}`; '
+            f'allowed: {sorted(allowed)}',
+        )
+    return {flat: value[name] for name, flat in allowed.items() if name in value}
+
+
 def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
     """Read the nested encoding yaml and flatten it.
 
@@ -233,7 +288,9 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
     Returns:
         Flat dict of the keys present: `step_order`, `eid`, `eid_group`, `camera`,
         `video_preds_dir`, `body_parts_json`, `eid_groups_json`, `output_name`, `variant_name`,
-        `likelihood_threshold`, `max_masked_frac`, `pca_group_set` (`pca.group_set`),
+        `likelihood_threshold`, `max_masked_frac`, `unfiltered_groups`
+        (`filter.group_set.unfiltered_groups`), `filter_group_set` (`filter.group_set.name`),
+        `pca_group_set` (`pca.group_set`),
         `anatomical_group` (`anatomical_group.name`), `base_keypoints`, `additional_keypoints`
         and `pca`. `pca` is not a yaml key: it is derived from `step_order` (True when the named
         pipeline contains the `2d_pose_pca` step), so the two can never disagree.
@@ -259,15 +316,18 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
                     f'instead: PCA runs exactly when the pipeline contains the {_PCA_STEP!r} '
                     'step (see litpose_step_pipelines.json)',
                 )
-            unknown = sorted(str(k) for k in value if k not in ENCODING_YAML_SECTIONS[key])
+            mappings = {name for section, name in ENCODING_YAML_SUBSECTIONS if section == key}
+            allowed = sorted(set(ENCODING_YAML_SECTIONS[key]) | mappings)
+            unknown = sorted(str(k) for k in value if k not in allowed)
             if unknown:
                 raise ValueError(
-                    f'{config_path}: unknown keys {unknown} in `{key}`; '
-                    f'allowed: {sorted(ENCODING_YAML_SECTIONS[key])}',
+                    f'{config_path}: unknown keys {unknown} in `{key}`; allowed: {allowed}',
                 )
             for sub_key, flat in ENCODING_YAML_SECTIONS[key].items():
                 if sub_key in value:
                     cfg[flat] = value[sub_key]
+            for name in sorted(mappings & set(value)):
+                cfg.update(_flatten_subsection(config_path, key, name, value[name]))
         elif key in ENCODING_YAML_SECTIONS:
             # `pca: true` and `anatomical_group: <name>` of the old flat layout
             raise ValueError(
@@ -406,6 +466,10 @@ def nest_encoding_config(flat: dict[str, Any]) -> dict[str, Any]:
         nested['step_order'] = flat['step_order']
     for section, keys in ENCODING_YAML_SECTIONS.items():
         entries = {key: flat[name] for key, name in keys.items() if name in flat}
+        for (sub_section, key), sub_keys in ENCODING_YAML_SUBSECTIONS.items():
+            sub_entries = {k: flat[name] for k, name in sub_keys.items() if name in flat}
+            if sub_section == section and sub_entries:
+                entries[key] = sub_entries
         if entries:
             nested[section] = entries
     return nested
@@ -431,6 +495,71 @@ def load_filter_settings(config_path: str | Path) -> tuple[float, float]:
     return validate_filter_settings(
         cfg.get('likelihood_threshold'), cfg.get('max_masked_frac'), config_path,
     )
+
+
+def validate_unfiltered_groups(value: Any, source: str | Path) -> list[str]:
+    """Check the `filter.group_set.unfiltered_groups` setting.
+
+    Args:
+        value: the yaml value; `None` (absent or null) means no group is exempt.
+        source: where the value came from, used in error messages.
+
+    Returns:
+        The group names as a list of str, empty when nothing is exempt.
+
+    Raises:
+        ValueError: if the value is not a list of non-empty strings.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(n, str) and n for n in value):
+        raise ValueError(
+            f'{source}: filter.group_set.unfiltered_groups must be a list of group names, '
+            f'got {value!r}',
+        )
+    return list(dict.fromkeys(value))
+
+
+def load_unfiltered_keypoints(config_path: str | Path, keypoints: list[str]) -> list[str]:
+    """Resolve `filter.group_set.unfiltered_groups` to the keypoints exempt from filtering.
+
+    A keypoint belongs to a group when the first `_`-separated segment of its name is one of the
+    group's tokens, the rule of `expand_groups`. Unlike `expand_groups`, a group without a
+    keypoint in `keypoints` is not an error: the exemption just has nothing to apply to.
+
+    Args:
+        config_path: path of the encoding yaml.
+        keypoints: keypoint names of the prediction csv, in header order.
+
+    Returns:
+        The keypoints of any named group, in `keypoints` order; empty when the yaml names no
+        group.
+
+    Raises:
+        ValueError: if the yaml is invalid, `unfiltered_groups` is not a list of group names,
+            `paths.body_parts_json` is missing, the group set is missing from it, or a group
+            name is not in the group set.
+    """
+    cfg = load_encoding_yaml(config_path)
+    group_names = validate_unfiltered_groups(cfg.get('unfiltered_groups'), config_path)
+    if not group_names:
+        return []
+    body_parts_json = cfg.get('body_parts_json')
+    if body_parts_json is None:
+        raise ValueError(
+            f'{config_path}: filter.group_set.unfiltered_groups needs paths.body_parts_json to '
+            'look the groups up',
+        )
+    group_set = str(cfg.get('filter_group_set') or DEFAULT_FILTER_GROUP_SET)
+    groups = load_groups(body_parts_json, group_set)
+    unknown = sorted(set(group_names) - set(groups))
+    if unknown:
+        raise ValueError(
+            f'{config_path}: filter.group_set.unfiltered_groups {unknown} not in group set '
+            f'{group_set!r} of {body_parts_json}; available: {sorted(groups)}',
+        )
+    tokens = {token for name in group_names for token in groups[name]}
+    return [name for name in keypoints if name.split('_')[0] in tokens]
 
 
 def load_video_preds_dir(config_path: str | Path) -> str | None:
@@ -564,6 +693,7 @@ def check_filter_settings_match(
     likelihood_threshold: float,
     max_masked_frac: float,
     json_path: str | Path,
+    no_filter_keypoints: list[str] | None = None,
 ) -> None:
     """Fail when the step A json was written with other filter settings than the yaml holds.
 
@@ -572,10 +702,14 @@ def check_filter_settings_match(
         likelihood_threshold: value from the yaml.
         max_masked_frac: value from the yaml.
         json_path: path of the step A json, used in the error message.
+        no_filter_keypoints: keypoints the yaml exempts from confidence filtering (see
+            `load_unfiltered_keypoints`); `None` or empty means none. A json from before the
+            exemption existed has no such entry and counts as none.
 
     Raises:
-        ValueError: if the json's `likelihood_threshold` or `max_masked_frac` differs from the
-            yaml; the usable-keypoint list in the json is then stale, so step A must be rerun.
+        ValueError: if the json's `likelihood_threshold`, `max_masked_frac` or
+            `no_filter_keypoints` differs from the yaml; the usable-keypoint list in the json is
+            then stale, so step A must be rerun.
     """
     mismatches = [
         f'{key}: yaml {expected} vs json {keypoint_info.get(key)}'
@@ -585,6 +719,12 @@ def check_filter_settings_match(
         )
         if keypoint_info.get(key) != expected
     ]
+    expected_exempt = sorted(no_filter_keypoints or [])
+    json_exempt = sorted(keypoint_info.get('no_filter_keypoints', []))
+    if json_exempt != expected_exempt:
+        mismatches.append(
+            f'no_filter_keypoints: yaml {expected_exempt} vs json {json_exempt}',
+        )
     if mismatches:
         raise ValueError(
             f'{json_path} was written with other filter settings than the config ('
@@ -644,7 +784,7 @@ def masked_frames(
     x: np.ndarray,
     y: np.ndarray,
     likelihood: np.ndarray,
-    likelihood_threshold: float,
+    likelihood_threshold: float | None,
 ) -> np.ndarray:
     """Boolean mask of unusable frames: NaN coordinate/likelihood or low likelihood.
 
@@ -652,11 +792,14 @@ def masked_frames(
         x: x position per frame.
         y: y position per frame.
         likelihood: likelihood per frame.
-        likelihood_threshold: frames below this likelihood are masked.
+        likelihood_threshold: frames below this likelihood are masked; `None` ignores the
+            likelihood (also a NaN one) and masks only frames with a NaN x or y.
 
     Returns:
         Boolean array `[n_frames]`, `True` for masked frames.
     """
+    if likelihood_threshold is None:
+        return np.isnan(x) | np.isnan(y)
     # NaN likelihood compares False in the threshold test, so mask it explicitly
     return (likelihood < likelihood_threshold) | np.isnan(x) | np.isnan(y) | np.isnan(likelihood)
 
@@ -664,22 +807,27 @@ def masked_frames(
 def frame_fractions(
     df: pd.DataFrame,
     name: str,
-    likelihood_threshold: float,
+    likelihood_threshold: float | None,
 ) -> dict[str, float]:
     """Split the unusable frames of a keypoint by cause.
 
     Args:
         df: dataframe from `load_keypoint_csv`.
         name: keypoint name.
-        likelihood_threshold: frames below this likelihood count as low-likelihood.
+        likelihood_threshold: frames below this likelihood count as low-likelihood; `None`
+            ignores the likelihood, so only NaN x/y frames count (`low_likelihood` is 0).
 
     Returns:
         Dict with `masked` (any cause, as `masked_frames`), `nan` (NaN x, y or likelihood) and
         `low_likelihood` (finite likelihood below the threshold), each a fraction in `[0, 1]`.
     """
     x, y, likelihood = get_keypoint_coords(df, name)
-    nan = np.isnan(x) | np.isnan(y) | np.isnan(likelihood)
-    low = ~np.isnan(likelihood) & (likelihood < likelihood_threshold)
+    if likelihood_threshold is None:
+        nan = np.isnan(x) | np.isnan(y)
+        low = np.zeros_like(nan)
+    else:
+        nan = np.isnan(x) | np.isnan(y) | np.isnan(likelihood)
+        low = ~np.isnan(likelihood) & (likelihood < likelihood_threshold)
     return {
         'masked': float(np.mean(masked_frames(x, y, likelihood, likelihood_threshold))),
         'nan': float(np.mean(nan)),
@@ -687,7 +835,7 @@ def frame_fractions(
     }
 
 
-def masked_fraction(df: pd.DataFrame, name: str, likelihood_threshold: float) -> float:
+def masked_fraction(df: pd.DataFrame, name: str, likelihood_threshold: float | None) -> float:
     """Fraction of frames of a keypoint that `masked_frames` marks unusable.
 
     Keypoints on the far side of the animal are typically predicted with likelihood near 0 and
@@ -696,7 +844,8 @@ def masked_fraction(df: pd.DataFrame, name: str, likelihood_threshold: float) ->
     Args:
         df: dataframe from `load_keypoint_csv`.
         name: keypoint name.
-        likelihood_threshold: frames below this likelihood are masked.
+        likelihood_threshold: frames below this likelihood are masked; `None` masks only NaN
+            x/y frames.
 
     Returns:
         Fraction in `[0, 1]`.
@@ -710,7 +859,7 @@ def interpolate_keypoint(
     y: np.ndarray,
     likelihood: np.ndarray,
     times: np.ndarray,
-    likelihood_threshold: float,
+    likelihood_threshold: float | None,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Mask the unusable frames of one keypoint and interpolate its position over them.
 
@@ -722,7 +871,8 @@ def interpolate_keypoint(
         y: y position per frame.
         likelihood: likelihood per frame.
         times: frame timestamps in seconds, strictly increasing.
-        likelihood_threshold: frames below this likelihood are masked.
+        likelihood_threshold: frames below this likelihood are masked; `None` masks only NaN
+            x/y frames (the keypoint is exempt from confidence filtering).
 
     Returns:
         Tuple `(x_interp, y_interp, masked_fraction)`: finite positions per frame
@@ -734,10 +884,11 @@ def interpolate_keypoint(
     masked = masked_frames(x, y, likelihood, likelihood_threshold)
     idx_valid = np.flatnonzero(~masked)
     if idx_valid.size < 2:
-        raise ValueError(
-            f'fewer than 2 frames with likelihood >= {likelihood_threshold}; '
-            'cannot compute keypoint speed',
+        criterion = (
+            'finite x/y' if likelihood_threshold is None
+            else f'likelihood >= {likelihood_threshold}'
         )
+        raise ValueError(f'fewer than 2 frames with {criterion}; cannot compute keypoint speed')
     x_interp = np.interp(times, times[idx_valid], x[idx_valid])
     y_interp = np.interp(times, times[idx_valid], y[idx_valid])
     return x_interp, y_interp, float(masked.mean())
@@ -762,7 +913,7 @@ def compute_keypoint_speed(
     y: np.ndarray,
     likelihood: np.ndarray,
     times: np.ndarray,
-    likelihood_threshold: float,
+    likelihood_threshold: float | None,
 ) -> tuple[np.ndarray, float]:
     """Speed of one keypoint in pixels per second.
 
@@ -774,7 +925,8 @@ def compute_keypoint_speed(
         y: y position per frame.
         likelihood: likelihood per frame.
         times: frame timestamps in seconds, strictly increasing.
-        likelihood_threshold: frames below this likelihood are masked.
+        likelihood_threshold: frames below this likelihood are masked; `None` masks only NaN
+            x/y frames.
 
     Returns:
         Tuple `(speed, masked_fraction)`: speed per frame `[n_frames]` and the fraction of

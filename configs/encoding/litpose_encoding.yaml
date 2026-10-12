@@ -8,13 +8,13 @@ session:
   eid: 781b35fd-e1f0-4d14-b2bb-95b7263082bb
   # sessions of step 1 (extract) and of the plot that step 2 makes once all of them are done; a key
   # of neural_sessions in paths.eid_groups_json, null = none. Not a constraint: --eids / EIDS override
-  eid_group: sable
+  eid_group: ear_left
   # camera whose keypoints are used; must match the one used by extract_litpose_dynamic_vars_trials
   camera: left
 
 paths:
   # <model_dir>/video_preds of the lightning pose checkpoint; its location is recorded in the log
-  video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/E6c-LOO-ibl-headmlp256_3seeds/face+cheese+caz+kondo+hmv+c3d+kauf_train/rainbow_qc/20261009_181323/ensemble_median
+  video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/E6c-LOO-ibl-headmlp256_3seeds/face+cheese+caz+kondo+hmv+c3d+kauf_train/rainbow_qc/20261012_142217/ensemble_median
   # defines the groups used by pca and by anatomical_group
   body_parts_json: scripts/delta/data/body_parts.json
   # neural_sessions -> group name -> eids
@@ -32,6 +32,9 @@ output:
 filter:
   likelihood_threshold: 0.7
   max_masked_frac: 0.3
+  group_set:
+    name: nonoverlapping_analysis_groups
+    unfiltered_groups: [mouth_related]
 
 # PCA reprojection, done in step 1. On/off comes from step_order; this is only the group set
 pca:
@@ -46,4 +49,4 @@ anatomical_group:
   additional_keypoints:
     - mouth_related
     - eye_related
-    - digits
+    - ear_related

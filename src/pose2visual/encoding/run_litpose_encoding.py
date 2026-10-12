@@ -72,6 +72,7 @@ from pose2visual.encoding.encoder import train_cnn_encoder_with_tune, train_rrr_
 from pose2visual.encoding.litpose_keypoints import (
     ANATOMICAL_GROUP_ALL,
     CAMERAS,
+    DEFAULT_FILTER_GROUP_SET,
     DEFAULT_PCA_GROUP_SET,
     ENCODING_YAML_NESTED_NAMES,
     base_dir,
@@ -79,9 +80,11 @@ from pose2visual.encoding.litpose_keypoints import (
     expand_groups,
     keypoint_names_json_path,
     load_encoding_yaml,
+    load_unfiltered_keypoints,
     output_folder_name,
     session_output_dir,
     validate_filter_settings,
+    validate_unfiltered_groups,
     variant_dir,
 )
 from pose2visual.encoding.litpose_preprocess import check_finite
@@ -193,8 +196,9 @@ def run_signature(
     Returns:
         Json-serializable dict, stored in `encoding_params.json` and compared with `==`.
         `base_keypoints` / `additional_keypoints` are the entries of the config (group names in
-        group mode); `anatomical_group` is only present when it is not `all`, so results from
-        before it existed keep matching.
+        group mode); `anatomical_group` is only present when it is not `all`, and
+        `unfiltered_groups` / `filter_group_set` only when groups are exempt from confidence
+        filtering, so results from before they existed keep matching.
     """
     signature = {
         'camera': cfg['camera'],
@@ -209,6 +213,9 @@ def run_signature(
     }
     if cfg['anatomical_group'] != ANATOMICAL_GROUP_ALL:
         signature['anatomical_group'] = cfg['anatomical_group']
+    if cfg.get('unfiltered_groups'):
+        signature['unfiltered_groups'] = sorted(cfg['unfiltered_groups'])
+        signature['filter_group_set'] = cfg['filter_group_set']
     return signature
 
 
@@ -307,9 +314,11 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
         none or null), `output_folder` as str (`<camera>_<output_name>`, the folder under
         `video_preds_dir`), `likelihood_threshold` / `max_masked_frac` as floats (shared by all
         steps; step A and B must have used the same values), `step_order` as str (required; a name from
-        `litpose_step_pipelines.json`), `pca` as bool (derived from `step_order`: whether the
-        pipeline has the `2d_pose_pca` step; step B applies it, step C checks it) and
-        `pca_group_set` as str. The actual keypoint source is still `video_preds_dir`.
+        `litpose_step_pipelines.json`), `unfiltered_groups` as a list of str (groups exempt from
+        confidence filtering, default empty), `filter_group_set` as str, `pca` as bool (derived
+        from `step_order`: whether the pipeline has the `2d_pose_pca` step; step B applies it,
+        step C checks it) and `pca_group_set` as str. The actual keypoint source is still
+        `video_preds_dir`.
 
     Raises:
         ValueError: if the yaml is invalid (see `load_encoding_yaml`: not nested, unknown key,
@@ -357,6 +366,13 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
                 f'{_BASE_RESERVED_NAME!r}, got {variant_name!r}',
             )
         cfg['variant_name'] = variant_name
+    cfg['unfiltered_groups'] = validate_unfiltered_groups(cfg.get('unfiltered_groups'), path)
+    cfg['filter_group_set'] = str(cfg.get('filter_group_set') or DEFAULT_FILTER_GROUP_SET)
+    if cfg['unfiltered_groups'] and cfg.get('body_parts_json') is None:
+        raise ValueError(
+            f'{path}: filter.group_set.unfiltered_groups needs paths.body_parts_json to look the '
+            'groups up',
+        )
     cfg['pca_group_set'] = str(cfg.get('pca_group_set', DEFAULT_PCA_GROUP_SET))
     cfg['anatomical_group'] = str(cfg.get('anatomical_group', ANATOMICAL_GROUP_ALL))
     if cfg['anatomical_group'] != ANATOMICAL_GROUP_ALL:
@@ -791,8 +807,13 @@ def _run(
     json_path = keypoint_names_json_path(video_preds_dir, cfg['camera'], eid)
     with json_path.open(encoding='utf-8') as f:
         keypoint_info = json.load(f)
+    no_filter_keypoints = load_unfiltered_keypoints(args.config, keypoint_info['keypoints'])
     check_filter_settings_match(
-        keypoint_info, cfg['likelihood_threshold'], cfg['max_masked_frac'], json_path,
+        keypoint_info,
+        cfg['likelihood_threshold'],
+        cfg['max_masked_frac'],
+        json_path,
+        no_filter_keypoints,
     )
 
     latent_data_dict = np.load(dynamic_vars_path)
@@ -845,6 +866,7 @@ def _run(
         'unused_keypoints': unused,
         'likelihood_threshold': cfg['likelihood_threshold'],
         'max_masked_frac': cfg['max_masked_frac'],
+        'no_filter_keypoints': no_filter_keypoints,
         'skipped_masked_keypoints': keypoint_info['skipped_masked'],
         'step_order': cfg['step_order'],
     }

@@ -17,7 +17,7 @@ Requires `extract_neural_data` (step 0) to have produced `<eid>_aligned.npz`.
    `session.camera` for the prefix, so `output_name: encoding` and `camera: left` give `left_encoding`.
 3. Edit `configs/encoding/litpose_encoding.yaml`, which is nested into sections: `session` (`eid`, `eid_group`, `camera`),
    `paths`, `output` (`output_name`, optional `variant_name`), `filter`, `pca` and `anatomical_group`
-   (`name`, `base_keypoints`, `additional_keypoints`). `session.eid` is the single session of one step 2 job
+   (`name`, `base_keypoints`, `additional_keypoints`). `filter.group_set.unfiltered_groups` lists body-part groups (from the group set `filter.group_set.name` of `paths.body_parts_json`, default `nonoverlapping_analysis_groups`) that skip confidence filtering: their likelihood is ignored, only NaN x/y frames are interpolated and `max_masked_frac` counts NaN frames only; step 0 stores them as `no_filter_keypoints` and steps 1 and 2 fail if the yaml no longer matches, so rerun step 0 after changing it. `session.eid` is the single session of one step 2 job
    (`step2_run_encoding.sh <eid>` overrides it), `session.eid_group` the sessions of step 1 and of the plot. With `anatomical_group.name: all` the two lists hold keypoint
    names, with a group set of `body_parts.json` such as `nonoverlapping_analysis_groups` they hold group names, e.g.
    `base_keypoints: [eye_related]` and `additional_keypoints: [mouth_related]`, resolved per session to the group's usable keypoints), then `scripts/delta/lightningpose_encoding/step2_run_encoding.sh`. The base fit is

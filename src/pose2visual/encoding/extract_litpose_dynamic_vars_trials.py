@@ -11,8 +11,9 @@ same ``train/val/test_intervals`` grid as the spikes in ``<eid>_aligned.npz`` (`
 binsize, end, n_bins)``), so the output has the same contract as ``dynamic_vars_z_trials.npz``.
 
 Each keypoint goes through likelihood filtering (frames below ``filter.likelihood_threshold`` or
-with NaN x/y are masked), linear interpolation over the masked frames, optionally a PCA
-reprojection of the x/y of each body-part group (when the yaml's ``step_order`` pipeline contains
+with NaN x/y are masked; keypoints of ``filter.group_set.unfiltered_groups`` skip the likelihood
+test and only lose their NaN x/y frames), linear interpolation over the masked frames,
+optionally a PCA reprojection of the x/y of each body-part group (when the yaml's ``step_order`` pipeline contains
 ``2d_pose_pca``, see ``litpose_step_pipelines`` and ``litpose_pca``; the group counts come from ``PCA_n_components`` in the yaml's
 ``paths.body_parts_json``), then speed extraction and binning. The speed is taken in the original
 pixel space on the reprojected positions, so the variables keep their keypoint names.
@@ -71,6 +72,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_output_name,
     load_pca_settings,
     load_step_order,
+    load_unfiltered_keypoints,
     load_video_preds_dir,
     output_folder_name,
     resolve_session_eids,
@@ -233,6 +235,7 @@ def build_dynamic_vars(
     binsize: float,
     n_bins: int,
     pca: dict[str, Any] | None = None,
+    no_filter_keypoints: list[str] | None = None,
 ) -> tuple[dict[str, np.ndarray], dict[str, float], dict[str, Any] | None]:
     """Bin the speed of each keypoint onto every split's intervals.
 
@@ -246,6 +249,8 @@ def build_dynamic_vars(
         n_bins: bins per interval.
         pca: output of `resolve_pca`; `None` takes the speed of the interpolated positions as
             they are, otherwise the positions are first reprojected per body-part group.
+        no_filter_keypoints: keypoints exempt from confidence filtering; their likelihood is
+            ignored, so only NaN x/y frames are masked and interpolated. `None` = none.
 
     Returns:
         Tuple `(z_trials_time, masked_fraction, pca_info)`: split name -> `[K_split, n_bins, 1,
@@ -257,10 +262,11 @@ def build_dynamic_vars(
     binned = np.zeros((len(all_intervals), n_bins, len(keypoints)), dtype=np.float32)
     masked_fraction: dict[str, float] = {}
     positions: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    exempt = set(no_filter_keypoints or [])
     for name in keypoints:
         x, y, likelihood = get_keypoint_coords(df, name)
         x_interp, y_interp, masked_fraction[name] = interpolate_keypoint(
-            x, y, likelihood, times, likelihood_threshold,
+            x, y, likelihood, times, None if name in exempt else likelihood_threshold,
         )
         positions[name] = (x_interp, y_interp)
     pca_info = None
@@ -309,7 +315,9 @@ def extract_session(
         max_masked_frac: from the config, must equal the value in the step A json.
         step_order: the `--config` yaml's `step_order` (from `load_step_order`), recorded in
             `params.json`; `None` when called outside the cli.
-        config_path: encoding yaml the settings came from, recorded in `params.json`.
+        config_path: encoding yaml the settings came from, recorded in `params.json`. Its
+            `filter.group_set.unfiltered_groups` must agree with the step A json; `None` (outside
+            the cli) means no keypoint is exempt from confidence filtering.
         pca: output of `resolve_pca` (`None` = no pca); the flag and the effective number of
             components of each group are stored for step C.
 
@@ -318,8 +326,9 @@ def extract_session(
 
     Raises:
         FileNotFoundError: if the step A json is missing.
-        ValueError: if the step A json was written with other filter settings than the config,
-            the csv row count differs from the number of frame timestamps, or the
+        ValueError: if the step A json was written with other filter settings (thresholds or
+            exempt keypoints) than the config, the csv row count differs from the number of frame
+            timestamps, or the
             number of bins disagrees with the spikes in `<eid>_aligned.npz`.
     """
     video_preds_dir = Path(video_preds_dir)
@@ -331,7 +340,13 @@ def extract_session(
         )
     with json_path.open(encoding='utf-8') as f:
         keypoint_info = json.load(f)
-    check_filter_settings_match(keypoint_info, likelihood_threshold, max_masked_frac, json_path)
+    no_filter_keypoints = (
+        [] if config_path is None
+        else load_unfiltered_keypoints(config_path, keypoint_info['keypoints'])
+    )
+    check_filter_settings_match(
+        keypoint_info, likelihood_threshold, max_masked_frac, json_path, no_filter_keypoints,
+    )
     keypoints = keypoint_info['usable']
 
     csv_path = video_preds_dir / csv_filename(camera, eid)
@@ -364,6 +379,7 @@ def extract_session(
 
     z_trials_time, masked_fraction, pca_info = build_dynamic_vars(
         df, keypoints, times, intervals, likelihood_threshold, binsize, n_bins, pca,
+        no_filter_keypoints,
     )
 
     output_dir = session_output_dir(video_preds_dir, output_folder, eid)
@@ -409,6 +425,7 @@ def extract_session(
         'config': None if config_path is None else str(Path(config_path).resolve()),
         'likelihood_threshold': likelihood_threshold,
         'max_masked_frac': max_masked_frac,
+        'no_filter_keypoints': no_filter_keypoints,
         'speed_unit': 'pixels/second of the downsampled video frames',
         'binsize': binsize,
         'n_bins': n_bins,
@@ -441,6 +458,7 @@ def main(argv: list[str] | None = None) -> None:
 
     Raises:
         ValueError: if the config lacks a valid `likelihood_threshold` / `max_masked_frac`, its
+            `filter.group_set.unfiltered_groups` is invalid or not in `filter.group_set.name`, its
             `step_order` is missing or not a known pipeline (this also decides the pca), its
             `paths.body_parts_json` is missing for a pca pipeline or its `PCA_n_components` are
             invalid, both `--eids` and `--eid-group` are

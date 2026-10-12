@@ -18,6 +18,12 @@ single source shared by all steps; ``--likelihood-threshold`` / ``--max-masked-f
 for this run only. Steps B and C fail when their config disagrees with the json written here, so
 rerun this step after changing either number in the yaml.
 
+Keypoints of the groups in the yaml's ``filter.group_set.unfiltered_groups`` (looked up in
+``filter.group_set.name`` of ``paths.body_parts_json``) skip confidence filtering: their
+likelihood is ignored, so only NaN ``x``/``y`` frames count as masked and ``max_masked_frac``
+applies to those alone. They are listed in the json as ``no_filter_keypoints``; steps B and C fail when the yaml's
+list differs from it.
+
 Usage::
 
     PYTHONPATH=src python -m pose2visual.encoding.list_litpose_keypoints \\
@@ -38,6 +44,7 @@ from pose2visual.encoding.litpose_keypoints import (
     list_keypoint_csvs,
     load_filter_settings,
     load_keypoint_csv,
+    load_unfiltered_keypoints,
     load_video_preds_dir,
     resolve_session_eids,
     validate_filter_settings,
@@ -116,6 +123,7 @@ def build_keypoint_info(
     eid: str,
     likelihood_threshold: float,
     max_masked_frac: float,
+    config_path: str | Path | None = None,
 ) -> dict:
     """Summarize the keypoints of one prediction csv.
 
@@ -125,23 +133,39 @@ def build_keypoint_info(
         eid: session id.
         likelihood_threshold: frames below this likelihood count as masked.
         max_masked_frac: keypoints with a larger masked fraction are not usable.
+        config_path: encoding yaml whose `filter.group_set.unfiltered_groups` names the
+            groups exempt from confidence filtering; `None` filters every keypoint. For an exempt
+            keypoint the likelihood is ignored, so `masked_fraction` counts NaN x/y frames only.
 
     Returns:
         Json-serializable dict with `csv_path`, `video_preds_dir`, `model_dir`, `camera`, `eid`,
-        `n_frames`, `likelihood_threshold`, `max_masked_frac`, `keypoints`, per-keypoint
-        `masked_fraction`, `nan_fraction` and `low_likelihood_fraction`, `usable`,
-        `unusable` (names, header order), `unusable_reasons` (name -> text) and
-        `skipped_masked` (name -> masked fraction, same keys as `unusable`).
+        `n_frames`, `likelihood_threshold`, `max_masked_frac`, `no_filter_keypoints`,
+        `keypoints`, per-keypoint `masked_fraction`, `nan_fraction` and
+        `low_likelihood_fraction`, `usable`, `unusable` (names, header order),
+        `unusable_reasons` (name -> text) and `skipped_masked` (name -> masked fraction, same
+        keys as `unusable`).
     """
     df = load_keypoint_csv(csv_path)
     keypoints = get_keypoint_names(df)
-    fractions = {name: frame_fractions(df, name, likelihood_threshold) for name in keypoints}
+    no_filter_keypoints = (
+        [] if config_path is None
+        else load_unfiltered_keypoints(config_path, keypoints)
+    )
+    fractions = {
+        name: frame_fractions(
+            df, name, None if name in no_filter_keypoints else likelihood_threshold,
+        )
+        for name in keypoints
+    }
     masked_fractions = {name: frac['masked'] for name, frac in fractions.items()}
     skipped_masked = {
         name: frac for name, frac in masked_fractions.items() if frac > max_masked_frac
     }
     unusable_reasons = {
         name: (
+            f'masked fraction {masked_fractions[name]:.2f} > {max_masked_frac} '
+            f'(NaN x/y {fractions[name]["nan"]:.2f}, likelihood ignored)'
+            if name in no_filter_keypoints else
             f'masked fraction {masked_fractions[name]:.2f} > {max_masked_frac} '
             f'(NaN x/y/likelihood {fractions[name]["nan"]:.2f}, '
             f'likelihood < {likelihood_threshold}: {fractions[name]["low_likelihood"]:.2f})'
@@ -159,6 +183,7 @@ def build_keypoint_info(
         'n_frames': int(len(df)),
         'likelihood_threshold': likelihood_threshold,
         'max_masked_frac': max_masked_frac,
+        'no_filter_keypoints': no_filter_keypoints,
         'keypoints': keypoints,
         'masked_fraction': masked_fractions,
         'nan_fraction': {name: frac['nan'] for name, frac in fractions.items()},
@@ -181,7 +206,8 @@ def main(argv: list[str] | None = None) -> None:
     Raises:
         FileNotFoundError: if the directory contains no prediction csv, or a selected session has
             none.
-        ValueError: if the config lacks a valid `likelihood_threshold` / `max_masked_frac`,
+        ValueError: if the config lacks a valid `likelihood_threshold` / `max_masked_frac`, its
+            `filter.group_set.unfiltered_groups` is invalid or not in `filter.group_set.name`,
             neither `--video-preds-dir` nor the config's `video_preds_dir` is given, both
             `--eids` and `--eid-group` are given, `--eid-group` is given without
             `--eid-groups-json` or `paths.eid_groups_json`, or the group is unknown.
@@ -236,7 +262,7 @@ def main(argv: list[str] | None = None) -> None:
         logger.info(f'selected {len(selected_eids)} session(s), {len(csvs)} csvs')
     for camera, eid, csv_path in csvs:
         info = build_keypoint_info(
-            csv_path, camera, eid, likelihood_threshold, max_masked_frac,
+            csv_path, camera, eid, likelihood_threshold, max_masked_frac, args.config,
         )
         json_path = keypoint_names_json_path(video_preds_dir, camera, eid)
         json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -244,7 +270,8 @@ def main(argv: list[str] | None = None) -> None:
             json.dump(info, f, indent=2)
         logger.info(
             f'{camera} {eid}: {len(info["usable"])}/{len(info["keypoints"])} usable keypoints, '
-            f'unusable: {info["unusable"]} -> {json_path}',
+            f'unusable: {info["unusable"]}, without confidence filtering: '
+            f'{info["no_filter_keypoints"]} -> {json_path}',
         )
 
 
