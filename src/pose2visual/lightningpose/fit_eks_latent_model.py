@@ -1,4 +1,4 @@
-"""Fit Pose-EKS rank-reduced latent smoothers for ``plot_comparison.py``.
+"""Fit Pose-EKS rank-reduced latent smoothers for ``pose2visual.qc.rainbow``.
 
 For one session, fits one rank-reduced (probabilistic-PCA-style) Ensemble Kalman Smoother per
 body-part group (from a ``body_parts.json``-style file's ``nonoverlapping_analysis_groups``) per
@@ -14,9 +14,9 @@ landmarks sharing one camera). This module calls ``eks``'s lower-level functions
 (x, y) instead of once per individual landmark.
 
 For each group and camera, writes a ``<group>_<camera>_latent-model.npz`` with the four arrays
-``plot_comparison.py`` reads (``mean``, ``smoothed_means``, ``W``, ``observation_medians``, such
-that ``mean + smoothed_means @ W.T`` reconstructs the smoothed (x, y) for every landmark in the
-group) plus a ``columns`` array labelling each observed dimension (e.g. ``'ear_top_left_x'``),
+``pose2visual.qc.rainbow`` reads (``mean``, ``smoothed_means``, ``W``, ``observation_medians``,
+such that ``mean + smoothed_means @ W.T`` reconstructs the smoothed (x, y) for every landmark in
+the group) plus a ``columns`` array labelling each observed dimension (e.g. ``'ear_top_left_x'``),
 so the npz is self-describing for anyone loading it later without the run's log output.
 
 Needs only ``pandas``, ``numpy``, ``jax`` and ``eks`` (``pip install
@@ -34,7 +34,7 @@ Usage::
 Default output:
 ``<model-dir>/eks/<timestamp>[__<tag>]/<session>/<group>/<group>_<camera>_latent-model.npz``
 (folder name is ``YYYYMMDD_HHMMSS``, suffixed with ``__<tag>`` when ``--tag`` is given,
-mirroring ``plot_comparison.py``'s own ``<model-dir>/rainbow_qc/<timestamp>[__<tag>]``
+mirroring ``pose2visual.qc.rainbow``'s own ``<model-dir>/rainbow_qc/<timestamp>[__<tag>]``
 convention). Every run's manifest is also appended to ``<model-dir>/eks/registry.json``
 (keyed by folder name). Pass ``--out-root`` to override the output location, or
 ``prune_run.py`` to delete a run and its registry entry together.
@@ -156,9 +156,8 @@ def load_groups(
 def find_video_preds_dir(seed_path: str | Path) -> Path:
     """Find the single `video_preds` directory under a seed folder.
 
-    Mirrors `plot_comparison.py`'s helper of the same name (reimplemented locally since that
-    script lives under `skills/pose-video/`, outside the installable package, and is off-limits
-    to edit).
+    Mirrors the helper of the same name in `pose2visual.qc.rainbow.loading` (kept local so this
+    module does not depend on the qc package).
 
     Args:
         seed_path: path to a seed folder, or directly to a `video_preds` directory.
@@ -322,7 +321,7 @@ def load_latent_model(npz_path: str | Path) -> dict:
     """Load a fitted latent model npz and reconstruct smoothed (x, y) per landmark.
 
     `n_landmarks` is derived from the npz itself (`len(mean) // 2`), never hardcoded, so this
-    works for any group size — unlike the reshape this replaces in `plot_comparison.py`.
+    works for any group size — unlike the reshape this replaces in `pose2visual.qc.rainbow`.
 
     Args:
         npz_path: path to a `<group>_<camera>_latent-model.npz` written by `fit_latent_model`.
@@ -373,7 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             'Fit per-group, per-camera Pose-EKS rank-reduced latent smoothers for '
-            'plot_comparison.py.'
+            'pose2visual.qc.rainbow.'
         ),
     )
     parser.add_argument(
@@ -428,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help='Output root; writes <out-root>/<session>/<group>/<group>_<camera>_'
         'latent-model.npz (default: <model-dir>/eks/<timestamp>[__<tag>], mirroring '
-        'plot_comparison.py\'s <model-dir>/rainbow_qc/<timestamp>[__<tag>])',
+        'pose2visual.qc.rainbow\'s <model-dir>/rainbow_qc/<timestamp>[__<tag>])',
     )
     parser.add_argument(
         '--tag',

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Delete a run's output folder and its entry in registry.json.
 
-Works against either `<model_dir>/rainbow_qc/registry.json` (plot_comparison.py runs) or
+Works against either `<model_dir>/rainbow_qc/registry.json` (pose2visual.qc.rainbow runs) or
 `<model_dir>/eks/registry.json` (fit_eks_latent_model.py runs) — the registry format is the
 same for both.
 

@@ -35,7 +35,16 @@ ibl = [
     "scipy",
     "tqdm",
 ]
-# bar plots of the encoding results (scripts/delta/analysis/plotting)
+# quality-control plots (pose2visual.qc.rainbow)
+qc = [
+    "imageio-ffmpeg",
+    "matplotlib",
+    "numpy",
+    "opencv-python-headless",
+    "pandas",
+    "pillow",
+]
+# bar plots of the encoding results (scripts/delta/analysis/encoding_plotting)
 plotting = [
     "matplotlib",
     "pyyaml",

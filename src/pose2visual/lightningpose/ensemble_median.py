@@ -1,10 +1,10 @@
-"""Ensemble median across network seeds, shared by ``plot_comparison.py`` and
+"""Ensemble median across network seeds, shared by ``pose2visual.qc.rainbow`` and
 ``export_ensemble_median.py``.
 
 The median here is a plain per-frame, per-landmark ``np.median`` across seeds, with no
 likelihood gating or NaN filtering: a NaN in any one seed's (x, y) or likelihood
 propagates into the output for that frame/landmark, exactly like
-``plot_comparison.py``'s original inline computation. This module only factors that
+``pose2visual.qc.rainbow``'s original inline computation. This module only factors that
 computation and its DLC-style CSV writer out into one place so both scripts agree.
 """
 

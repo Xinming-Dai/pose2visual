@@ -5,6 +5,21 @@ description: Create high-quality overlay videos or figures of pose-estimation pr
 
 This skills is copied from `/u/xdai3/project3d/mightymouse/mouse-pose`, so you might need to use some script from that repository.
 
+## IBL quality-control plots and videos (pose2visual package)
+
+The QC tools live in the installable package, not in this folder:
+
+- **Rainbow scatter plots** (per-seed predictions, ensemble median, Pose-EKS, by body-part group):
+  `python -m pose2visual.qc.rainbow --model-dir ... --seed-dirs ... --config configs/encoding/litpose_encoding.yaml --session-group ...`
+  (`--config` supplies `--groups-file` and `--sessions-file` from its `paths` section)
+  (needs `pip install -e .[qc]`). Submit it on a compute node with `scripts/delta/qc/plot_rainbow.sh`;
+  edit the arguments in that file. Run `--help` for every flag.
+- **QC videos** (ensemble median vs Pose-EKS with trace panels): prototype scripts in
+  `src/pose2visual/qc/video/` (`render_compare.py`, `trace_panels.py`, `crop_video.py`), still
+  ear-specific and run directly as scripts.
+
+`render_overlay.py` and `prune_run.py` below stay here because they are generic.
+
 ## Quick renderer: generic overlay script
 
 When a project has no house-style renderers (like mouse-pose does), use `skills/pose-video/render_overlay.py`:

@@ -14,7 +14,7 @@ optionally reprojects the x/y of each body-part group onto its top principal com
 (``2d_pose_pca``, see ``litpose_pca``; the speed is taken in the original pixel space, so the
 reprojection comes before ``keypoint_speed``), and takes the speed. The combined csv itself is
 produced by a separate, already-existing tool
-(``skills/pose-video/plot_comparison.py --save-ensemble-median`` for ``ensemble_median``,
+(``python -m pose2visual.qc.rainbow --save-ensemble-median`` for ``ensemble_median``,
 ``pose2visual.lightningpose.export_eks_csv --standard-naming`` for ``eks_mean``) and consumed by
 pointing ``video_preds_dir`` at its output folder, exactly as for the plain single-seed case —
 this module does not resolve or build that csv itself. ``2d_pose_pca`` (optional) decides whether the

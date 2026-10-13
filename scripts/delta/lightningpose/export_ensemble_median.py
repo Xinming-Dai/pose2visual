@@ -8,7 +8,7 @@ raw seed csvs), and writes one median csv per camera.
 
 The median is a plain `np.median` across seeds (see
 `pose2visual.lightningpose.ensemble_median.compute_ensemble_median`): it does not
-threshold on likelihood or filter NaNs, matching `plot_comparison.py`'s own ensemble
+threshold on likelihood or filter NaNs, matching `pose2visual.qc.rainbow`'s own ensemble
 median panel exactly, so csv output and QC plot stay consistent.
 
 Usage:

@@ -1,6 +1,6 @@
 """Append-only registry of QC/EKS run manifests, keyed by run folder name.
 
-Scripts that write timestamped run folders (e.g. `plot_comparison.py`,
+Scripts that write timestamped run folders (e.g. `pose2visual.qc.rainbow`,
 `fit_eks_latent_model.py`) call `append_entry` after writing their per-run manifest so the
 run is also recorded in a single `registry.json` sibling to the run folders. This makes
 runs discoverable without opening every folder, and gives `prune_run.py` a place to look up
