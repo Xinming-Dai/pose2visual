@@ -1,0 +1,326 @@
+"""Part of step 0: merge the keypoints of several Lightning Pose models into one prediction csv.
+
+Different models are good at different body parts (e.g. a model trained for the ears and a
+general face model). The encoding pipeline reads one csv per session and camera, so this step
+builds ``<video_preds_dir>/_iblrig_<camera>Camera.downsampled.<eid>.csv`` of the encoding yaml
+(``paths.video_preds_dir``) from the csvs of the models listed in its ``merge.sources``. Step 0
+(``list_litpose_keypoints``) calls ``merge_sessions`` itself when the yaml has a ``merge`` section,
+so steps 1 and 2 run unchanged on the merged directory.
+
+Each source takes the keypoints of its ``groups`` (names of ``merge.group_set`` in
+``paths.body_parts_json``; a keypoint belongs to a group when the first ``_``-separated segment
+of its name is one of the group's tokens, the rule of ``expand_groups``). One source may use
+``groups: rest``: it takes every keypoint whose token is claimed by no other source, so the
+keypoints of the other models' groups are dropped from it. Every keypoint comes from exactly one
+source. All sources must hold the same frames (same row count and index).
+
+Writes, next to the merged csvs, ``encoding/merge_info.json`` with the sources and the keypoints
+each one contributed per session and camera.
+
+Usage::
+
+    PYTHONPATH=src python -m pose2visual.encoding.merge_litpose_keypoints \\
+      --config configs/encoding/litpose_encoding.yaml \\
+      [--eids <eid1> <eid2> | --eid-group ear_left] [--cameras left right]
+"""
+
+import argparse
+import json
+import logging
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from pose2visual.encoding.litpose_keypoints import (
+    CAMERAS,
+    MERGE_REST,
+    csv_filename,
+    get_keypoint_names,
+    load_keypoint_csv,
+    load_merge_settings,
+    load_video_preds_dir,
+    merge_info_path,
+    resolve_session_eids,
+)
+from pose2visual.lightningpose.fit_eks_latent_model import load_groups
+
+logger = logging.getLogger(__name__)
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Args:
+        argv: argument list; `None` uses `sys.argv`.
+
+    Returns:
+        Parsed arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description='Merge the keypoints of several Lightning Pose models into one csv per '
+        'session and camera, as set by the merge section of the encoding yaml.',
+    )
+    parser.add_argument('--config', type=str, required=True, help='encoding yaml')
+    parser.add_argument(
+        '--eids',
+        type=str,
+        nargs='+',
+        default=None,
+        help='session ids; mutually exclusive with --eid-group '
+        '(default: session.eid_group of --config)',
+    )
+    parser.add_argument(
+        '--eid-group',
+        type=str,
+        default=None,
+        help='name of a group in --eid-groups-json\'s `neural_sessions`; mutually exclusive '
+        'with --eids',
+    )
+    parser.add_argument(
+        '--eid-groups-json',
+        type=str,
+        default=None,
+        help='path to an `ibl_session_ids.json`-style file; '
+        'default: paths.eid_groups_json of --config',
+    )
+    parser.add_argument(
+        '--cameras',
+        type=str,
+        nargs='+',
+        choices=CAMERAS,
+        default=list(CAMERAS),
+        help='cameras to process (default: left right)',
+    )
+    return parser.parse_args(argv)
+
+
+def select_source_keypoints(
+    keypoints_per_source: list[list[str]],
+    groups_per_source: list[list[str] | str],
+    groups: dict[str, list[str]],
+) -> list[list[str]]:
+    """Pick the keypoints each source contributes.
+
+    Args:
+        keypoints_per_source: keypoint names (csv header order) of each source.
+        groups_per_source: for each source, a list of group names or `'rest'`.
+        groups: group name -> tokens, as from `load_groups`.
+
+    Returns:
+        For each source, the keypoints it contributes, in its header order.
+
+    Raises:
+        ValueError: if a group is unknown or has no keypoint in its source, a keypoint is
+            claimed by two sources, or two sources would contribute the same keypoint name.
+    """
+    claimed_tokens: set[str] = set()
+    for group_names in groups_per_source:
+        if group_names == MERGE_REST:
+            continue
+        unknown = sorted(set(group_names) - set(groups))
+        if unknown:
+            raise ValueError(f'unknown groups {unknown}; available: {sorted(groups)}')
+        claimed_tokens.update(token for name in group_names for token in groups[name])
+
+    selected: list[list[str]] = []
+    for keypoints, group_names in zip(keypoints_per_source, groups_per_source, strict=True):
+        if group_names == MERGE_REST:
+            selected.append([kp for kp in keypoints if kp.split('_')[0] not in claimed_tokens])
+            continue
+        for name in group_names:
+            if not any(kp.split('_')[0] in groups[name] for kp in keypoints):
+                raise ValueError(
+                    f'group {name!r} (tokens {groups[name]}) has no keypoint in its source; '
+                    f'keypoints: {keypoints}',
+                )
+        tokens = {token for name in group_names for token in groups[name]}
+        selected.append([kp for kp in keypoints if kp.split('_')[0] in tokens])
+
+    owner: dict[str, int] = {}
+    for idx_source, keypoints in enumerate(selected):
+        for kp in keypoints:
+            if kp in owner:
+                raise ValueError(
+                    f'keypoint {kp!r} would come from source {owner[kp]} and source '
+                    f'{idx_source}; every keypoint must have exactly one source',
+                )
+            owner[kp] = idx_source
+    return selected
+
+
+def merge_session(
+    eid: str,
+    camera: str,
+    source_dirs: list[str],
+    groups_per_source: list[list[str] | str],
+    groups: dict[str, list[str]],
+    output_dir: str | Path,
+) -> list[list[str]]:
+    """Write the merged prediction csv of one session and camera.
+
+    Args:
+        eid: session id.
+        camera: `'left'` or `'right'`.
+        source_dirs: `video_preds` directories of the models, one per source.
+        groups_per_source: for each source, a list of group names or `'rest'`.
+        groups: group name -> tokens, as from `load_groups`.
+        output_dir: directory the merged csv is written to.
+
+    Returns:
+        For each source, the keypoints it contributed.
+
+    Raises:
+        FileNotFoundError: if a source has no csv for this session and camera.
+        ValueError: if the sources disagree on the frames, or the selection is invalid (see
+            `select_source_keypoints`).
+    """
+    name = csv_filename(camera, eid)
+    dfs: list[pd.DataFrame] = []
+    for source_dir in source_dirs:
+        csv_path = Path(source_dir) / name
+        if not csv_path.is_file():
+            raise FileNotFoundError(f'{csv_path} not found')
+        dfs.append(load_keypoint_csv(csv_path))
+    for source_dir, df in zip(source_dirs[1:], dfs[1:], strict=True):
+        if not df.index.equals(dfs[0].index):
+            raise ValueError(
+                f'{name}: {source_dir} has {len(df)} rows but {source_dirs[0]} has '
+                f'{len(dfs[0])}, or their frame indices differ',
+            )
+    selected = select_source_keypoints(
+        [get_keypoint_names(df) for df in dfs], groups_per_source, groups,
+    )
+    parts = [
+        df.loc[:, df.columns.get_level_values(1).isin(keypoints)]
+        for df, keypoints in zip(dfs, selected, strict=True)
+    ]
+    merged = pd.concat(parts, axis=1)
+    out_path = Path(output_dir) / name
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # header rows by hand: pandas would add a blank index-name row to a MultiIndex header
+    with out_path.open('w', encoding='utf-8') as f:
+        for level, label in enumerate(('scorer', 'bodyparts', 'coords')):
+            values = merged.columns.get_level_values(level)
+            f.write(f'{label},' + ','.join(str(v) for v in values) + '\n')
+        merged.to_csv(f, header=False)
+    logger.info(
+        f'{camera} {eid}: {merged.shape[1] // 3} keypoints -> {out_path}; '
+        + '; '.join(f'{src}: {kps}' for src, kps in zip(source_dirs, selected, strict=True)),
+    )
+    return selected
+
+
+def write_merge_info(
+    output_dir: str | Path,
+    settings: dict[str, Any],
+    sessions: dict[str, list[list[str]]],
+) -> Path:
+    """Record the merge settings and the keypoints each source gave, updating earlier runs.
+
+    Args:
+        output_dir: the merged `video_preds` directory.
+        settings: output of `load_merge_settings`.
+        sessions: `<camera>_<eid>` -> keypoints contributed by each source (in source order).
+
+    Returns:
+        Path of `merge_info.json`.
+    """
+    path = merge_info_path(output_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous: dict[str, Any] = {}
+    if path.is_file():
+        with path.open(encoding='utf-8') as f:
+            previous = json.load(f)
+    info = {
+        'group_set': settings['group_set'],
+        'sources': settings['sources'],
+        # sessions merged under other settings would be misleading, so keep them only when the
+        # sources are unchanged
+        'keypoints_per_source': (
+            previous.get('keypoints_per_source', {})
+            if previous.get('sources') == settings['sources']
+            and previous.get('group_set') == settings['group_set']
+            else {}
+        ),
+    }
+    info['keypoints_per_source'].update(sessions)
+    with path.open('w', encoding='utf-8') as f:
+        json.dump(info, f, indent=2)
+    return path
+
+
+def merge_sessions(
+    config_path: str | Path,
+    eids: list[str],
+    cameras: list[str],
+) -> None:
+    """Merge the prediction csvs of every session and camera, as set by the yaml's `merge`.
+
+    A failing session/camera is logged and skipped; the others still run.
+
+    Args:
+        config_path: encoding yaml with a `merge.sources` section and `paths.video_preds_dir`.
+        eids: session ids to merge.
+        cameras: cameras to merge, each `'left'` or `'right'`.
+
+    Raises:
+        ValueError: if the yaml has no `merge.sources` (see `load_merge_settings`), its group set
+            is missing from `paths.body_parts_json`, or a group is unknown.
+        RuntimeError: after all runs, if any session/camera failed; the message lists them.
+    """
+    settings = load_merge_settings(config_path)
+    if settings is None:
+        raise ValueError(f'{config_path} has no merge.sources; nothing to merge')
+    output_dir = load_video_preds_dir(config_path)
+    groups = load_groups(settings['body_parts_json'], settings['group_set'])
+    source_dirs = [source['video_preds_dir'] for source in settings['sources']]
+    groups_per_source = [source['groups'] for source in settings['sources']]
+
+    sessions: dict[str, list[list[str]]] = {}
+    failures: list[str] = []
+    for eid in eids:
+        for camera in cameras:
+            try:
+                sessions[f'{camera}_{eid}'] = merge_session(
+                    eid, camera, source_dirs, groups_per_source, groups, output_dir,
+                )
+            except Exception as exc:  # keep going; failures are reported below
+                logger.exception(f'[{eid} {camera}] failed')
+                failures.append(f'{eid}/{camera}: {type(exc).__name__}: {exc}')
+    if sessions:
+        logger.info(f'wrote {write_merge_info(output_dir, settings, sessions)}')
+    n_total = len(eids) * len(cameras)
+    logger.info(f'merged {n_total - len(failures)}/{n_total} session/camera csvs')
+    if failures:
+        raise RuntimeError(
+            f'{len(failures)} of {n_total} merges failed:\n' + '\n'.join(failures),
+        )
+
+
+def main(argv: list[str] | None = None) -> None:
+    """Merge the prediction csvs of every requested session and camera.
+
+    Normally step 0 (`list_litpose_keypoints`) does this itself when the yaml has a `merge`
+    section; this entry point merges without listing the keypoints.
+
+    Args:
+        argv: argument list; `None` uses `sys.argv`.
+
+    Raises:
+        ValueError: if the yaml has no `merge.sources`, or no sessions are selected (see
+            `resolve_session_eids`).
+        RuntimeError: if any session/camera failed (see `merge_sessions`).
+    """
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+    args = parse_args(argv)
+    eids = resolve_session_eids(args.config, args.eids, args.eid_group, args.eid_groups_json)
+    if eids is None:
+        raise ValueError(
+            f'no sessions: pass --eids or --eid-group, or set session.eid_group in {args.config}',
+        )
+    merge_sessions(args.config, eids, list(dict.fromkeys(args.cameras)))
+
+
+if __name__ == '__main__':
+    main()

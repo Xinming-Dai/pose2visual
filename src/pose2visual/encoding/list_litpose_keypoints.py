@@ -18,6 +18,11 @@ single source shared by all steps; ``--likelihood-threshold`` / ``--max-masked-f
 for this run only. Steps B and C fail when their config disagrees with the json written here, so
 rerun this step after changing either number in the yaml.
 
+When the yaml has a ``merge`` section, this step first builds the csvs of ``paths.video_preds_dir``
+from the models listed in ``merge.sources`` (see ``merge_litpose_keypoints``) for the selected
+sessions (required) and ``--cameras``, then lists them. ``--video-preds-dir`` must then be the
+yaml's ``paths.video_preds_dir`` (or unset). Rerun this step after changing ``merge``.
+
 Keypoints of the groups in the yaml's ``filter.group_set.unfiltered_groups`` (looked up in
 ``filter.group_set.name`` of ``paths.body_parts_json``) skip confidence filtering: their
 likelihood is ignored, so only NaN ``x``/``y`` frames count as masked and ``max_masked_frac``
@@ -29,7 +34,7 @@ Usage::
     PYTHONPATH=src python -m pose2visual.encoding.list_litpose_keypoints \\
       --config configs/encoding/litpose_encoding.yaml \\
       [--video-preds-dir <model_dir>/video_preds] [--likelihood-threshold 0.9] \\
-      [--max-masked-frac 0.3] [--eids <eid1> <eid2> | --eid-group sable]
+      [--max-masked-frac 0.3] [--eids <eid1> <eid2> | --eid-group sable] [--cameras left right]
 """
 
 import argparse
@@ -38,17 +43,20 @@ import logging
 from pathlib import Path
 
 from pose2visual.encoding.litpose_keypoints import (
+    CAMERAS,
     frame_fractions,
     get_keypoint_names,
     keypoint_names_json_path,
     list_keypoint_csvs,
     load_filter_settings,
     load_keypoint_csv,
+    load_merge_settings,
     load_unfiltered_keypoints,
     load_video_preds_dir,
     resolve_session_eids,
     validate_filter_settings,
 )
+from pose2visual.encoding.merge_litpose_keypoints import merge_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +107,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help='path to an `ibl_session_ids.json`-style file; '
         'default: paths.eid_groups_json of --config',
+    )
+    parser.add_argument(
+        '--cameras',
+        type=str,
+        nargs='+',
+        choices=CAMERAS,
+        default=list(CAMERAS),
+        help='cameras to merge when --config has a merge section (default: left right); '
+        'ignored otherwise, where every csv of the selected sessions is listed',
     )
     parser.add_argument(
         '--likelihood-threshold',
@@ -206,7 +223,9 @@ def main(argv: list[str] | None = None) -> None:
     Raises:
         FileNotFoundError: if the directory contains no prediction csv, or a selected session has
             none.
-        ValueError: if the config lacks a valid `likelihood_threshold` / `max_masked_frac`, its
+        ValueError: if the config lacks a valid `likelihood_threshold` / `max_masked_frac`, it has
+            a `merge` section but no sessions are selected or `--video-preds-dir` is another
+            directory than its `paths.video_preds_dir`, its
             `filter.group_set.unfiltered_groups` is invalid or not in `filter.group_set.name`,
             neither `--video-preds-dir` nor the config's `video_preds_dir` is given, both
             `--eids` and `--eid-group` are given, `--eid-group` is given without
@@ -240,14 +259,31 @@ def main(argv: list[str] | None = None) -> None:
         f'likelihood_threshold={likelihood_threshold}, max_masked_frac={max_masked_frac}',
     )
 
+    selected_eids = resolve_session_eids(
+        args.config, args.eids, args.eid_group, args.eid_groups_json,
+    )
+    if load_merge_settings(args.config) is not None:
+        # the csvs of video_preds_dir are built from several models first, then listed below
+        if args.video_preds_dir is not None and (
+            Path(args.video_preds_dir).resolve()
+            != Path(str(load_video_preds_dir(args.config))).resolve()
+        ):
+            raise ValueError(
+                f'--video-preds-dir {args.video_preds_dir} differs from paths.video_preds_dir '
+                f'of {args.config}, where the merge section writes the merged csvs',
+            )
+        if selected_eids is None:
+            raise ValueError(
+                f'{args.config} has a merge section, which needs sessions: pass --eids or '
+                '--eid-group, or set session.eid_group',
+            )
+        merge_sessions(args.config, selected_eids, list(dict.fromkeys(args.cameras)))
+
     csvs = list_keypoint_csvs(video_preds_dir)
     if not csvs:
         raise FileNotFoundError(
             f'no _iblrig_<camera>Camera.downsampled.<eid>.csv found in {video_preds_dir}',
         )
-    selected_eids = resolve_session_eids(
-        args.config, args.eids, args.eid_group, args.eid_groups_json,
-    )
     if selected_eids is None:
         logger.info(f'no session selection: listing all {len(csvs)} csvs in {video_preds_dir}')
     else:

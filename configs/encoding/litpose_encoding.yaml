@@ -13,8 +13,9 @@ session:
   camera: left
 
 paths:
-  # <model_dir>/video_preds of the lightning pose checkpoint; its location is recorded in the log
-  video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/E6c-LOO-ibl-headmlp256_3seeds/face+cheese+caz+kondo+hmv+c3d+kauf_train/rainbow_qc/20261012_142217/ensemble_median
+  # <model_dir>/video_preds of the lightning pose checkpoint; its location is recorded in the log.
+  # With a `merge` section below this is the output dir: the merged csvs and every step's outputs
+  video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/merged_mm_ibl_ear
   # defines the groups used by pca and by anatomical_group
   body_parts_json: scripts/delta/data/body_parts.json
   # neural_sessions -> group name -> eids
@@ -35,6 +36,18 @@ filter:
   group_set:
     name: nonoverlapping_analysis_groups
     unfiltered_groups: [mouth_related]
+
+# optional: take each body part from the model that predicts it best. Step 0 builds one csv per
+# session and camera in paths.video_preds_dir from these models.
+merge:
+  # group set of paths.body_parts_json used to resolve `groups`
+  group_set: nonoverlapping_analysis_groups
+  # every keypoint comes from exactly one source; `rest` = all keypoints no other source claims
+  sources:
+    - video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/ibl-ears/rainbow_qc/20261012_164307/ensemble_median
+      groups: [ear_related]
+    - video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/E6c-LOO-ibl-headmlp256_3seeds/face+cheese+caz+kondo+hmv+c3d+kauf_train/rainbow_qc/20261012_142217/ensemble_median
+      groups: rest
 
 # PCA reprojection, done in step 1. On/off comes from step_order; this is only the group set
 pca:

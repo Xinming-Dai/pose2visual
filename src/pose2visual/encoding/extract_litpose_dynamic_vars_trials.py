@@ -25,8 +25,9 @@ processed; the ``pca`` flag is stored in ``dynamic_vars.npz`` for step C to chec
 keypoints are usable, and fails if that json was written with other settings than the yaml (rerun
 step A). Writes
 ``<video-preds-dir>/<camera>_<output-name>/<eid>/dynamic_vars.npz`` and
-``params.json`` (which records the Lightning Pose checkpoint directory and the config's
-``step_order``; ``step_order`` does not change how the csv at ``--video-preds-dir`` is read, it
+``params.json`` (which records the Lightning Pose checkpoint directory, the ``merge`` info when
+``video_preds_dir`` holds csvs merged from several models by ``merge_litpose_keypoints``, and the
+config's ``step_order``; ``step_order`` does not change how the csv at ``--video-preds-dir`` is read, it
 only decides the PCA). ``--output-name`` is camera-free (default: ``output.output_name`` of
 ``--config``); the camera is always prefixed (see ``output_folder_name``), so the cameras get
 separate folders, e.g. ``left_encoding`` and ``right_encoding`` for ``--output-name encoding``.
@@ -74,6 +75,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_step_order,
     load_unfiltered_keypoints,
     load_video_preds_dir,
+    merge_info_path,
     output_folder_name,
     resolve_session_eids,
     session_output_dir,
@@ -414,12 +416,22 @@ def extract_session(
     np.savez(npz_path, **npz_kwargs)
     logger.info(f'wrote {npz_path}')
 
+    merge_info = None
+    merge_path = merge_info_path(video_preds_dir)
+    if merge_path.is_file():
+        # the csv was merged from several models: record which one gave which keypoint
+        with merge_path.open(encoding='utf-8') as f:
+            merge_info = json.load(f)
+        merge_info['keypoints_per_source'] = merge_info['keypoints_per_source'].get(
+            f'{camera}_{eid}',
+        )
     params = {
         'eid': eid,
         'camera': camera,
         'csv_path': str(csv_path),
         'video_preds_dir': str(video_preds_dir),
         'model_dir': keypoint_info['model_dir'],
+        'merge': merge_info,
         'timestamps_path': str(times_path),
         'neural_aligned_npz': str(neural_aligned_npz),
         'config': None if config_path is None else str(Path(config_path).resolve()),

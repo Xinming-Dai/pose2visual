@@ -9,6 +9,9 @@ csv reading, keypoint speed computation and trial binning shared by
 
 Directory layout under ``video_preds_dir`` (``<model_dir>/video_preds``)::
 
+    encoding/merge_info.json                        optional, written when the yaml has a
+        ``merge`` section (``merge_litpose_keypoints`` builds the csvs of this directory from
+        several models)
     encoding/keypoint_names/<camera>_<eid>.json     step A, one per csv
     <camera>_<output_name>/<eid>/dynamic_vars.npz   step B
     <camera>_<output_name>/<eid>/base/encoding_result.npz
@@ -39,6 +42,9 @@ from pose2visual.lightningpose.fit_eks_latent_model import load_groups
 CAMERAS = ('left', 'right')
 DEFAULT_PCA_GROUP_SET = 'nonoverlapping_analysis_groups'
 DEFAULT_FILTER_GROUP_SET = 'nonoverlapping_analysis_groups'
+DEFAULT_MERGE_GROUP_SET = 'nonoverlapping_analysis_groups'
+# `merge.sources[*].groups` value meaning "every keypoint no other source claims"
+MERGE_REST = 'rest'
 _PCA_STEP = '2d_pose_pca'
 # `anatomical_group` value meaning "base / additional lists hold explicit keypoint names"
 ANATOMICAL_GROUP_ALL = 'all'
@@ -57,6 +63,7 @@ ENCODING_YAML_SECTIONS = {
         'max_masked_frac': 'max_masked_frac',
     },
     'pca': {'group_set': 'pca_group_set'},
+    'merge': {'group_set': 'merge_group_set', 'sources': 'merge_sources'},
     'anatomical_group': {
         'name': 'anatomical_group',
         'base_keypoints': 'base_keypoints',
@@ -131,6 +138,18 @@ def keypoint_names_json_path(video_preds_dir: str | Path, camera: str, eid: str)
         `<video_preds_dir>/encoding/keypoint_names/<camera>_<eid>.json`.
     """
     return Path(video_preds_dir) / 'encoding' / 'keypoint_names' / f'{camera}_{eid}.json'
+
+
+def merge_info_path(video_preds_dir: str | Path) -> Path:
+    """Path of the json recording which model each merged keypoint came from.
+
+    Args:
+        video_preds_dir: directory holding the merged Lightning Pose prediction csvs.
+
+    Returns:
+        `<video_preds_dir>/encoding/merge_info.json`, written by `merge_litpose_keypoints`.
+    """
+    return Path(video_preds_dir) / 'encoding' / 'merge_info.json'
 
 
 def output_folder_name(camera: str, output_name: str) -> str:
@@ -290,7 +309,7 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
         `video_preds_dir`, `body_parts_json`, `eid_groups_json`, `output_name`, `variant_name`,
         `likelihood_threshold`, `max_masked_frac`, `unfiltered_groups`
         (`filter.group_set.unfiltered_groups`), `filter_group_set` (`filter.group_set.name`),
-        `pca_group_set` (`pca.group_set`),
+        `pca_group_set` (`pca.group_set`), `merge_group_set` and `merge_sources` (`merge.*`),
         `anatomical_group` (`anatomical_group.name`), `base_keypoints`, `additional_keypoints`
         and `pca`. `pca` is not a yaml key: it is derived from `step_order` (True when the named
         pipeline contains the `2d_pose_pca` step), so the two can never disagree.
@@ -560,6 +579,83 @@ def load_unfiltered_keypoints(config_path: str | Path, keypoints: list[str]) -> 
         )
     tokens = {token for name in group_names for token in groups[name]}
     return [name for name in keypoints if name.split('_')[0] in tokens]
+
+
+def load_merge_settings(config_path: str | Path) -> dict[str, Any] | None:
+    """Read and validate the optional `merge` section of the encoding yaml.
+
+    The section lists several Lightning Pose models whose keypoints are combined into one csv per
+    session and camera (see `merge_litpose_keypoints`), so each body part can come from the model
+    that predicts it best.
+
+    Args:
+        config_path: path of the encoding yaml.
+
+    Returns:
+        `None` when the yaml has no `merge.sources`, otherwise a dict with `group_set`
+        (`merge.group_set`, default `'nonoverlapping_analysis_groups'`), `body_parts_json`
+        (`paths.body_parts_json`) and `sources`: a list of `{'video_preds_dir': str, 'groups':
+        list[str] | 'rest'}` in yaml order.
+
+    Raises:
+        ValueError: if the yaml is invalid (see `load_encoding_yaml`), `merge.sources` is not a
+            non-empty list of mappings with exactly the keys `video_preds_dir` and `groups`,
+            `groups` is neither `'rest'` nor a non-empty list of group names, more than one
+            source uses `'rest'`, a group is listed by two sources, `paths.video_preds_dir`
+            (the merged output) is also a source, or `paths.body_parts_json` /
+            `paths.video_preds_dir` is missing.
+    """
+    cfg = load_encoding_yaml(config_path)
+    sources = cfg.get('merge_sources')
+    if sources is None:
+        return None
+    if not isinstance(sources, list) or not sources:
+        raise ValueError(f'{config_path}: merge.sources must be a non-empty list')
+    body_parts_json = cfg.get('body_parts_json')
+    output_dir = cfg.get('video_preds_dir')
+    if body_parts_json is None or output_dir is None:
+        raise ValueError(
+            f'{config_path}: merge.sources needs paths.body_parts_json (to resolve the groups) '
+            'and paths.video_preds_dir (where the merged csvs are written)',
+        )
+    parsed: list[dict[str, Any]] = []
+    for idx_source, source in enumerate(sources):
+        where = f'{config_path}: merge.sources[{idx_source}]'
+        if not isinstance(source, dict) or set(source) != {'video_preds_dir', 'groups'}:
+            raise ValueError(
+                f'{where} must be a mapping with exactly the keys video_preds_dir and groups, '
+                f'got {source!r}',
+            )
+        groups = source['groups']
+        if groups != MERGE_REST and (
+            not isinstance(groups, list) or not groups
+            or not all(isinstance(g, str) and g for g in groups)
+        ):
+            raise ValueError(
+                f'{where}.groups must be {MERGE_REST!r} or a non-empty list of group names, '
+                f'got {groups!r}',
+            )
+        source_dir = str(source['video_preds_dir'])
+        if Path(source_dir).resolve() == Path(str(output_dir)).resolve():
+            raise ValueError(
+                f'{where}.video_preds_dir equals paths.video_preds_dir; the merged csvs would '
+                'overwrite the source',
+            )
+        parsed.append({
+            'video_preds_dir': source_dir,
+            'groups': groups if groups == MERGE_REST else list(dict.fromkeys(groups)),
+        })
+    if sum(source['groups'] == MERGE_REST for source in parsed) > 1:
+        raise ValueError(f'{config_path}: at most one merge source may use groups: {MERGE_REST}')
+    named = [g for source in parsed if source['groups'] != MERGE_REST for g in source['groups']]
+    duplicated = sorted({g for g in named if named.count(g) > 1})
+    if duplicated:
+        raise ValueError(f'{config_path}: groups {duplicated} are listed by several merge sources')
+    return {
+        'group_set': str(cfg.get('merge_group_set') or DEFAULT_MERGE_GROUP_SET),
+        'body_parts_json': str(body_parts_json),
+        'sources': parsed,
+    }
 
 
 def load_video_preds_dir(config_path: str | Path) -> str | None:
