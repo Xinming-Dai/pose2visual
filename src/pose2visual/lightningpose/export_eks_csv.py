@@ -3,7 +3,7 @@
 Combines every body-part group's fitted latent model under a session's eks output directory
 (``fit_eks_latent_model.py``'s ``out_root``) into a single csv per camera, in the same
 ``(scorer, bodyparts, coords)`` 3-level-header format as the raw prediction csvs — a drop-in
-for tools that expect that format (e.g. ``render_overlay.py``).
+for tools that expect that format (e.g. ``pose2visual.qc.overlay``).
 
 Safe to combine every group into one csv because ``nonoverlapping_analysis_groups`` (what
 ``fit_eks_latent_model.py`` fits by default) is a true partition: no landmark appears in more

@@ -2,11 +2,11 @@
 """Delete a run's output folder and its entry in registry.json.
 
 Works against either `<model_dir>/rainbow_qc/registry.json` (pose2visual.qc.rainbow runs) or
-`<model_dir>/eks/registry.json` (fit_eks_latent_model.py runs) — the registry format is the
-same for both.
+`<model_dir>/eks/registry.json` (`pose2visual.lightningpose.fit_eks_latent_model` runs); the
+registry format is the same for both.
 
 Usage:
-    python prune_run.py --registry /path/to/rainbow_qc/registry.json \\
+    python -m pose2visual.qc.prune_run --registry /path/to/rainbow_qc/registry.json \\
         --run-name 20261009_143201__my-qc 20261009_150322__other-qc
 """
 
@@ -14,17 +14,11 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Optional
-
-# Add src to path for development/skill usage (project-agnostic import)
-_pose2visual_src = Path(__file__).parent.parent.parent / 'src'
-if _pose2visual_src.exists() and str(_pose2visual_src) not in sys.path:
-    sys.path.insert(0, str(_pose2visual_src))
 
 from pose2visual.run_registry import prune_entry
 
 
-def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

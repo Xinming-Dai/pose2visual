@@ -37,7 +37,7 @@ Default output:
 mirroring ``pose2visual.qc.rainbow``'s own ``<model-dir>/rainbow_qc/<timestamp>[__<tag>]``
 convention). Every run's manifest is also appended to ``<model-dir>/eks/registry.json``
 (keyed by folder name). Pass ``--out-root`` to override the output location, or
-``prune_run.py`` to delete a run and its registry entry together.
+``pose2visual.qc.prune_run`` to delete a run and its registry entry together.
 """
 
 import argparse

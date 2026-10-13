@@ -8,10 +8,10 @@ For IBL-2view dataset: video is auto-discovered from CSV filename (camera + UUID
 Pass --video only if auto-discovery fails or you want a different video.
 
 Usage:
-    python render_overlay.py --csv predictions.csv
-    python render_overlay.py --csv predictions.csv --duration 10 --tag 10s
-    python render_overlay.py --csv predictions.csv --video /custom/video.mp4
-    python render_overlay.py --csv predictions.csv --output /path/to/output.mp4
+    python -m pose2visual.qc.overlay --csv predictions.csv
+    python -m pose2visual.qc.overlay --csv predictions.csv --duration 10 --tag 10s
+    python -m pose2visual.qc.overlay --csv predictions.csv --video /custom/video.mp4
+    python -m pose2visual.qc.overlay --csv predictions.csv --output /path/to/output.mp4
 
 Default output: <csv_dir>/overlay_videos/<csv_stem>.mp4
 With --tag: <csv_dir>/overlay_videos/<csv_stem>__<tag>.mp4
@@ -21,16 +21,10 @@ Auto-versioning: if file exists, use _v2.mp4, _v3.mp4, etc.
 import argparse
 import sys
 from pathlib import Path
-from typing import Optional
 
 import cv2
-import pandas as pd
 import numpy as np
-
-# Add src to path for development/skill usage (project-agnostic import)
-_pose2visual_src = Path(__file__).parent.parent.parent / 'src'
-if _pose2visual_src.exists() and str(_pose2visual_src) not in sys.path:
-    sys.path.insert(0, str(_pose2visual_src))
+import pandas as pd
 
 from pose2visual.preprocessing import resolve_video_path
 
@@ -56,8 +50,8 @@ def detect_csv_header_levels(csv_path: str) -> int:
 
 def resolve_output_path(
     csv_path: str,
-    output_path: Optional[str] = None,
-    tag: Optional[str] = None,
+    output_path: str | None = None,
+    tag: str | None = None,
 ) -> Path:
     """Resolve output video path with auto-versioning.
 
@@ -98,7 +92,7 @@ def render_keypoints_overlay(
     video_path: str,
     csv_path: str,
     output_path: str,
-    duration_sec: Optional[float] = None,
+    duration_sec: float | None = None,
     conf_threshold: float = 0.7,
     marker_size: int = 4,
     text_scale: float = 0.3,
@@ -263,10 +257,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  python render_overlay.py --csv predictions.csv
-  python render_overlay.py --csv predictions.csv --duration 10 --tag 10s
-  python render_overlay.py --csv predictions.csv --video /custom/video.mp4
-  python render_overlay.py --csv predictions.csv --output /custom/output.mp4
+  python -m pose2visual.qc.overlay --csv predictions.csv
+  python -m pose2visual.qc.overlay --csv predictions.csv --duration 10 --tag 10s
+  python -m pose2visual.qc.overlay --csv predictions.csv --video /custom/video.mp4
+  python -m pose2visual.qc.overlay --csv predictions.csv --output /custom/output.mp4
 
 For IBL-2view dataset: video is auto-discovered from CSV filename (camera + UUID).
 Pass --video only if the auto-discovery fails or you want a different video.

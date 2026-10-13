@@ -44,7 +44,7 @@ def write_ensemble_median_csv(
     """Write the ensemble median to a DLC-style 3-level-header csv.
 
     Same `(scorer, bodyparts, coords)` structure as the raw seed prediction csvs, so
-    the output is a drop-in for tools that expect that format (e.g. `render_overlay.py`).
+    the output is a drop-in for tools that expect that format (e.g. `pose2visual.qc.overlay`).
 
     Args:
         xy_median: (n_frames, n_keypoints, 2) median coordinates.

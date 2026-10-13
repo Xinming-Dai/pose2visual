@@ -17,16 +17,15 @@ The QC tools live in the installable package, not in this folder:
 - **QC videos** (ensemble median vs Pose-EKS with trace panels): prototype scripts in
   `src/pose2visual/qc/video/` (`render_compare.py`, `trace_panels.py`, `crop_video.py`), still
   ear-specific and run directly as scripts.
-
-`render_overlay.py` and `prune_run.py` below stay here because they are generic.
+- **Overlay video** from a predictions csv: `python -m pose2visual.qc.overlay --csv ...` (section below).
+- **Delete a QC/EKS run** and its registry entry: `python -m pose2visual.qc.prune_run --registry ... --run-name ...`.
 
 ## Quick renderer: generic overlay script
 
-When a project has no house-style renderers (like mouse-pose does), use `skills/pose-video/render_overlay.py`:
+When a project has no house-style renderers (like mouse-pose does), use `python -m pose2visual.qc.overlay`:
 
 ```bash
-cd skills/pose-video
-python render_overlay.py --csv predictions.csv
+python -m pose2visual.qc.overlay --csv predictions.csv
 ```
 
 **For IBL-2view dataset**: video is auto-discovered from CSV filename (camera + UUID).
@@ -51,9 +50,9 @@ python render_overlay.py --csv predictions.csv
 
 Examples:
 ```bash
-python render_overlay.py --csv predictions.csv --duration 30 --tag full --conf-threshold 0.8
-python render_overlay.py --csv predictions.csv --tag test --marker-size 6
-python render_overlay.py --csv predictions.csv --video /custom/video.mp4  # override auto-discovery
+python -m pose2visual.qc.overlay --csv predictions.csv --duration 30 --tag full --conf-threshold 0.8
+python -m pose2visual.qc.overlay --csv predictions.csv --tag test --marker-size 6
+python -m pose2visual.qc.overlay --csv predictions.csv --video /custom/video.mp4  # override auto-discovery
 ```
 
 # Pose overlay videos and figures

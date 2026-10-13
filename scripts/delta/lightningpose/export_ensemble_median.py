@@ -20,7 +20,7 @@ Usage:
 Default output: <model_dir>/ensemble_median/<timestamp>[__<tag>]/csv/ensemble_median_<camera>.csv
 Folder name is `YYYYMMDD_HHMMSS`, suffixed with `__<tag>` when `--tag` is given. Every
 run's manifest is also appended to `<model_dir>/ensemble_median/registry.json` (keyed by
-folder name). Use `prune_run.py` to delete a run and its registry entry together.
+folder name). Use `pose2visual.qc.prune_run` to delete a run and its registry entry together.
 """
 
 import argparse
