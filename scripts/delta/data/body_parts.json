@@ -42,11 +42,48 @@
     "forelimb": [
       "wrist"
     ]
+  }, "nonoverlapping_analysis_groups_separate_tongue": {
+    "eye_related": [
+      "eye",
+      "pupil"
+    ],
+    "mouth_related": [
+      "mouth",
+      "upperlip",
+      "lowerlip"
+    ],
+    "tongue": [
+      "tongue"
+    ],
+    "nose_pad_related": [
+      "nose",
+      "pad"
+    ],
+    "ear_related": [
+      "ear"
+    ],
+    "digits": [
+      "d1",
+      "d2",
+      "d3",
+      "d4"
+    ],
+    "forelimb": [
+      "wrist"
+    ]
   },
   "PCA_n_components": {
     "nonoverlapping_analysis_groups": {
       "eye_related": 5,
       "mouth_related": 16,
+      "nose_pad_related": 4,
+      "ear_related": 5,
+      "digits": 10,
+      "forelimb": 2
+    }, "nonoverlapping_analysis_groups_separate_tongue": {
+      "eye_related": 5,
+      "mouth_related": 6,
+      "tongue": 1,
       "nose_pad_related": 4,
       "ear_related": 5,
       "digits": 10,
