@@ -14,9 +14,12 @@ The QC tools live in the installable package, not in this folder:
   (`--config` supplies `--groups-file` and `--sessions-file` from its `paths` section)
   (needs `pip install -e .[qc]`). Submit it on a compute node with `scripts/delta/qc/plot_rainbow.sh`;
   edit the arguments in that file. Run `--help` for every flag.
-- **QC videos** (ensemble median vs Pose-EKS with trace panels): prototype scripts in
-  `src/pose2visual/qc/video/` (`render_compare.py`, `trace_panels.py`, `crop_video.py`), still
-  ear-specific and run directly as scripts.
+- **QC videos** (ensemble median vs Pose-EKS, +-SD crosses, SD strips and coordinate traces; one
+  video per body-part group, all groups by default, cameras side by side):
+  `python -m pose2visual.qc.video --eks-dir <model>/eks/<run>/eks --config configs/encoding/litpose_encoding.yaml --sessions <eid> [--groups ear_related ...]`
+  (reads only the Pose-EKS csvs written by `scripts/delta/lightningpose/fit_eks.sh`; `--cameras left`
+  for one camera, `--auto-crop-pad 12` or `--crop-left/--crop-right X0 Y0 X1 Y1` to zoom). Submit it
+  with `scripts/delta/qc/render_video.sh`; videos land in `<model>/eks/<run>/qc/video_qc/<group>/`.
 - **Overlay video** from a predictions csv: `python -m pose2visual.qc.overlay --csv ...` (section below).
 - **Delete a QC/EKS run** and its registry entry: `python -m pose2visual.qc.prune_run --registry ... --run-name ...`.
 

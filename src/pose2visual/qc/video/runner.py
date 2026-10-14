@@ -1,0 +1,209 @@
+"""Resolve sessions, groups, csvs and videos and render one QC video per session."""
+
+import argparse
+import logging
+from pathlib import Path
+
+from pose2visual.lightningpose.fit_eks_latent_model import (
+    discover_keypoint_names,
+    group_columns_for_camera,
+    load_groups,
+    resolve_group_bases,
+)
+from pose2visual.preprocessing import resolve_video_path
+from pose2visual.qc.video.loading import (
+    CameraData,
+    load_camera_data,
+    read_run_label,
+    resolve_eks_csv,
+)
+from pose2visual.qc.video.render_compare import VideoJob, render_video
+
+logger = logging.getLogger(__name__)
+
+
+def build_output_path(
+    out_dir: Path,
+    session_id: str,
+    group_name: str,
+    cameras: list[str],
+    start_frame: int,
+    n_frames: int,
+    tag: str | None = None,
+) -> Path:
+    """Name the video of one session and group; it lives in a folder named after the group.
+
+    The session id is the only part containing `-`; it is separated from the other parts by `.`
+    so that it can be split out of the file name.
+
+    Args:
+        out_dir: output directory.
+        session_id: session UUID.
+        group_name: body-part group shown.
+        cameras: cameras shown.
+        start_frame: first frame rendered.
+        n_frames: number of frames rendered.
+        tag: optional extra name part.
+
+    Returns:
+        `<out_dir>/<group>/qc_video.<session>.<group>.<cameras>.frames<start>_<end>[.<tag>].mp4`.
+    """
+    parts = [
+        'qc_video',
+        session_id,
+        group_name,
+        '_'.join(cameras),
+        f'frames{start_frame:06d}_{start_frame + n_frames - 1:06d}',
+    ]
+    if tag:
+        parts.append(tag)
+    return out_dir / group_name / ('.'.join(parts) + '.mp4')
+
+
+def load_session_cameras(
+    eks_dir: Path,
+    session_id: str,
+    cameras: list[str],
+    groups: dict[str, list[str]],
+    start_frame: int,
+    n_frames: int,
+) -> tuple[dict[str, CameraData], dict[str, Path]]:
+    """Load the Pose-EKS arrays of every camera of one session.
+
+    Args:
+        eks_dir: directory of the Pose-EKS csvs.
+        session_id: session UUID.
+        cameras: cameras to load.
+        groups: body-part group name -> tokens; the keypoints of all groups are loaded, once each.
+        start_frame: first frame.
+        n_frames: number of frames.
+
+    Returns:
+        the arrays and the csv path, each keyed by camera.
+
+    Raises:
+        FileNotFoundError: if a csv is missing.
+        ValueError: if a group matches no keypoint, or a csv is too short.
+    """
+    data = {}
+    csv_paths = {}
+    for camera in cameras:
+        csv_path = resolve_eks_csv(eks_dir, session_id, camera)
+        keypoint_names = discover_keypoint_names(csv_path)
+        columns: list[str] = []
+        landmarks: list[str] = []
+        for tokens in groups.values():
+            bases = resolve_group_bases(keypoint_names, tokens)
+            for (base, _), column in zip(bases, group_columns_for_camera(bases, camera)):
+                if column not in columns:
+                    columns.append(column)
+                    landmarks.append(base)
+        data[camera] = load_camera_data(
+            csv_path, columns, landmarks, camera, start_frame, n_frames,
+        )
+        csv_paths[camera] = csv_path
+    return data, csv_paths
+
+
+def run(args: argparse.Namespace) -> list[Path]:
+    """Render one video per session and group, each in a folder named after its group.
+
+    Args:
+        args: parsed command-line arguments (see `pose2visual.qc.video.cli.parse_args`); when
+            `args.groups` is None every group of the group set is rendered, and a group with no
+            keypoint in the csvs is skipped with a warning (an explicitly named one is an error).
+
+    Returns:
+        the written video paths, in session then group order.
+
+    Raises:
+        ValueError: if a requested group, session group or an explicitly named group's keypoints
+            do not exist.
+        FileNotFoundError: if a csv or video cannot be found.
+    """
+    all_groups = load_groups(args.groups_file, group_set=args.group_set)
+    explicit_groups = args.groups is not None
+    group_names = args.groups if explicit_groups else list(all_groups)
+    missing = sorted(set(group_names) - set(all_groups))
+    if missing:
+        raise ValueError(f'groups not found in {args.groups_file}: {missing}')
+
+    if args.sessions is not None:
+        sessions = args.sessions
+    else:
+        session_groups = load_groups(args.sessions_file, group_set='neural_sessions')
+        if args.session_group not in session_groups:
+            raise ValueError(
+                f'session group {args.session_group!r} not found in {args.sessions_file}: '
+                f'{sorted(session_groups)}',
+            )
+        sessions = session_groups[args.session_group]
+    logger.info(f'sessions: {sessions}, groups: {group_names}')
+
+    eks_dir = Path(args.eks_dir).resolve()
+    out_dir = (
+        Path(args.out_dir).resolve() if args.out_dir else eks_dir.parent / 'qc' / 'video_qc'
+    )
+    run_label = read_run_label(eks_dir)
+    video_overrides = {'left': args.video_left, 'right': args.video_right}
+    crops = {
+        'left': tuple(args.crop_left) if args.crop_left else None,
+        'right': tuple(args.crop_right) if args.crop_right else None,
+    }
+
+    written = []
+    for session_idx, session_id in enumerate(sessions, start=1):
+        logger.info(f'=== [{session_idx}/{len(sessions)}] session {session_id} ===')
+        csv_paths = {
+            camera: resolve_eks_csv(eks_dir, session_id, camera) for camera in args.cameras
+        }
+        video_paths = {}
+        for camera in args.cameras:
+            if video_overrides[camera]:
+                video_paths[camera] = Path(video_overrides[camera]).resolve()
+                continue
+            video_path = resolve_video_path(str(csv_paths[camera]), video_root=args.video_root)
+            if video_path is None:
+                raise FileNotFoundError(
+                    f'could not find the {camera} video of session {session_id}; '
+                    f'pass --video-{camera} or --video-root',
+                )
+            video_paths[camera] = video_path
+            logger.info(f'  {camera}: {video_path}')
+
+        keypoint_names = discover_keypoint_names(csv_paths[args.cameras[0]])
+        for group_name in group_names:
+            tokens = all_groups[group_name]
+            if not explicit_groups:
+                try:
+                    resolve_group_bases(keypoint_names, tokens)
+                except ValueError:
+                    logger.warning(f'  skipping group {group_name}: no keypoint in the csv')
+                    continue
+            logger.info(f'  --- group {group_name} ---')
+            data, _ = load_session_cameras(
+                eks_dir, session_id, args.cameras, {group_name: tokens}, args.start_frame,
+                args.n_frames,
+            )
+            job = VideoJob(
+                session_id=session_id,
+                data=data,
+                video_paths=video_paths,
+                out_path=build_output_path(
+                    out_dir, session_id, group_name, args.cameras, args.start_frame,
+                    args.n_frames, args.tag,
+                ),
+                start_frame=args.start_frame,
+                n_frames=args.n_frames,
+                conf_threshold=args.conf_threshold,
+                bar_scale=args.bar_scale,
+                trace_window=args.trace_window,
+                crops=crops,
+                auto_crop_pad=args.auto_crop_pad,
+                save_diagnostics=args.save_diagnostics,
+                group_names=[group_name],
+                run_label=run_label,
+            )
+            written.append(render_video(job))
+            logger.info(f'  wrote {written[-1]}')
+    return written
