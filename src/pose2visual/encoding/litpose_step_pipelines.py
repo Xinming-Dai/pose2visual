@@ -15,7 +15,7 @@ optionally reprojects the x/y of each body-part group onto its top principal com
 reprojection comes before ``keypoint_speed``), and takes the speed. The combined csv itself is
 produced by a separate, already-existing tool
 (``python -m pose2visual.qc.rainbow --save-ensemble-median`` for ``ensemble_median``,
-``pose2visual.lightningpose.export_eks_csv --standard-naming`` for ``eks_mean``) and consumed by
+``pose2visual.lightningpose.fit_eks_latent_model`` for ``eks_mean``) and consumed by
 pointing ``video_preds_dir`` at its output folder, exactly as for the plain single-seed case —
 this module does not resolve or build that csv itself. ``2d_pose_pca`` (optional) decides whether the
 config applies PCA (there is no separate ``pca.enabled`` yaml key) and ``encoding`` maps onto the
@@ -37,8 +37,8 @@ Adding a new named pipeline:
    ``resolve_step_pipeline`` derives ``combine_method``/``use_pca`` generically from the list.
 3. If it needs a genuinely new way to combine keypoints, add that combine method's name to
    ``_COMBINE_METHODS`` below, and write the new combination tool under
-   ``src/pose2visual/lightningpose/`` (next to ``ensemble_median.py`` / ``fit_eks_latent_model.py``
-   / ``export_eks_csv.py``), producing a ``video_preds_dir``-compatible standard-named csv.
+   ``src/pose2visual/lightningpose/`` (next to ``ensemble_median.py`` /
+   ``fit_eks_latent_model.py``), producing a ``video_preds_dir``-compatible standard-named csv.
 4. Point a ``litpose_encoding.yaml``'s ``step_order:`` at the new name; PCA then
    follows from whether its steps include ``2d_pose_pca``.
 5. Add a case to ``tests/encoding/test_litpose_step_pipelines.py``.

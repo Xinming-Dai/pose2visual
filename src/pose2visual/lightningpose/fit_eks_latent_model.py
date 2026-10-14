@@ -1,23 +1,23 @@
-"""Fit Pose-EKS rank-reduced latent smoothers for ``pose2visual.qc.rainbow``.
+"""Fit single-camera Pose-EKS smoothers, one csv per session and camera, for qc.rainbow.
 
-For one session, fits one rank-reduced (probabilistic-PCA-style) Ensemble Kalman Smoother per
-body-part group (from a ``body_parts.json``-style file's ``nonoverlapping_analysis_groups``) per
-camera, using the `eks <https://github.com/paninski-lab/eks>`_ package. Each group's landmarks
-are fit jointly, independently per camera and independently from every other group, using
-mixture ("ensemble") variance across the seeds as the observation uncertainty.
+For each session, runs the `eks <https://github.com/paninski-lab/eks>`_ single-camera Ensemble
+Kalman Smoother (the same model as ``eks.fit_eks_singlecam``) on the ensemble of seed models'
+prediction csvs, independently for each camera. The (session, camera) fits are independent of
+each other, so ``--workers`` runs them in parallel inside one run. Every keypoint in the csv is
+smoothed.
 
-``eks`` has no public API that exposes the raw latent means and loading matrix for this case
-(its multi-camera smoother assumes real camera views sharing one keypoint, not multiple
-landmarks sharing one camera). This module calls ``eks``'s lower-level functions directly with a
-"pseudo-camera" trick: it places each group's landmarks on the *camera* axis of the
-``MarkerArray`` eks expects, so its per-keypoint PCA ends up fit jointly across the whole group's
-(x, y) instead of once per individual landmark.
+This calls ``eks.singlecam_smoother.ensemble_kalman_smoother_singlecam`` rather than
+``fit_eks_singlecam`` itself, since the latter always smooths every frame of the input csvs (its
+``s_frames`` only chooses the frames used to fit ``s``), and we want ``--start-frame`` and
+``--n-frames``.
 
-For each group and camera, writes a ``<group>_<camera>_latent-model.npz`` with the four arrays
-``pose2visual.qc.rainbow`` reads (``mean``, ``smoothed_means``, ``W``, ``observation_medians``,
-such that ``mean + smoothed_means @ W.T`` reconstructs the smoothed (x, y) for every landmark in
-the group) plus a ``columns`` array labelling each observed dimension (e.g. ``'ear_top_left_x'``),
-so the npz is self-describing for anyone loading it later without the run's log output.
+Writes one csv per session and camera in the same ``(scorer, bodyparts, coords)`` 3-level-header
+format as the raw prediction csvs, named ``_iblrig_<camera>Camera.downsampled.<session>.csv`` so
+it can be used directly as a ``video_preds_dir`` (e.g. by the encoding pipeline's ``eks_mean``
+step order).
+Each keypoint has the coords ``x``, ``y`` (smoothed), ``likelihood`` (mean ensemble confidence),
+``x_ens_median``, ``y_ens_median``, ``x_ens_var``, ``y_ens_var``, ``x_posterior_var`` and
+``y_posterior_var``. The fitted ``s`` per keypoint is recorded in the run's manifest.
 
 Needs only ``pandas``, ``numpy``, ``jax`` and ``eks`` (``pip install
 git+https://github.com/paninski-lab/eks.git`` — it is not on PyPI under this name); no
@@ -29,15 +29,12 @@ Usage::
     PYTHONPATH=src python -m pose2visual.lightningpose.fit_eks_latent_model \\
       --model-dir /path/to/mighty-mouse-models/E6c-LOO... \\
       --seed-dirs vits_dinov3-seed0 vits_dinov3-seed1 vits_dinov3-seed2 \\
-      --session 9b528ad0-4599-4a55-9148-96cc1d93fb24
+      --sessions 9b528ad0-4599-4a55-9148-96cc1d93fb24 <more session ids ...> \\
+      --workers 4
 
-Default output:
-``<model-dir>/eks/<timestamp>[__<tag>]/<session>/<group>/<group>_<camera>_latent-model.npz``
-(folder name is ``YYYYMMDD_HHMMSS``, suffixed with ``__<tag>`` when ``--tag`` is given,
-mirroring ``pose2visual.qc.rainbow``'s own ``<model-dir>/rainbow_qc/<timestamp>[__<tag>]``
-convention). Every run's manifest is also appended to ``<model-dir>/eks/registry.json``
-(keyed by folder name). Pass ``--out-root`` to override the output location, or
-``pose2visual.qc.prune_run`` to delete a run and its registry entry together.
+Default output, for every session and camera:
+``<model-dir>/eks/<timestamp>[__<tag>]/eks/_iblrig_<camera>Camera.downsampled.<session>.csv``,
+plus one ``<model-dir>/eks/<timestamp>[__<tag>]/manifest.json`` for the whole run. 
 """
 
 import argparse
@@ -48,13 +45,16 @@ import multiprocessing
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
-import numpy as np
 import pandas as pd
 
 from pose2visual.run_registry import append_entry
 
 logger = logging.getLogger(__name__)
+
+# run-folder timestamps use this timezone, not the cluster's local time (as in qc.rainbow)
+RUN_TIMEZONE = ZoneInfo('America/New_York')
 
 
 def discover_keypoint_names(csv_path: str | Path) -> list[str]:
@@ -204,163 +204,88 @@ def find_seed_csv(preds_dir: str | Path, session_id: str, camera: str) -> Path:
     return csv_path
 
 
-def fit_latent_model(
+
+def parse_s_frames(spec: list[str] | None) -> list[tuple[int | None, int | None]] | None:
+    """Parse ``--s-frames`` ranges into the ``(start, end)`` tuples eks expects.
+
+    Args:
+        spec: strings of the form ``'start:end'`` (half-open, 0-based); either side may be empty
+            for an open end, e.g. ``':100'`` or ``'50:'``. ``None`` or an empty list means every
+            frame.
+
+    Returns:
+        list of ``(start, end)`` tuples, or ``None`` if `spec` is empty.
+
+    Raises:
+        ValueError: if an entry is not of the form ``'start:end'``.
+    """
+    if not spec:
+        return None
+    ranges: list[tuple[int | None, int | None]] = []
+    for item in spec:
+        parts = item.split(':')
+        if len(parts) != 2:
+            raise ValueError(f"s-frames range {item!r} must look like 'start:end'")
+        start, end = (int(part) if part else None for part in parts)
+        ranges.append((start, end))
+    return ranges
+
+
+def fit_eks_singlecam_camera(
     seed_csvs: list[Path],
-    columns: list[str],
-    n_latent: int,
     start_frame: int,
     n_frames: int | None,
-) -> dict[str, np.ndarray]:
-    """Fit a rank-`n_latent` latent smoother jointly over `columns`, for one camera.
+    smooth_param: float | None,
+    s_frames: list[tuple[int | None, int | None]] | None,
+) -> tuple[pd.DataFrame, list[float], list[str]]:
+    """Run the single-camera Ensemble Kalman Smoother on one camera's seed ensemble.
 
-    Builds an `eks` `MarkerArray` with each of `columns` placed on the *camera* axis (a trick to
-    make `eks`'s per-keypoint PCA span all of `columns`' (x, y) jointly, rather than fitting one
-    PCA per column independently), so the Kalman smoother fits one shared rank-`n_latent` latent
-    space across the whole group.
-
-    This call sequence was derived by reading `eks` source on GitHub, not by running it (it was
-    not installed anywhere reachable at the time this was written). Before trusting it on real
-    data, smoke-test it against a tiny synthetic ensemble and confirm every intermediate shape
-    matches the comments below, on a compute node — not on an HPC login node, and not by this
-    function's docstring alone.
+    Mirrors ``eks.fit_eks_singlecam`` (ensemble median + confidence-weighted variance, independent
+    random-walk state per keypoint, one fitted smoothing scale per keypoint), except that it can
+    restrict the fit to a range of frames.
 
     Args:
         seed_csvs: the ensemble's prediction csvs, all for the same camera.
-        columns: resolved per-camera column names to fit jointly (see `resolve_group_bases` and
-            `group_columns_for_camera`).
-        n_latent: latent rank; must be strictly less than `2 * len(columns)`.
         start_frame: first frame to fit.
         n_frames: number of frames to fit, or `None` for every frame available (the minimum row
             count across `seed_csvs`, past `start_frame`).
+        smooth_param: fixed smoothing scale shared by every keypoint, or `None` to fit one per
+            keypoint.
+        s_frames: frame ranges (relative to `start_frame`) used to fit the smoothing scale, or
+            `None` for all frames; the final smoothing always covers every frame.
 
     Returns:
-        dict with `mean` (`2 * len(columns)`,), `smoothed_means` (`n_frames`, `n_latent`),
-        `W` (`2 * len(columns)`, `n_latent`), `observation_medians` (`n_frames`,
-        `2 * len(columns)`), and `columns` (`2 * len(columns)`,) — the per-observed-dimension
-        label (e.g. `'ear_top_left_x'`), in the same order as the rows of `mean`/`W` and the
-        columns of `observation_medians`, so the npz is self-describing without the caller
-        needing to separately track column order or the x/y interleaving convention.
-
-    Raises:
-        ValueError: if `n_latent` is not in `[1, 2 * len(columns))`.
+        `(df_smoothed, s_finals, keypoint_names)`: the eks output frame (9 coords per keypoint, see
+        the module docstring), the smoothing scale used for each keypoint, and the keypoint names
+        in the same order as `s_finals`.
     """
-    if not 1 <= n_latent < 2 * len(columns):
-        raise ValueError(
-            f'n_latent={n_latent} must be in [1, {2 * len(columns)}) for {len(columns)} columns',
-        )
-
     # lazy: avoids requiring the eks package (and its jax dependency) for callers that only use
-    # the group-resolution helpers above, and for cpu-only test/dev environments without eks.
-    import jax.numpy as jnp
-    from eks.core import ensemble, run_kalman_smoother
-    from eks.marker_array import MarkerArray, input_dfs_to_markerArray, mA_to_stacked_array
-    from eks.multicam_smoother import initialize_kalman_filter_pca
-    from eks.stats import compute_pca
-    from eks.utils import center_predictions, format_data
+    # the helpers above, and for cpu-only test/dev environments without eks.
+    from eks.marker_array import input_dfs_to_markerArray
+    from eks.singlecam_smoother import ensemble_kalman_smoother_singlecam
+    from eks.utils import format_data
 
-    logger.info(f'  loading {len(seed_csvs)} seed csvs for columns {columns}')
-    dfs, _ = format_data([str(p) for p in seed_csvs])
+    logger.info(f'  loading {len(seed_csvs)} seed csvs')
+    dfs, keypoint_names = format_data([str(p) for p in seed_csvs])
     end_frame = start_frame + n_frames if n_frames is not None else min(len(df) for df in dfs)
     dfs = [df.iloc[start_frame:end_frame].reset_index(drop=True) for df in dfs]
-    logger.info(f'  fitting frames [{start_frame}, {end_frame}) ({end_frame - start_frame} total)')
-
-    marker_array = input_dfs_to_markerArray([dfs], columns, ['view'])
-    # pseudo-camera trick: move the per-landmark axis onto the camera axis so eks's per-keypoint
-    # pca spans all of `columns` jointly, instead of fitting one pca per landmark.
-    marker_array = MarkerArray(
-        np.transpose(marker_array.get_array(), (0, 3, 2, 1, 4)),
-        data_fields=['x', 'y', 'likelihood'],
+    logger.info(
+        f'  fitting {len(keypoint_names)} keypoints over frames [{start_frame}, {end_frame}) '
+        f'({end_frame - start_frame} total)',
     )
 
-    logger.info('  computing ensemble mean/variance across seeds...')
-    ens = ensemble(marker_array, avg_mode='median', var_mode='confidence_weighted_var')
-    observation_medians = np.asarray(mA_to_stacked_array(ens.slice_fields('x', 'y'), 0))
-
-    logger.info(f'  fitting rank-{n_latent} pca basis...')
-    valid_mask, emA_centered, emA_good_centered, emA_means = center_predictions(
-        ens, quantile_keep_pca=50.0,
-    )
-    pcas, good_pcs = compute_pca(
-        valid_mask, emA_centered, emA_good_centered, n_components=n_latent,
-    )
-    m0, s0, a_mats, q_mats, c_mats = initialize_kalman_filter_pca(
-        good_pcs, pcas, n_latent=n_latent,
-    )
-
-    logger.info('  running kalman smoother...')
-    ys = np.stack([mA_to_stacked_array(emA_centered, 0)])
-    ensemble_vars = np.stack([mA_to_stacked_array(ens.slice_fields('var_x', 'var_y'), 0)])
-    _, smoothed_means_per_group, _ = run_kalman_smoother(
-        ys=jnp.asarray(ys),
-        m0s=m0,
-        S0s=s0,
-        As=a_mats,
-        Qs=q_mats,
-        Cs=c_mats,
-        ensemble_vars=np.swapaxes(ensemble_vars, 0, 1),
-        s_frames=None,
-        smooth_param=None,
+    marker_array = input_dfs_to_markerArray([dfs], keypoint_names, [''])
+    df_smoothed, s_finals = ensemble_kalman_smoother_singlecam(
+        marker_array=marker_array,
+        keypoint_names=keypoint_names,
+        smooth_param=smooth_param,
+        s_frames=s_frames,
+        blocks=[],
+        avg_mode='median',
+        var_mode='confidence_weighted_var',
     )
     logger.info('  kalman smoother done')
-
-    # one label per observed dimension (x, y interleaved per landmark, matching eks's own
-    # stacking order), so mean/W/observation_medians are self-describing without the caller
-    # needing to separately remember `columns` or the x/y interleaving convention.
-    obs_columns = np.array([f'{column}_{axis}' for column in columns for axis in ('x', 'y')])
-
-    return {
-        'mean': np.asarray(mA_to_stacked_array(emA_means, 0)[0]),
-        'smoothed_means': np.asarray(smoothed_means_per_group[0]),
-        'W': np.asarray(c_mats[0]),
-        'observation_medians': observation_medians,
-        'columns': obs_columns,
-    }
-
-
-def load_latent_model(npz_path: str | Path) -> dict:
-    """Load a fitted latent model npz and reconstruct smoothed (x, y) per landmark.
-
-    `n_landmarks` is derived from the npz itself (`len(mean) // 2`), never hardcoded, so this
-    works for any group size — unlike the reshape this replaces in `pose2visual.qc.rainbow`.
-
-    Args:
-        npz_path: path to a `<group>_<camera>_latent-model.npz` written by `fit_latent_model`.
-
-    Returns:
-        dict with:
-            `xy`: `(n_frames, n_landmarks, 2)`, i.e. `mean + smoothed_means @ W.T` reshaped.
-            `observation_medians_xy`: `(n_frames, n_landmarks, 2)`, `observation_medians`
-                reshaped the same way.
-            `landmarks`: list of `n_landmarks` base column names (e.g. `'ear_top_left'`, no
-                `_x`/`_y` suffix), in `xy`'s landmark order; `None` if the npz predates the
-                `columns` array (reconstruction still works — only the names are unavailable).
-            the raw arrays `mean`, `W`, `smoothed_means`, `observation_medians`, and `columns`
-                (if present), for callers that want them directly.
-    """
-    data = np.load(npz_path)
-    n_landmarks = len(data['mean']) // 2
-    n_frames = data['smoothed_means'].shape[0]
-    recon = data['mean'] + data['smoothed_means'] @ data['W'].T
-
-    landmarks = None
-    if 'columns' in data.files:
-        seen: dict[str, None] = {}
-        for column in data['columns']:
-            seen.setdefault(str(column).rsplit('_', 1)[0], None)
-        landmarks = list(seen)
-
-    result = {
-        'xy': recon.reshape(n_frames, n_landmarks, 2),
-        'observation_medians_xy': data['observation_medians'].reshape(n_frames, n_landmarks, 2),
-        'landmarks': landmarks,
-        'mean': data['mean'],
-        'W': data['W'],
-        'smoothed_means': data['smoothed_means'],
-        'observation_medians': data['observation_medians'],
-    }
-    if 'columns' in data.files:
-        result['columns'] = data['columns']
-    return result
+    return df_smoothed, [float(s) for s in s_finals], list(keypoint_names)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -371,7 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         description=(
-            'Fit per-group, per-camera Pose-EKS rank-reduced latent smoothers for '
+            'Fit single-camera Pose-EKS smoothers (one csv per session and camera) for '
             'pose2visual.qc.rainbow.'
         ),
     )
@@ -386,29 +311,17 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help='Seed folder names (relative to model-dir) or absolute paths',
     )
-    parser.add_argument('--session', required=True, help='Session ID (UUID)')
+    parser.add_argument(
+        '--sessions',
+        nargs='+',
+        required=True,
+        help='Session IDs (UUIDs); all are fit in one run',
+    )
     parser.add_argument(
         '--cameras',
         nargs='+',
         default=['left', 'right'],
         help='Camera names to process (default: left right)',
-    )
-    parser.add_argument(
-        '--groups-file',
-        default='scripts/delta/data/body_parts.json',
-        help="Path to a body_parts.json-style file with 'nonoverlapping_analysis_groups'",
-    )
-    parser.add_argument(
-        '--group-set',
-        choices=['nonoverlapping_analysis_groups', 'overlapping_analysis_groups'],
-        default='nonoverlapping_analysis_groups',
-        help="Top-level key to load from --groups-file (default: nonoverlapping_analysis_groups)",
-    )
-    parser.add_argument(
-        '--groups',
-        nargs='+',
-        default=None,
-        help='Subset of group names to fit (default: every group in --groups-file/--group-set)',
     )
     parser.add_argument(
         '--start-frame',
@@ -423,24 +336,38 @@ def build_parser() -> argparse.ArgumentParser:
         help='Number of frames to fit (default: every frame available)',
     )
     parser.add_argument(
-        '--out-root',
+        '--smooth-param',
+        type=float,
         default=None,
-        help='Output root; writes <out-root>/<session>/<group>/<group>_<camera>_'
-        'latent-model.npz (default: <model-dir>/eks/<timestamp>[__<tag>], mirroring '
-        'pose2visual.qc.rainbow\'s <model-dir>/rainbow_qc/<timestamp>[__<tag>])',
+        help='Fixed smoothing scale s shared by every keypoint; smaller values smooth more '
+        '(default: fit one s per keypoint)',
+    )
+    parser.add_argument(
+        '--s-frames',
+        nargs='+',
+        default=None,
+        help="Frame ranges 'start:end' (half-open, relative to --start-frame; either side may be "
+        "empty) used only to fit s, to speed up the fit, e.g. ':5000'. Ignored with "
+        '--smooth-param. The final smoothing always covers every frame (default: all frames)',
+    )
+    parser.add_argument(
+        '--out-dir',
+        default=None,
+        help='Run folder; writes csvs under <out-dir>/eks and the manifest at '
+        '<out-dir>/manifest.json (default: <model-dir>/eks/<timestamp>[__<tag>])',
     )
     parser.add_argument(
         '--tag',
         default=None,
-        help='Optional tag appended to the default output folder name',
+        help='Optional tag appended to the default run folder name',
     )
     parser.add_argument(
         '--workers',
         type=int,
         default=1,
-        help='Worker processes to fit groups/cameras in parallel (default: 1, sequential). '
-        'The per-(group, camera) fits are fully independent, so this parallelizes well; set '
-        'to the number of cpus requested (e.g. --cpus-per-task in sbatch)',
+        help='Worker processes to fit (session, camera) tasks in parallel (default: 1, '
+        'sequential). Every task is an independent fit, so up to len(--sessions) * '
+        'len(--cameras) workers are useful; memory use grows with the number of workers',
     )
     return parser
 
@@ -471,106 +398,125 @@ def _resolve_seed_dirs(model_dir: Path, seed_dirs: list[str]) -> dict[str, Path]
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Entry point: fit every selected group's latent model for every camera.
+    """Entry point: fit and write one smoothed csv per (session, camera).
+
+    All sessions of one invocation share a single run folder, manifest and registry entry.
+    A failing fit is logged and recorded in the manifest's `failed` list without stopping the
+    other fits.
 
     Args:
         argv: command line arguments; defaults to `sys.argv[1:]`.
+
+    Raises:
+        ValueError: if `--sessions` contains duplicates.
+        FileNotFoundError: if a seed folder or a seed prediction csv is missing (raised before
+            any fit starts).
+        RuntimeError: if any fit failed, after the other fits' outputs and the manifest are
+            written.
     """
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     args = build_parser().parse_args(argv)
 
+    if len(set(args.sessions)) != len(args.sessions):
+        raise ValueError(f'duplicate session ids in --sessions: {args.sessions}')
+
     model_dir = Path(args.model_dir).resolve()
     seed_dirs = _resolve_seed_dirs(model_dir, args.seed_dirs)
-    groups = load_groups(args.groups_file, group_set=args.group_set)
-    if args.groups is not None:
-        missing = sorted(set(args.groups) - set(groups))
-        if missing:
-            raise ValueError(f'groups not found in {args.groups_file}: {missing}')
-        groups = {name: groups[name] for name in args.groups}
+    s_frames = parse_s_frames(args.s_frames)
 
-    seed_csvs: dict[str, list[Path]] = {camera: [] for camera in args.cameras}
-    for seed_name, seed_path in seed_dirs.items():
-        preds_dir = find_video_preds_dir(seed_path)
+    # resolve every task's seed csvs up front so a missing file aborts before any fit starts
+    preds_dirs = {name: find_video_preds_dir(path) for name, path in seed_dirs.items()}
+    seed_csvs: dict[tuple[str, str], list[Path]] = {}
+    for session in args.sessions:
         for camera in args.cameras:
-            csv_path = find_seed_csv(preds_dir, args.session, camera)
-            seed_csvs[camera].append(csv_path)
-            logger.info(f'resolved {seed_name}/{camera}: {csv_path}')
+            seed_csvs[session, camera] = []
+            for seed_name, preds_dir in preds_dirs.items():
+                csv_path = find_seed_csv(preds_dir, session, camera)
+                seed_csvs[session, camera].append(csv_path)
+                logger.info(f'resolved {session[:8]}/{seed_name}/{camera}: {csv_path}')
+    tasks = list(seed_csvs)
+    n_tasks = len(tasks)
 
-    keypoint_names = discover_keypoint_names(seed_csvs[args.cameras[0]][0])
-    logger.info(f'discovered {len(keypoint_names)} keypoints; fitting {len(groups)} groups')
-
-    run_name = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    run_name = datetime.now(RUN_TIMEZONE).strftime('%Y%m%d_%H%M%S')
     if args.tag:
         run_name = f'{run_name}__{args.tag}'
 
-    if args.out_root is not None:
-        out_root_base = Path(args.out_root).resolve()
+    if args.out_dir:
+        out_dir = Path(args.out_dir).resolve()
     else:
-        out_root_base = model_dir / 'eks' / run_name
-    out_root = out_root_base / args.session
-    logger.info(f'output root: {out_root}')
+        out_dir = model_dir / 'eks' / run_name
+    csv_dir = out_dir / 'eks'
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    logger.info(f'output: {out_dir}')
 
-    # resolve every (group, camera) task's columns up front; cheap, no eks involved.
-    tasks = []  # (group_name, camera, columns, n_latent, landmarks)
-    outputs: dict[str, dict[str, dict]] = {name: {} for name in groups}
-    for group_idx, (group_name, tokens) in enumerate(groups.items(), start=1):
-        bases = resolve_group_bases(keypoint_names, tokens)
-        n_latent = len(bases)
-        landmarks = [base for base, _ in bases]
-        logger.info(
-            f'[group {group_idx}/{len(groups)}] {group_name}: '
-            f'{len(bases)} landmarks ({landmarks}), n_latent={n_latent}',
-        )
-        for camera in args.cameras:
-            columns = group_columns_for_camera(bases, camera)
-            tasks.append((group_name, camera, columns, n_latent, landmarks))
-    n_tasks = len(tasks)
+    outputs: dict[str, dict[str, dict]] = {}
+    failed: list[dict[str, str]] = []
 
     def _write_output(
-        group_name: str, camera: str, n_latent: int, landmarks: list[str], result: dict,
+        session: str,
+        camera: str,
+        result: tuple[pd.DataFrame, list[float], list[str]],
     ) -> None:
-        """Save one task's npz and record it in `outputs` — always runs in the main process."""
-        out_path = out_root / group_name / f'{group_name}_{camera}_latent-model.npz'
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(out_path, **result)
-        n_frames_fit = result['smoothed_means'].shape[0]
-        outputs[group_name][camera] = {
+        """Save one task's csv and record it in `outputs` — always runs in the main process."""
+        df_smoothed, s_finals, keypoints = result
+        out_path = csv_dir / f'_iblrig_{camera}Camera.downsampled.{session}.csv'
+        df_smoothed.to_csv(out_path)
+        outputs.setdefault(session, {})[camera] = {
             'path': str(out_path),
-            'n_frames': n_frames_fit,
-            'n_latent': n_latent,
-            'landmarks': landmarks,
+            'n_frames': len(df_smoothed),
+            'keypoints': keypoints,
+            's_finals': dict(zip(keypoints, s_finals)),
         }
-        logger.info(f'wrote {out_path} ({n_frames_fit} frames, start_frame={args.start_frame})')
+        logger.info(f'wrote {out_path} ({len(df_smoothed)} frames, {len(keypoints)} keypoints)')
 
+    def _record_failure(session: str, camera: str, error: Exception) -> None:
+        """Log one failed task and remember it for the manifest."""
+        logger.error(f'{session[:8]}/{camera} failed: {error!r}')
+        failed.append({'session': session, 'camera': camera, 'error': repr(error)})
+
+    fit_args = (args.start_frame, args.n_frames, args.smooth_param, s_frames)
     if args.workers <= 1:
-        for task_idx, (group_name, camera, columns, n_latent, landmarks) in enumerate(
-            tasks, start=1,
-        ):
-            logger.info(f'[{task_idx}/{n_tasks}] fitting {group_name}/{camera}...')
-            result = fit_latent_model(
-                seed_csvs[camera], columns, n_latent, args.start_frame, args.n_frames,
-            )
-            _write_output(group_name, camera, n_latent, landmarks, result)
+        for task_idx, (session, camera) in enumerate(tasks, start=1):
+            logger.info(f'[{task_idx}/{n_tasks}] fitting {session[:8]}/{camera}...')
+            try:
+                result = fit_eks_singlecam_camera(seed_csvs[session, camera], *fit_args)
+            except Exception as error:
+                _record_failure(session, camera, error)
+                continue
+            _write_output(session, camera, result)
     else:
         # each worker's own jax/blas calls shouldn't also try to grab many threads — without
         # this, `workers` processes each using all cores oversubscribes the allocation.
         os.environ.setdefault('OMP_NUM_THREADS', '1')
         os.environ.setdefault('MKL_NUM_THREADS', '1')
-        logger.info(f'fitting {n_tasks} tasks across {args.workers} worker processes...')
+        n_workers = min(args.workers, n_tasks)
+        logger.info(f'fitting {n_tasks} tasks across {n_workers} worker processes...')
         with concurrent.futures.ProcessPoolExecutor(
-            max_workers=args.workers, mp_context=multiprocessing.get_context('fork'),
+            max_workers=n_workers, mp_context=multiprocessing.get_context('fork'),
         ) as pool:
             futures = {
-                pool.submit(
-                    fit_latent_model, seed_csvs[camera], columns, n_latent,
-                    args.start_frame, args.n_frames,
-                ): (group_name, camera, n_latent, landmarks)
-                for group_name, camera, columns, n_latent, landmarks in tasks
+                pool.submit(fit_eks_singlecam_camera, seed_csvs[task], *fit_args): task
+                for task in tasks
             }
             for task_idx, future in enumerate(concurrent.futures.as_completed(futures), start=1):
-                group_name, camera, n_latent, landmarks = futures[future]
-                logger.info(f'[{task_idx}/{n_tasks}] {group_name}/{camera} done')
-                _write_output(group_name, camera, n_latent, landmarks, future.result())
+                session, camera = futures[future]
+                try:
+                    result = future.result()
+                except Exception as error:
+                    _record_failure(session, camera, error)
+                    continue
+                logger.info(f'[{task_idx}/{n_tasks}] {session[:8]}/{camera} done')
+                _write_output(session, camera, result)
+
+    # completion order varies with --workers; keep the manifest in --sessions/--cameras order
+    outputs = {
+        session: {
+            camera: outputs[session][camera]
+            for camera in args.cameras if camera in outputs.get(session, {})
+        }
+        for session in args.sessions if session in outputs
+    }
+    failed.sort(key=lambda item: (args.sessions.index(item['session']), item['camera']))
 
     manifest = {
         'run_name': run_name,
@@ -578,17 +524,17 @@ def main(argv: list[str] | None = None) -> None:
         'model_dir': str(model_dir),
         'seed_dirs': args.seed_dirs,
         'resolved_seed_dirs': {name: str(path) for name, path in seed_dirs.items()},
-        'session': args.session,
+        'sessions': args.sessions,
         'cameras': args.cameras,
-        'groups_file': str(args.groups_file),
-        'group_set': args.group_set,
-        'groups': groups,
         'start_frame': args.start_frame,
         'n_frames_requested': args.n_frames,
+        'smooth_param': args.smooth_param,
+        's_frames': args.s_frames,
         'tag': args.tag,
         'outputs': outputs,
+        'failed': failed,
     }
-    manifest_path = out_root / 'manifest.json'
+    manifest_path = out_dir / 'manifest.json'
     manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
     logger.info(f'wrote {manifest_path}')
 
@@ -596,7 +542,12 @@ def main(argv: list[str] | None = None) -> None:
     append_entry(registry_path, run_name, manifest)
     logger.info(f'updated registry: {registry_path}')
 
-    logger.info(f'done: wrote {n_tasks} latent models under {out_root}')
+    if failed:
+        raise RuntimeError(
+            f'{len(failed)} of {n_tasks} fits failed: '
+            + ', '.join(f"{item['session'][:8]}/{item['camera']}" for item in failed),
+        )
+    logger.info(f'done: wrote {n_tasks} smoothed csvs under {csv_dir}')
 
 
 if __name__ == '__main__':

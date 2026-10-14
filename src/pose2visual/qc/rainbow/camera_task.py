@@ -40,7 +40,7 @@ class CameraTask:
         group_set: name of the group set (used in figure filenames).
         conf_threshold: confidence threshold for gating.
         roi: optional ROI (x0, y0, x1, y1) for statistics.
-        eks_npz_dir: optional out-root of Pose-EKS latent-model npz files.
+        eks_dir: optional directory of single-camera Pose-EKS csvs (see `load_eks`).
         ensemble_median_dir: optional directory of already-saved median csvs to reuse.
         save_ensemble_median: whether to write the computed ensemble median csv.
         fig_dir: directory the figures are written to.
@@ -58,7 +58,7 @@ class CameraTask:
     group_set: str
     conf_threshold: float
     roi: tuple[int, int, int, int] | None
-    eks_npz_dir: Path | None
+    eks_dir: Path | None
     ensemble_median_dir: Path | None
     save_ensemble_median: bool
     fig_dir: Path
@@ -146,6 +146,14 @@ def process_camera(task: CameraTask) -> dict[str, Any]:
         }
         logger.info(f'{prefix} {group_name}: {len(landmarks)} landmarks ({landmarks})')
 
+    eks = None
+    if task.eks_dir:
+        eks = load_eks(task.eks_dir, session_id, camera, keypoint_names, n_frames)
+        if eks is None:
+            logger.info(f'{prefix} EKS csv not found in {task.eks_dir}; skipping')
+        else:
+            logger.info(f'{prefix} EKS loaded')
+
     bg_frame = get_background_frame(
         task.csv_paths[seed_names_sorted[0]],
         task.video_path,
@@ -166,29 +174,21 @@ def process_camera(task: CameraTask) -> dict[str, Any]:
             method_names = [f'Single network: seed {i}' for i in range(len(seed_names_sorted))]
             method_names.append('Ensemble median')
 
-            if task.eks_npz_dir:
-                group_eks_dir = task.eks_npz_dir / session_id / group_name
-                result = load_eks(group_eks_dir, camera, n_frames)
-                if result:
-                    xy_eks, model = result
+            if eks is not None:
+                xy_eks, xy_eks_median = eks
+                try:
+                    np.testing.assert_allclose(
+                        xy_median_all[:, idx, :], xy_eks_median[:, idx, :],
+                        rtol=1e-5, atol=1e-3,
+                    )
+                except AssertionError as e:
+                    logger.warning(
+                        f'{prefix} EKS ensemble median does not match seed median '
+                        f'for {group_name}: {e}',
+                    )
 
-                    try:
-                        np.testing.assert_allclose(
-                            xy_median_all[:, idx, :].reshape(n_frames, len(idx) * 2),
-                            model['observation_medians'],
-                            rtol=1e-5, atol=1e-3,
-                        )
-                    except AssertionError as e:
-                        logger.warning(
-                            f'{prefix} EKS observation_medians do not match seed median '
-                            f'for {group_name}: {e}',
-                        )
-
-                    xy_list.append(xy_eks)
-                    method_names.append('Pose-EKS (rank 4)')
-                    logger.info(f'{prefix} EKS loaded for {group_name}')
-                else:
-                    logger.info(f'{prefix} EKS npz not found for {group_name}; skipping')
+                xy_list.append(xy_eks[:, idx, :])
+                method_names.append('Pose-EKS')
 
             rows_data.append({
                 'group_name': group_name,

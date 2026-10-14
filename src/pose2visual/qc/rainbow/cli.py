@@ -69,7 +69,7 @@ Examples:
     --sessions <uuid1> <uuid2> \\
     --groups-file scripts/delta/data/body_parts.json \\
     --n-frames 5000 --conf-threshold 0.7 \\
-    --eks-npz-dir /path/to/eks/<run> \\
+    --eks-dir /path/to/models/eks/<run>/eks \\
     --groups eye_related ear_related
         ''',
     )
@@ -204,10 +204,10 @@ Examples:
         '(session, camera) found there',
     )
     parser.add_argument(
-        '--eks-npz-dir',
+        '--eks-dir',
         default=None,
-        help='Out-root directory containing <session>/<group>/<group>_<camera>_latent-model.npz '
-        'subdirectories, as written by fit_eks_latent_model.py (optional)',
+        help='Directory containing _iblrig_<camera>Camera.downsampled.<session>.csv Pose-EKS '
+        'csvs, as written by fit_eks_latent_model.py (optional)',
     )
     parser.add_argument(
         '--num-workers',

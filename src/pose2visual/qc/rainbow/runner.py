@@ -148,7 +148,7 @@ def run(args: argparse.Namespace) -> None:
             sys.exit(1)
         seed_dirs[seed_name] = seed_path
 
-    eks_npz_dir = Path(args.eks_npz_dir).resolve() if args.eks_npz_dir else None
+    eks_dir = Path(args.eks_dir).resolve() if args.eks_dir else None
 
     run_name = datetime.now(RUN_TIMEZONE).strftime('%Y%m%d_%H%M%S')
     if tag:
@@ -183,7 +183,7 @@ def run(args: argparse.Namespace) -> None:
         'group_set': args.group_set,
         'groups': groups,
         'save_ensemble_median': args.save_ensemble_median,
-        'eks_npz_dir': str(eks_npz_dir) if eks_npz_dir else None,
+        'eks_dir': str(eks_dir) if eks_dir else None,
         'ensemble_median_dir': str(args.ensemble_median_dir) if args.ensemble_median_dir else None,
         'roi': {'left': args.roi_left, 'right': args.roi_right},
         'tag': tag,
@@ -264,7 +264,7 @@ def run(args: argparse.Namespace) -> None:
                 group_set=args.group_set,
                 conf_threshold=conf_threshold,
                 roi=rois[camera],
-                eks_npz_dir=eks_npz_dir,
+                eks_dir=eks_dir,
                 ensemble_median_dir=ensemble_median_dir,
                 save_ensemble_median=args.save_ensemble_median,
                 fig_dir=fig_dir,

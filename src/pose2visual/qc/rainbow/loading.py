@@ -6,8 +6,6 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from pose2visual.lightningpose.fit_eks_latent_model import load_latent_model
-
 
 def find_video_preds_dir(seed_path: Path) -> Path:
     """Find the video_preds directory under a seed folder.
@@ -162,39 +160,39 @@ def get_background_frame(
 
 
 def load_eks(
-    eks_npz_dir: Path,
+    eks_dir: Path,
+    session_id: str,
     camera: str,
+    keypoints: list[str],
     n_frames: int,
-) -> tuple[np.ndarray, dict[str, np.ndarray]] | None:
-    """Load pre-computed Pose-EKS latent-model output for one group and camera.
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Load pre-computed single-camera Pose-EKS output for one session and camera.
 
     Args:
-        eks_npz_dir: directory containing `{camera}_latent-model.npz` files for one
-            body-part group and session (i.e. `<eks out_root>/<session>/<group>`).
+        eks_dir: directory holding the csvs written by `fit_eks_latent_model.py`, named
+            `_iblrig_{camera}Camera.downsampled.{session_id}.csv`.
+        session_id: session UUID.
         camera: camera name ('left' or 'right').
+        keypoints: keypoint names to load (as they appear in the csv header).
         n_frames: expected frame count (for validation).
 
     Returns:
-        Tuple of (eks_xy, model_dict), or None if npz not found or multiple found.
+        Tuple of (smoothed_xy, ensemble_median_xy), both of shape (n_frames, n_keypoints, 2),
+        or None if the csv does not exist.
+
+    Raises:
+        ValueError: if the csv's frame count differs from `n_frames`.
     """
-    if not eks_npz_dir.is_dir():
+    csv_path = eks_dir / f'_iblrig_{camera}Camera.downsampled.{session_id}.csv'
+    if not csv_path.is_file():
         return None
 
-    npz_files = list(eks_npz_dir.glob(f'*_{camera}_latent-model.npz'))
+    df = pd.read_csv(csv_path, header=[0, 1, 2], index_col=0).droplevel(0, axis=1)
+    if len(df) != n_frames:
+        raise ValueError(f'EKS csv {csv_path} has {len(df)} frames, expected {n_frames}')
 
-    if len(npz_files) == 0:
-        return None
-    if len(npz_files) > 1:
-        raise ValueError(
-            f'Multiple EKS npz files for {camera} in {eks_npz_dir}:\n'
-            + '\n'.join(str(f) for f in npz_files)
-        )
-
-    npz_path = npz_files[0]
-    loaded = load_latent_model(npz_path)
-    if loaded['xy'].shape[0] != n_frames:
-        raise ValueError(
-            f'EKS npz {npz_path} has {loaded["xy"].shape[0]} frames, expected {n_frames}',
-        )
-
-    return loaded['xy'], np.load(npz_path)
+    xy = np.stack([df[key][['x', 'y']].values for key in keypoints], axis=1)
+    xy_median = np.stack(
+        [df[key][['x_ens_median', 'y_ens_median']].values for key in keypoints], axis=1,
+    )
+    return xy, xy_median
