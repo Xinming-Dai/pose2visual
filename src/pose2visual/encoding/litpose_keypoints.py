@@ -43,6 +43,9 @@ CAMERAS = ('left', 'right')
 DEFAULT_PCA_GROUP_SET = 'nonoverlapping_analysis_groups'
 DEFAULT_FILTER_GROUP_SET = 'nonoverlapping_analysis_groups'
 DEFAULT_MERGE_GROUP_SET = 'nonoverlapping_analysis_groups'
+DEFAULT_VISIBILITY_GROUP_SET = 'nonoverlapping_analysis_groups'
+# suffix of the binary feature a `visibility.groups` entry becomes: `tongue` -> `tongue_visible`
+VISIBILITY_SUFFIX = '_visible'
 # `merge.sources[*].groups` value meaning "every keypoint no other source claims"
 MERGE_REST = 'rest'
 _PCA_STEP = '2d_pose_pca'
@@ -64,6 +67,11 @@ ENCODING_YAML_SECTIONS = {
     },
     'pca': {'group_set': 'pca_group_set'},
     'merge': {'group_set': 'merge_group_set', 'sources': 'merge_sources'},
+    'visibility': {
+        'group_set': 'visibility_group_set',
+        'likelihood_threshold': 'visibility_likelihood_threshold',
+        'groups': 'visibility_groups',
+    },
     'anatomical_group': {
         'name': 'anatomical_group',
         'base_keypoints': 'base_keypoints',
@@ -310,6 +318,8 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
         `likelihood_threshold`, `max_masked_frac`, `unfiltered_groups`
         (`filter.group_set.unfiltered_groups`), `filter_group_set` (`filter.group_set.name`),
         `pca_group_set` (`pca.group_set`), `merge_group_set` and `merge_sources` (`merge.*`),
+        `visibility_group_set`, `visibility_likelihood_threshold` and `visibility_groups`
+        (`visibility.*`),
         `anatomical_group` (`anatomical_group.name`), `base_keypoints`, `additional_keypoints`
         and `pca`. `pca` is not a yaml key: it is derived from `step_order` (True when the named
         pipeline contains the `2d_pose_pca` step), so the two can never disagree.
@@ -581,6 +591,137 @@ def load_unfiltered_keypoints(config_path: str | Path, keypoints: list[str]) -> 
     return [name for name in keypoints if name.split('_')[0] in tokens]
 
 
+def visibility_feature_name(group: str) -> str:
+    """Name of the binary feature of a `visibility.groups` entry.
+
+    Args:
+        group: body-part group name, e.g. `'tongue'`.
+
+    Returns:
+        The feature name, e.g. `'tongue_visible'`.
+    """
+    return f'{group}{VISIBILITY_SUFFIX}'
+
+
+def load_visibility_settings(config_path: str | Path) -> dict[str, Any] | None:
+    """Read and validate the optional `visibility` section of the encoding yaml.
+
+    Each listed group becomes one binary feature `<group>_visible` (see
+    `visibility_from_likelihood`) instead of one speed per keypoint. The feature name starts with
+    the group name, so it is resolved to its group by the same first-`_`-segment rule as a
+    keypoint (`expand_groups`): the group name must therefore be one of the group's own tokens
+    (`tongue` -> `['tongue']`).
+
+    Args:
+        config_path: path of the encoding yaml.
+
+    Returns:
+        `None` when the yaml has no `visibility` section, otherwise a dict with `group_set`
+        (`visibility.group_set`, default `'nonoverlapping_analysis_groups'`),
+        `likelihood_threshold` (float), `groups` (list of str, duplicates dropped) and
+        `body_parts_json` (`paths.body_parts_json`).
+
+    Raises:
+        ValueError: if the yaml is invalid (see `load_encoding_yaml`), `visibility.groups` is
+            not a non-empty list of group names, `visibility.likelihood_threshold` is not a
+            number in `[0, 1]`, `paths.body_parts_json` is missing, a group is not in the group
+            set, or a group name is not one of its own tokens.
+    """
+    cfg = load_encoding_yaml(config_path)
+    keys = ('visibility_group_set', 'visibility_likelihood_threshold', 'visibility_groups')
+    if not any(key in cfg for key in keys):
+        return None
+    groups = cfg.get('visibility_groups')
+    if (
+        not isinstance(groups, list) or not groups
+        or not all(isinstance(g, str) and g for g in groups)
+    ):
+        raise ValueError(
+            f'{config_path}: visibility.groups must be a non-empty list of group names, '
+            f'got {groups!r}',
+        )
+    threshold = cfg.get('visibility_likelihood_threshold')
+    if (
+        isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+        or not 0 <= threshold <= 1
+    ):
+        raise ValueError(
+            f'{config_path}: visibility.likelihood_threshold must be a number in [0, 1], '
+            f'got {threshold!r}',
+        )
+    body_parts_json = cfg.get('body_parts_json')
+    if body_parts_json is None:
+        raise ValueError(
+            f'{config_path}: the visibility section needs paths.body_parts_json to look the '
+            'groups up',
+        )
+    group_set = str(cfg.get('visibility_group_set') or DEFAULT_VISIBILITY_GROUP_SET)
+    known = load_groups(body_parts_json, group_set)
+    unknown = sorted(set(groups) - set(known))
+    if unknown:
+        raise ValueError(
+            f'{config_path}: visibility.groups {unknown} not in group set {group_set!r} of '
+            f'{body_parts_json}; available: {sorted(known)}',
+        )
+    for group in groups:
+        if group.split('_')[0] not in known[group]:
+            raise ValueError(
+                f'{config_path}: visibility group {group!r} cannot be resolved from its feature '
+                f'name {visibility_feature_name(group)!r}: {group.split("_")[0]!r} is not one of '
+                f'its tokens {known[group]}',
+            )
+    return {
+        'group_set': group_set,
+        'likelihood_threshold': float(threshold),
+        'groups': list(dict.fromkeys(groups)),
+        'body_parts_json': str(body_parts_json),
+    }
+
+
+def load_visibility_features(
+    config_path: str | Path,
+    keypoints: list[str],
+) -> dict[str, Any] | None:
+    """Resolve the `visibility` section to the keypoints behind each binary feature.
+
+    A keypoint belongs to a group when the first `_`-separated segment of its name is one of the
+    group's tokens, the rule of `expand_groups`.
+
+    Args:
+        config_path: path of the encoding yaml.
+        keypoints: keypoint names of the prediction csv, in header order.
+
+    Returns:
+        `None` when the yaml has no `visibility` section, otherwise a json-serializable dict with
+        `likelihood_threshold` and `features` (feature name -> its keypoints, in `keypoints`
+        order). This is what step A stores in the keypoint names json as `visibility`.
+
+    Raises:
+        ValueError: if the section is invalid (see `load_visibility_settings`), a group has no
+            keypoint in `keypoints`, or a keypoint belongs to several visibility groups.
+    """
+    settings = load_visibility_settings(config_path)
+    if settings is None:
+        return None
+    known = load_groups(settings['body_parts_json'], settings['group_set'])
+    features: dict[str, list[str]] = {}
+    for group in settings['groups']:
+        members = [name for name in keypoints if name.split('_')[0] in known[group]]
+        if not members:
+            raise ValueError(
+                f'{config_path}: visibility group {group!r} (tokens {known[group]}) has no '
+                f'keypoint in the csv; keypoints: {keypoints}',
+            )
+        features[visibility_feature_name(group)] = members
+    claimed = [name for members in features.values() for name in members]
+    duplicated = sorted({name for name in claimed if claimed.count(name) > 1})
+    if duplicated:
+        raise ValueError(
+            f'{config_path}: keypoints {duplicated} belong to several visibility groups',
+        )
+    return {'likelihood_threshold': settings['likelihood_threshold'], 'features': features}
+
+
 def load_merge_settings(config_path: str | Path) -> dict[str, Any] | None:
     """Read and validate the optional `merge` section of the encoding yaml.
 
@@ -790,6 +931,7 @@ def check_filter_settings_match(
     max_masked_frac: float,
     json_path: str | Path,
     no_filter_keypoints: list[str] | None = None,
+    visibility: dict[str, Any] | None = None,
 ) -> None:
     """Fail when the step A json was written with other filter settings than the yaml holds.
 
@@ -801,11 +943,13 @@ def check_filter_settings_match(
         no_filter_keypoints: keypoints the yaml exempts from confidence filtering (see
             `load_unfiltered_keypoints`); `None` or empty means none. A json from before the
             exemption existed has no such entry and counts as none.
+        visibility: output of `load_visibility_features` for the csv; `None` means the yaml has
+            no `visibility` section. A json from before the section existed counts as `None`.
 
     Raises:
-        ValueError: if the json's `likelihood_threshold`, `max_masked_frac` or
-            `no_filter_keypoints` differs from the yaml; the usable-keypoint list in the json is
-            then stale, so step A must be rerun.
+        ValueError: if the json's `likelihood_threshold`, `max_masked_frac`,
+            `no_filter_keypoints` or `visibility` differs from the yaml; the usable-keypoint list
+            in the json is then stale, so step A must be rerun.
     """
     mismatches = [
         f'{key}: yaml {expected} vs json {keypoint_info.get(key)}'
@@ -820,6 +964,10 @@ def check_filter_settings_match(
     if json_exempt != expected_exempt:
         mismatches.append(
             f'no_filter_keypoints: yaml {expected_exempt} vs json {json_exempt}',
+        )
+    if keypoint_info.get('visibility') != visibility:
+        mismatches.append(
+            f'visibility: yaml {visibility} vs json {keypoint_info.get("visibility")}',
         )
     if mismatches:
         raise ValueError(
@@ -1037,6 +1185,35 @@ def compute_keypoint_speed(
     return speed_from_positions(x_interp, y_interp, times), masked_fraction
 
 
+def _interval_grid(
+    times: np.ndarray,
+    intervals: np.ndarray,
+    binsize: float,
+    n_bins: int,
+) -> np.ndarray:
+    """Bin grid of every interval, `linspace(beg + binsize, end, n_bins)`.
+
+    Args:
+        times: sample timestamps in seconds, strictly increasing.
+        intervals: interval start/end times, shape `[n_intervals, 2]`.
+        binsize: bin size in seconds.
+        n_bins: number of bins per interval.
+
+    Returns:
+        Array of shape `[n_intervals, n_bins]`.
+
+    Raises:
+        ValueError: if an interval lies outside the range of `times`.
+    """
+    intervals = np.asarray(intervals, dtype=np.float64)
+    if intervals.size and (intervals.min() < times[0] or intervals.max() > times[-1]):
+        raise ValueError(
+            f'intervals [{intervals.min():.3f}, {intervals.max():.3f}] fall outside the '
+            f'frame times [{times[0]:.3f}, {times[-1]:.3f}]',
+        )
+    return np.linspace(intervals[:, 0] + binsize, intervals[:, 1], n_bins, axis=1)
+
+
 def bin_to_intervals(
     values: np.ndarray,
     times: np.ndarray,
@@ -1062,11 +1239,86 @@ def bin_to_intervals(
     Raises:
         ValueError: if an interval lies outside the range of `times`.
     """
-    intervals = np.asarray(intervals, dtype=np.float64)
-    if intervals.size and (intervals.min() < times[0] or intervals.max() > times[-1]):
-        raise ValueError(
-            f'intervals [{intervals.min():.3f}, {intervals.max():.3f}] fall outside the '
-            f'frame times [{times[0]:.3f}, {times[-1]:.3f}]',
-        )
-    grid = np.linspace(intervals[:, 0] + binsize, intervals[:, 1], n_bins, axis=1)
+    grid = _interval_grid(times, intervals, binsize, n_bins)
     return np.interp(grid.ravel(), times, values).reshape(grid.shape)
+
+
+def sample_nearest_to_intervals(
+    values: np.ndarray,
+    times: np.ndarray,
+    intervals: np.ndarray,
+    binsize: float,
+    n_bins: int,
+) -> np.ndarray:
+    """Take the value of the nearest frame at every bin of the per-interval grid.
+
+    Same grid as `bin_to_intervals`, but without interpolation, so a 0/1 signal stays exactly
+    0/1: the bin grid is not aligned with the frame times, and interpolating would blend two
+    neighbouring frames into a fractional value at every transition. A bin halfway between two
+    frames takes the earlier one.
+
+    Args:
+        values: signal sampled at `times`, shape `[n_frames]`.
+        times: sample timestamps in seconds, strictly increasing.
+        intervals: interval start/end times, shape `[n_intervals, 2]`.
+        binsize: bin size in seconds.
+        n_bins: number of bins per interval.
+
+    Returns:
+        Array of shape `[n_intervals, n_bins]` with the dtype of `values`.
+
+    Raises:
+        ValueError: if an interval lies outside the range of `times`.
+    """
+    grid = _interval_grid(times, intervals, binsize, n_bins)
+    flat = grid.ravel()
+    idx_right = np.clip(np.searchsorted(times, flat), 1, len(times) - 1)
+    idx_left = idx_right - 1
+    idx_nearest = np.where(
+        times[idx_right] - flat < flat - times[idx_left], idx_right, idx_left,
+    )
+    return np.asarray(values)[idx_nearest].reshape(grid.shape)
+
+
+def visibility_from_likelihood(likelihoods: list[np.ndarray], threshold: float) -> np.ndarray:
+    """Binary visibility of a body part from the likelihoods of its keypoints.
+
+    A frame is visible (`1`) when at least one keypoint has a likelihood strictly above
+    `threshold`; a NaN likelihood never counts as visible.
+
+    Args:
+        likelihoods: one likelihood array `[n_frames]` per keypoint of the body part.
+        threshold: likelihood a keypoint has to exceed.
+
+    Returns:
+        Float32 array `[n_frames]` of `0.` and `1.`.
+
+    Raises:
+        ValueError: if `likelihoods` is empty.
+    """
+    if not likelihoods:
+        raise ValueError('visibility needs at least one keypoint')
+    stacked = np.stack([np.asarray(values, dtype=np.float64) for values in likelihoods])
+    return np.any(stacked > threshold, axis=0).astype(np.float32)
+
+
+def visibility_features_from_df(
+    df: pd.DataFrame,
+    visibility: dict[str, Any],
+) -> dict[str, np.ndarray]:
+    """Compute every binary visibility feature of one prediction csv.
+
+    Args:
+        df: dataframe from `load_keypoint_csv`.
+        visibility: output of `load_visibility_features`.
+
+    Returns:
+        Feature name -> float32 `[n_frames]` array of `0.` and `1.`, in `visibility` order.
+    """
+    return {
+        feature: visibility_from_likelihood(
+            [get_keypoint_coords(df, name)[2] for name in members],
+            visibility['likelihood_threshold'],
+        )
+        for feature, members in visibility['features'].items()
+    }

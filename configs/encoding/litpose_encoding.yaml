@@ -15,7 +15,7 @@ session:
 paths:
   # <model_dir>/video_preds of the lightning pose checkpoint; its location is recorded in the log.
   # With a `merge` section below this is the output dir: the merged csvs and every step's outputs
-  video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/merged_mm_ibl_ear
+  video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/mm_ibl_ear/20261013_173251_n_20261014_141544
   # defines the groups used by pca and by anatomical_group
   body_parts_json: scripts/delta/data/body_parts.json
   # neural_sessions -> group name -> eids
@@ -33,33 +33,37 @@ output:
 filter:
   likelihood_threshold: 0.7
   max_masked_frac: 0.3
-  group_set:
-    name: nonoverlapping_analysis_groups
-    unfiltered_groups: [mouth_related]
+
+# groups that become one binary "<group>_visible" feature instead of keypoint speeds
+visibility:
+  group_set: nonoverlapping_analysis_groups_separate_tongue
+  likelihood_threshold: 0.7
+  groups: [tongue]
 
 # optional: take each body part from the model that predicts it best. Step 0 builds one csv per
 # session and camera in paths.video_preds_dir from these models.
 merge:
   # group set of paths.body_parts_json used to resolve `groups`
-  group_set: nonoverlapping_analysis_groups
+  group_set: nonoverlapping_analysis_groups_separate_tongue
   # every keypoint comes from exactly one source; `rest` = all keypoints no other source claims
   sources:
-    - video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/ibl-ears/rainbow_qc/20261012_164307/ensemble_median
+    - video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/ibl-ears/eks/20261014_141544/eks
       groups: [ear_related]
-    - video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/E6c-LOO-ibl-headmlp256_3seeds/face+cheese+caz+kondo+hmv+c3d+kauf_train/rainbow_qc/20261012_142217/ensemble_median
+    - video_preds_dir: /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/E6c-LOO-ibl-headmlp256_3seeds/face+cheese+caz+kondo+hmv+c3d+kauf_train/eks/20261013_173251/eks
       groups: rest
 
 # PCA reprojection, done in step 1. On/off comes from step_order; this is only the group set
 pca:
-  group_set: nonoverlapping_analysis_groups
+  group_set: nonoverlapping_analysis_groups_separate_tongue
 
 anatomical_group:
   # group set of body_parts.json 
-  name: nonoverlapping_analysis_groups
+  name: nonoverlapping_analysis_groups_separate_tongue
   base_keypoints:
     - nose_pad_related
     - forelimb
   additional_keypoints:
     - mouth_related
+    - tongue
     - eye_related
     - ear_related

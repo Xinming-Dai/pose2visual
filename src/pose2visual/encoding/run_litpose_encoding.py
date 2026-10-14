@@ -17,7 +17,10 @@ The ``anatomical_group`` section holds the two lists and ``anatomical_group.name
 ``paths.body_parts_json`` (e.g. ``nonoverlapping_analysis_groups``) they are group names, e.g.
 ``base_keypoints: [eye_related]`` and ``additional_keypoints: [mouth_related]``: each group is resolved to its usable keypoints of
 the session (those in ``dynamic_vars.npz``, see ``litpose_keypoints.expand_groups``), so the
-resolved keypoints can differ between sessions. The resolved names are what the encoders see and
+resolved keypoints can differ between sessions. A group of the yaml's ``visibility`` section
+(e.g. ``tongue``) resolves to its binary column ``<group>_visible`` (0/1, see
+``extract_litpose_dynamic_vars_trials``) instead of keypoint speeds; its settings enter the run
+signature, so another threshold never reuses a result. The resolved names are what the encoders see and
 what ``encoding_params.json`` / ``encoding_result.npz`` store as ``base_keypoints`` /
 ``additional_keypoints``; the group names are stored as ``base_groups`` / ``additional_groups``.
 
@@ -81,6 +84,8 @@ from pose2visual.encoding.litpose_keypoints import (
     keypoint_names_json_path,
     load_encoding_yaml,
     load_unfiltered_keypoints,
+    load_visibility_features,
+    load_visibility_settings,
     output_folder_name,
     session_output_dir,
     validate_filter_settings,
@@ -198,7 +203,8 @@ def run_signature(
         `base_keypoints` / `additional_keypoints` are the entries of the config (group names in
         group mode); `anatomical_group` is only present when it is not `all`, and
         `unfiltered_groups` / `filter_group_set` only when groups are exempt from confidence
-        filtering, so results from before they existed keep matching.
+        filtering and `visibility` (group set, groups, threshold) only when the yaml has a
+        `visibility` section, so results from before they existed keep matching.
     """
     signature = {
         'camera': cfg['camera'],
@@ -216,6 +222,12 @@ def run_signature(
     if cfg.get('unfiltered_groups'):
         signature['unfiltered_groups'] = sorted(cfg['unfiltered_groups'])
         signature['filter_group_set'] = cfg['filter_group_set']
+    if cfg.get('visibility'):
+        signature['visibility'] = {
+            'group_set': cfg['visibility']['group_set'],
+            'groups': sorted(cfg['visibility']['groups']),
+            'likelihood_threshold': cfg['visibility']['likelihood_threshold'],
+        }
     return signature
 
 
@@ -317,7 +329,8 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
         `litpose_step_pipelines.json`), `unfiltered_groups` as a list of str (groups exempt from
         confidence filtering, default empty), `filter_group_set` as str, `pca` as bool (derived
         from `step_order`: whether the pipeline has the `2d_pose_pca` step; step B applies it,
-        step C checks it) and `pca_group_set` as str. The actual keypoint source is still
+        step C checks it), `pca_group_set` as str and `visibility` (`load_visibility_settings`:
+        `None` without a `visibility` section). The actual keypoint source is still
         `video_preds_dir`.
 
     Raises:
@@ -327,7 +340,8 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
             given `output.variant_name` is not a plain folder name (or is `base`), a keypoint list
             is empty, `anatomical_group.name` is a group set but `paths.body_parts_json` is
             missing or does not hold it, a listed name is not a group of it, `pca.enabled` is still
-            in the yaml (removed), or `step_order` is missing or an unknown pipeline name.
+            in the yaml (removed), `step_order` is missing or an unknown pipeline name, or the
+            `visibility` section is invalid.
     """
     cfg = load_encoding_yaml(path)
     if eid is not None:
@@ -373,6 +387,7 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
             f'{path}: filter.group_set.unfiltered_groups needs paths.body_parts_json to look the '
             'groups up',
         )
+    cfg['visibility'] = load_visibility_settings(path)
     cfg['pca_group_set'] = str(cfg.get('pca_group_set', DEFAULT_PCA_GROUP_SET))
     cfg['anatomical_group'] = str(cfg.get('anatomical_group', ANATOMICAL_GROUP_ALL))
     if cfg['anatomical_group'] != ANATOMICAL_GROUP_ALL:
@@ -808,12 +823,14 @@ def _run(
     with json_path.open(encoding='utf-8') as f:
         keypoint_info = json.load(f)
     no_filter_keypoints = load_unfiltered_keypoints(args.config, keypoint_info['keypoints'])
+    visibility = load_visibility_features(args.config, keypoint_info['keypoints'])
     check_filter_settings_match(
         keypoint_info,
         cfg['likelihood_threshold'],
         cfg['max_masked_frac'],
         json_path,
         no_filter_keypoints,
+        visibility,
     )
 
     latent_data_dict = np.load(dynamic_vars_path)
@@ -867,6 +884,7 @@ def _run(
         'likelihood_threshold': cfg['likelihood_threshold'],
         'max_masked_frac': cfg['max_masked_frac'],
         'no_filter_keypoints': no_filter_keypoints,
+        'visibility': visibility,
         'skipped_masked_keypoints': keypoint_info['skipped_masked'],
         'step_order': cfg['step_order'],
     }

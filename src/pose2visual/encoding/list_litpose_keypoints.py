@@ -29,6 +29,13 @@ likelihood is ignored, so only NaN ``x``/``y`` frames count as masked and ``max_
 applies to those alone. They are listed in the json as ``no_filter_keypoints``; steps B and C fail when the yaml's
 list differs from it.
 
+Groups of the yaml's ``visibility`` section (e.g. the tongue, which is often hidden) do not become
+speed features: their keypoints are neither usable nor unusable here, whatever their masked
+fraction. Step B turns each group into one binary ``<group>_visible`` feature (1 when any of its
+keypoints has a likelihood above ``visibility.likelihood_threshold``). The json lists them as
+``visibility`` (threshold and feature -> keypoints) with the share of visible frames as
+``visible_fraction``; steps B and C fail when the yaml's ``visibility`` differs from it.
+
 Usage::
 
     PYTHONPATH=src python -m pose2visual.encoding.list_litpose_keypoints \\
@@ -53,8 +60,10 @@ from pose2visual.encoding.litpose_keypoints import (
     load_merge_settings,
     load_unfiltered_keypoints,
     load_video_preds_dir,
+    load_visibility_features,
     resolve_session_eids,
     validate_filter_settings,
+    visibility_features_from_df,
 )
 from pose2visual.encoding.merge_litpose_keypoints import merge_sessions
 
@@ -151,8 +160,10 @@ def build_keypoint_info(
         likelihood_threshold: frames below this likelihood count as masked.
         max_masked_frac: keypoints with a larger masked fraction are not usable.
         config_path: encoding yaml whose `filter.group_set.unfiltered_groups` names the
-            groups exempt from confidence filtering; `None` filters every keypoint. For an exempt
-            keypoint the likelihood is ignored, so `masked_fraction` counts NaN x/y frames only.
+            groups exempt from confidence filtering and whose `visibility` section names the
+            groups turned into binary features; `None` filters every keypoint and has no binary
+            feature. For an exempt keypoint the likelihood is ignored, so `masked_fraction`
+            counts NaN x/y frames only.
 
     Returns:
         Json-serializable dict with `csv_path`, `video_preds_dir`, `model_dir`, `camera`, `eid`,
@@ -160,7 +171,10 @@ def build_keypoint_info(
         `keypoints`, per-keypoint `masked_fraction`, `nan_fraction` and
         `low_likelihood_fraction`, `usable`, `unusable` (names, header order),
         `unusable_reasons` (name -> text) and `skipped_masked` (name -> masked fraction, same
-        keys as `unusable`).
+        keys as `unusable`). `visibility` (output of `load_visibility_features`, `None` without a
+        `visibility` section) and `visible_fraction` (feature name -> share of visible frames,
+        empty without the section) describe the binary features; the keypoints behind them are
+        in neither `usable` nor `unusable`.
     """
     df = load_keypoint_csv(csv_path)
     keypoints = get_keypoint_names(df)
@@ -168,6 +182,11 @@ def build_keypoint_info(
         [] if config_path is None
         else load_unfiltered_keypoints(config_path, keypoints)
     )
+    visibility = None if config_path is None else load_visibility_features(config_path, keypoints)
+    visibility_keypoints = {
+        name for members in (visibility or {'features': {}})['features'].values()
+        for name in members
+    }
     fractions = {
         name: frame_fractions(
             df, name, None if name in no_filter_keypoints else likelihood_threshold,
@@ -175,8 +194,10 @@ def build_keypoint_info(
         for name in keypoints
     }
     masked_fractions = {name: frac['masked'] for name, frac in fractions.items()}
+    # keypoints behind a binary feature are judged by their likelihood alone, not by this test
     skipped_masked = {
-        name: frac for name, frac in masked_fractions.items() if frac > max_masked_frac
+        name: frac for name, frac in masked_fractions.items()
+        if frac > max_masked_frac and name not in visibility_keypoints
     }
     unusable_reasons = {
         name: (
@@ -207,7 +228,19 @@ def build_keypoint_info(
         'low_likelihood_fraction': {
             name: frac['low_likelihood'] for name, frac in fractions.items()
         },
-        'usable': [name for name in keypoints if name not in skipped_masked],
+        'visibility': visibility,
+        'visible_fraction': (
+            {}
+            if visibility is None
+            else {
+                feature: float(values.astype(float).mean())
+                for feature, values in visibility_features_from_df(df, visibility).items()
+            }
+        ),
+        'usable': [
+            name for name in keypoints
+            if name not in skipped_masked and name not in visibility_keypoints
+        ],
         'unusable': [name for name in keypoints if name in skipped_masked],
         'unusable_reasons': unusable_reasons,
         'skipped_masked': skipped_masked,
@@ -226,7 +259,8 @@ def main(argv: list[str] | None = None) -> None:
         ValueError: if the config lacks a valid `likelihood_threshold` / `max_masked_frac`, it has
             a `merge` section but no sessions are selected or `--video-preds-dir` is another
             directory than its `paths.video_preds_dir`, its
-            `filter.group_set.unfiltered_groups` is invalid or not in `filter.group_set.name`,
+            `filter.group_set.unfiltered_groups` is invalid or not in `filter.group_set.name`, its
+            `visibility` section is invalid or names a group without keypoint in a csv,
             neither `--video-preds-dir` nor the config's `video_preds_dir` is given, both
             `--eids` and `--eid-group` are given, `--eid-group` is given without
             `--eid-groups-json` or `paths.eid_groups_json`, or the group is unknown.
@@ -307,7 +341,8 @@ def main(argv: list[str] | None = None) -> None:
         logger.info(
             f'{camera} {eid}: {len(info["usable"])}/{len(info["keypoints"])} usable keypoints, '
             f'unusable: {info["unusable"]}, without confidence filtering: '
-            f'{info["no_filter_keypoints"]} -> {json_path}',
+            f'{info["no_filter_keypoints"]}, visible fraction: {info["visible_fraction"]} '
+            f'-> {json_path}',
         )
 
 
