@@ -17,11 +17,16 @@ source. All sources must hold the same frames (same row count and index).
 Writes, next to the merged csvs, ``encoding/merge_info.json`` with the sources and the keypoints
 each one contributed per session and camera.
 
+Merging is slow, so a session and camera is skipped when its merged csv already exists, is
+recorded in ``merge_info.json`` under the same ``merge.sources`` and ``merge.group_set`` as the
+yaml, and is not older than any source csv. Changing the yaml's ``merge`` or regenerating a source
+therefore re-merges automatically; ``--force`` rebuilds everything.
+
 Usage::
 
     PYTHONPATH=src python -m pose2visual.encoding.merge_litpose_keypoints \\
       --config configs/encoding/litpose_encoding.yaml \\
-      [--eids <eid1> <eid2> | --eid-group ear_left] [--cameras left right]
+      [--eids <eid1> <eid2> | --eid-group ear_left] [--cameras left right] [--force]
 """
 
 import argparse
@@ -91,6 +96,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=CAMERAS,
         default=list(CAMERAS),
         help='cameras to process (default: left right)',
+    )
+    parser.add_argument(
+        '--force',
+        action='store_true',
+        help='rebuild merged csvs even when an up-to-date one exists',
     )
     return parser.parse_args(argv)
 
@@ -250,19 +260,59 @@ def write_merge_info(
     return path
 
 
+def merged_csv_is_current(
+    eid: str,
+    camera: str,
+    source_dirs: list[str],
+    output_dir: str | Path,
+    settings: dict[str, Any],
+    previous_info: dict[str, Any],
+) -> bool:
+    """Whether the merged csv of a session and camera can be kept instead of rebuilt.
+
+    Args:
+        eid: session id.
+        camera: `'left'` or `'right'`.
+        source_dirs: `video_preds` directories of the models, one per source.
+        output_dir: directory the merged csv is written to.
+        settings: output of `load_merge_settings`.
+        previous_info: content of the existing `merge_info.json`, empty when there is none.
+
+    Returns:
+        `True` when the merged csv exists, `merge_info.json` records it under the same
+        `sources` and `group_set` as `settings`, and the csv is not older than any source csv.
+    """
+    name = csv_filename(camera, eid)
+    out_path = Path(output_dir) / name
+    if not out_path.is_file():
+        return False
+    if (
+        previous_info.get('sources') != settings['sources']
+        or previous_info.get('group_set') != settings['group_set']
+        or f'{camera}_{eid}' not in previous_info.get('keypoints_per_source', {})
+    ):
+        return False
+    out_mtime = out_path.stat().st_mtime
+    source_paths = [Path(source_dir) / name for source_dir in source_dirs]
+    return all(path.is_file() and path.stat().st_mtime <= out_mtime for path in source_paths)
+
+
 def merge_sessions(
     config_path: str | Path,
     eids: list[str],
     cameras: list[str],
+    force: bool = False,
 ) -> None:
     """Merge the prediction csvs of every session and camera, as set by the yaml's `merge`.
 
-    A failing session/camera is logged and skipped; the others still run.
+    A session/camera whose merged csv already exists is skipped (see `merged_csv_is_current`)
+    unless `force` is set. A failing session/camera is logged and skipped; the others still run.
 
     Args:
         config_path: encoding yaml with a `merge.sources` section and `paths.video_preds_dir`.
         eids: session ids to merge.
         cameras: cameras to merge, each `'left'` or `'right'`.
+        force: rebuild every merged csv even if an up-to-date one exists.
 
     Raises:
         ValueError: if the yaml has no `merge.sources` (see `load_merge_settings`), its group set
@@ -276,11 +326,23 @@ def merge_sessions(
     groups = load_groups(settings['body_parts_json'], settings['group_set'])
     source_dirs = [source['video_preds_dir'] for source in settings['sources']]
     groups_per_source = [source['groups'] for source in settings['sources']]
+    previous_info: dict[str, Any] = {}
+    info_path = merge_info_path(output_dir)
+    if info_path.is_file():
+        with info_path.open(encoding='utf-8') as f:
+            previous_info = json.load(f)
 
     sessions: dict[str, list[list[str]]] = {}
     failures: list[str] = []
+    n_skipped = 0
     for eid in eids:
         for camera in cameras:
+            if not force and merged_csv_is_current(
+                eid, camera, source_dirs, output_dir, settings, previous_info,
+            ):
+                logger.info(f'{camera} {eid}: merged csv is up to date, skipping')
+                n_skipped += 1
+                continue
             try:
                 sessions[f'{camera}_{eid}'] = merge_session(
                     eid, camera, source_dirs, groups_per_source, groups, output_dir,
@@ -291,7 +353,10 @@ def merge_sessions(
     if sessions:
         logger.info(f'wrote {write_merge_info(output_dir, settings, sessions)}')
     n_total = len(eids) * len(cameras)
-    logger.info(f'merged {n_total - len(failures)}/{n_total} session/camera csvs')
+    logger.info(
+        f'merged {len(sessions)}/{n_total} session/camera csvs, {n_skipped} up to date '
+        f'(skipped), {len(failures)} failed',
+    )
     if failures:
         raise RuntimeError(
             f'{len(failures)} of {n_total} merges failed:\n' + '\n'.join(failures),
@@ -319,7 +384,7 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError(
             f'no sessions: pass --eids or --eid-group, or set session.eid_group in {args.config}',
         )
-    merge_sessions(args.config, eids, list(dict.fromkeys(args.cameras)))
+    merge_sessions(args.config, eids, list(dict.fromkeys(args.cameras)), args.force)
 
 
 if __name__ == '__main__':

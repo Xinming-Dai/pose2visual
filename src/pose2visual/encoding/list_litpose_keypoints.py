@@ -21,7 +21,9 @@ rerun this step after changing either number in the yaml.
 When the yaml has a ``merge`` section, this step first builds the csvs of ``paths.video_preds_dir``
 from the models listed in ``merge.sources`` (see ``merge_litpose_keypoints``) for the selected
 sessions (required) and ``--cameras``, then lists them. ``--video-preds-dir`` must then be the
-yaml's ``paths.video_preds_dir`` (or unset). Rerun this step after changing ``merge``.
+yaml's ``paths.video_preds_dir`` (or unset). A merged csv that already exists, matches the yaml's
+``merge`` and is not older than its source csvs is kept (merging is slow); changing ``merge`` or a
+source re-merges it, and ``--force-merge`` rebuilds every merged csv.
 
 Keypoints of the groups in the yaml's ``filter.group_set.unfiltered_groups`` (looked up in
 ``filter.group_set.name`` of ``paths.body_parts_json``) skip confidence filtering: their
@@ -142,6 +144,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help='overrides max_masked_frac of --config for this run; skip a keypoint when the '
         'fraction of masked frames (NaN x/y or low likelihood) exceeds this',
+    )
+    parser.add_argument(
+        '--force-merge',
+        action='store_true',
+        help='rebuild the merged csvs even when up-to-date ones exist (merge section only)',
     )
     return parser.parse_args(argv)
 
@@ -322,7 +329,9 @@ def main(argv: list[str] | None = None) -> None:
                 f'{args.config} has a merge section, which needs sessions: pass --eids or '
                 '--eid-group, or set session.eid_group',
             )
-        merge_sessions(args.config, selected_eids, list(dict.fromkeys(args.cameras)))
+        merge_sessions(
+            args.config, selected_eids, list(dict.fromkeys(args.cameras)), args.force_merge,
+        )
 
     csvs = list_keypoint_csvs(video_preds_dir)
     if not csvs:

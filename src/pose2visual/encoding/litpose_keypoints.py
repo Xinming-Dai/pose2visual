@@ -48,14 +48,14 @@ DEFAULT_VISIBILITY_GROUP_SET = 'nonoverlapping_analysis_groups'
 VISIBILITY_SUFFIX = '_visible'
 # `merge.sources[*].groups` value meaning "every keypoint no other source claims"
 MERGE_REST = 'rest'
-# `position.columns` value -> csv columns holding the keypoint position; `mean` is `x, y` of a
-# plain Lightning Pose csv and the EKS posterior mean, `ens_median` the ensemble median across
-# seeds that the EKS csv also holds
+# `position.columns` value -> csv columns holding the keypoint position; `ens_post_mean` is
+# `x, y` of a plain Lightning Pose csv and the EKS posterior mean, `ens_median` the ensemble
+# median across seeds that the EKS csv also holds
 POSITION_COLUMNS = {
-    'mean': ('x', 'y'),
+    'ens_post_mean': ('x', 'y'),
     'ens_median': ('x_ens_median', 'y_ens_median'),
 }
-DEFAULT_POSITION = 'mean'
+DEFAULT_POSITION = 'ens_post_mean'
 _PCA_STEP = '2d_pose_pca'
 # `anatomical_group` value meaning "base / additional lists hold explicit keypoint names"
 ANATOMICAL_GROUP_ALL = 'all'

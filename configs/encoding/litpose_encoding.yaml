@@ -3,7 +3,7 @@
 # required; name of an entry in src/pose2visual/encoding/litpose_step_pipelines.json
 step_order: step_01
 position:
-  columns: ens_mean
+  columns: ens_post_mean
 
 session:
   # session to analyze (the --eid flag overrides this)
