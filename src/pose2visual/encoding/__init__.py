@@ -27,8 +27,8 @@ model) and compares base keypoints against base + additional keypoints:
     litpose_pca: per body-part group PCA reprojection of the keypoint x/y, applied by B.
     litpose_preprocess: finite check of the keypoint speed features, used by C.
     litpose_step_pipelines: named preprocessing recipes (``litpose_step_pipelines.json``); a
-        ``step_order`` config value resolves to which keypoint-combination method
-        (``ensemble_median`` / ``eks_mean``) and whether the PCA reprojection is used.
+        ``step_order`` config value resolves to whether the PCA reprojection is used. The
+        keypoint source and its position columns (``position.columns``) are set in the yaml.
 
 Slurm wrappers live in ``scripts/delta/encoding/`` (ONE pipeline) and
 ``scripts/delta/lightningpose_encoding/`` (Lightning Pose keypoint pipeline).

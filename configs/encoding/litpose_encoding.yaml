@@ -1,7 +1,9 @@
 # config for pose2visual.encoding.run_litpose_encoding.
 
 # required; name of an entry in src/pose2visual/encoding/litpose_step_pipelines.json
-step_order: ensemble_median_01
+step_order: step_01
+position:
+  columns: ens_mean
 
 session:
   # session to analyze (the --eid flag overrides this)

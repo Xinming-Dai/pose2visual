@@ -48,6 +48,14 @@ DEFAULT_VISIBILITY_GROUP_SET = 'nonoverlapping_analysis_groups'
 VISIBILITY_SUFFIX = '_visible'
 # `merge.sources[*].groups` value meaning "every keypoint no other source claims"
 MERGE_REST = 'rest'
+# `position.columns` value -> csv columns holding the keypoint position; `mean` is `x, y` of a
+# plain Lightning Pose csv and the EKS posterior mean, `ens_median` the ensemble median across
+# seeds that the EKS csv also holds
+POSITION_COLUMNS = {
+    'mean': ('x', 'y'),
+    'ens_median': ('x_ens_median', 'y_ens_median'),
+}
+DEFAULT_POSITION = 'mean'
 _PCA_STEP = '2d_pose_pca'
 # `anatomical_group` value meaning "base / additional lists hold explicit keypoint names"
 ANATOMICAL_GROUP_ALL = 'all'
@@ -67,6 +75,7 @@ ENCODING_YAML_SECTIONS = {
     },
     'pca': {'group_set': 'pca_group_set'},
     'merge': {'group_set': 'merge_group_set', 'sources': 'merge_sources'},
+    'position': {'columns': 'position_columns'},
     'visibility': {
         'group_set': 'visibility_group_set',
         'likelihood_threshold': 'visibility_likelihood_threshold',
@@ -318,6 +327,7 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
         `likelihood_threshold`, `max_masked_frac`, `unfiltered_groups`
         (`filter.group_set.unfiltered_groups`), `filter_group_set` (`filter.group_set.name`),
         `pca_group_set` (`pca.group_set`), `merge_group_set` and `merge_sources` (`merge.*`),
+        `position_columns` (`position.columns`),
         `visibility_group_set`, `visibility_likelihood_threshold` and `visibility_groups`
         (`visibility.*`),
         `anatomical_group` (`anatomical_group.name`), `base_keypoints`, `additional_keypoints`
@@ -903,6 +913,29 @@ def expand_groups(
     return [kp for kp in available if kp in selected]
 
 
+def load_position_columns(config_path: str | Path) -> tuple[str, str]:
+    """Read the csv columns that hold the keypoint position from the encoding yaml.
+
+    Args:
+        config_path: path of the encoding yaml.
+
+    Returns:
+        Tuple `(x_column, y_column)` of `POSITION_COLUMNS[position.columns]`; `('x', 'y')` when the
+        yaml has no `position` section.
+
+    Raises:
+        ValueError: if the yaml is invalid (see `load_encoding_yaml`) or `position.columns` is
+            not a key of `POSITION_COLUMNS`.
+    """
+    value = load_encoding_yaml(config_path).get('position_columns', DEFAULT_POSITION)
+    if not isinstance(value, str) or value not in POSITION_COLUMNS:
+        raise ValueError(
+            f'{config_path}: position.columns must be one of {sorted(POSITION_COLUMNS)}, '
+            f'got {value!r}',
+        )
+    return POSITION_COLUMNS[value]
+
+
 def load_step_order(config_path: str | Path) -> str:
     """Read the required `step_order` pipeline name from the encoding yaml.
 
@@ -932,6 +965,7 @@ def check_filter_settings_match(
     json_path: str | Path,
     no_filter_keypoints: list[str] | None = None,
     visibility: dict[str, Any] | None = None,
+    position_columns: tuple[str, str] = POSITION_COLUMNS[DEFAULT_POSITION],
 ) -> None:
     """Fail when the step A json was written with other filter settings than the yaml holds.
 
@@ -945,11 +979,13 @@ def check_filter_settings_match(
             exemption existed has no such entry and counts as none.
         visibility: output of `load_visibility_features` for the csv; `None` means the yaml has
             no `visibility` section. A json from before the section existed counts as `None`.
+        position_columns: `(x_column, y_column)` from `load_position_columns`. A json from before
+            the setting existed counts as `('x', 'y')`.
 
     Raises:
         ValueError: if the json's `likelihood_threshold`, `max_masked_frac`,
-            `no_filter_keypoints` or `visibility` differs from the yaml; the usable-keypoint list
-            in the json is then stale, so step A must be rerun.
+            `no_filter_keypoints`, `visibility` or `position_columns` differs from the yaml; the
+            usable-keypoint list in the json is then stale, so step A must be rerun.
     """
     mismatches = [
         f'{key}: yaml {expected} vs json {keypoint_info.get(key)}'
@@ -968,6 +1004,13 @@ def check_filter_settings_match(
     if keypoint_info.get('visibility') != visibility:
         mismatches.append(
             f'visibility: yaml {visibility} vs json {keypoint_info.get("visibility")}',
+        )
+    json_position = tuple(
+        keypoint_info.get('position_columns', POSITION_COLUMNS[DEFAULT_POSITION]),
+    )
+    if json_position != tuple(position_columns):
+        mismatches.append(
+            f'position_columns: yaml {list(position_columns)} vs json {list(json_position)}',
         )
     if mismatches:
         raise ValueError(
@@ -1004,22 +1047,34 @@ def get_keypoint_names(df: pd.DataFrame) -> list[str]:
 def get_keypoint_coords(
     df: pd.DataFrame,
     name: str,
+    columns: tuple[str, str] = POSITION_COLUMNS[DEFAULT_POSITION],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Extract `x`, `y` and `likelihood` of one keypoint.
+    """Extract the position and `likelihood` of one keypoint.
 
     Args:
         df: dataframe from `load_keypoint_csv`.
         name: keypoint name.
+        columns: `(x_column, y_column)` holding the position, see `POSITION_COLUMNS`.
 
     Returns:
         Tuple of float64 arrays `(x, y, likelihood)`, each of shape `[n_frames]`.
+
+    Raises:
+        ValueError: if the csv lacks one of the columns (for example `x_ens_median` in a csv
+            that did not come from `fit_eks_latent_model`).
     """
     sub = df.xs(name, axis=1, level=1)
     # the remaining column level is the coordinate name
     sub.columns = pd.Index(sub.columns.get_level_values(-1))
+    x_column, y_column = columns
+    missing = [col for col in (x_column, y_column, 'likelihood') if col not in sub.columns]
+    if missing:
+        raise ValueError(
+            f'keypoint {name!r} has no column(s) {missing}; available: {list(sub.columns)}',
+        )
     return (
-        sub['x'].to_numpy(dtype=np.float64),
-        sub['y'].to_numpy(dtype=np.float64),
+        sub[x_column].to_numpy(dtype=np.float64),
+        sub[y_column].to_numpy(dtype=np.float64),
         sub['likelihood'].to_numpy(dtype=np.float64),
     )
 
@@ -1052,6 +1107,7 @@ def frame_fractions(
     df: pd.DataFrame,
     name: str,
     likelihood_threshold: float | None,
+    columns: tuple[str, str] = POSITION_COLUMNS[DEFAULT_POSITION],
 ) -> dict[str, float]:
     """Split the unusable frames of a keypoint by cause.
 
@@ -1060,12 +1116,13 @@ def frame_fractions(
         name: keypoint name.
         likelihood_threshold: frames below this likelihood count as low-likelihood; `None`
             ignores the likelihood, so only NaN x/y frames count (`low_likelihood` is 0).
+        columns: `(x_column, y_column)` holding the position, see `get_keypoint_coords`.
 
     Returns:
         Dict with `masked` (any cause, as `masked_frames`), `nan` (NaN x, y or likelihood) and
         `low_likelihood` (finite likelihood below the threshold), each a fraction in `[0, 1]`.
     """
-    x, y, likelihood = get_keypoint_coords(df, name)
+    x, y, likelihood = get_keypoint_coords(df, name, columns)
     if likelihood_threshold is None:
         nan = np.isnan(x) | np.isnan(y)
         low = np.zeros_like(nan)
@@ -1079,7 +1136,12 @@ def frame_fractions(
     }
 
 
-def masked_fraction(df: pd.DataFrame, name: str, likelihood_threshold: float | None) -> float:
+def masked_fraction(
+    df: pd.DataFrame,
+    name: str,
+    likelihood_threshold: float | None,
+    columns: tuple[str, str] = POSITION_COLUMNS[DEFAULT_POSITION],
+) -> float:
     """Fraction of frames of a keypoint that `masked_frames` marks unusable.
 
     Keypoints on the far side of the animal are typically predicted with likelihood near 0 and
@@ -1090,11 +1152,12 @@ def masked_fraction(df: pd.DataFrame, name: str, likelihood_threshold: float | N
         name: keypoint name.
         likelihood_threshold: frames below this likelihood are masked; `None` masks only NaN
             x/y frames.
+        columns: `(x_column, y_column)` holding the position, see `get_keypoint_coords`.
 
     Returns:
         Fraction in `[0, 1]`.
     """
-    x, y, likelihood = get_keypoint_coords(df, name)
+    x, y, likelihood = get_keypoint_coords(df, name, columns)
     return float(np.mean(masked_frames(x, y, likelihood, likelihood_threshold)))
 
 

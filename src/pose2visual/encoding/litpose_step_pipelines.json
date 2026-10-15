@@ -1,6 +1,4 @@
 {
-  "ensemble_median_01": ["ensemble_median", "confidence_filter", "linear_interpolate", "2d_pose_pca", "keypoint_speed", "encoding"],
-  "ensemble_median_02": ["ensemble_median", "confidence_filter", "linear_interpolate", "keypoint_speed", "encoding"],
-  "eks_mean_01": ["eks_mean", "confidence_filter", "linear_interpolate", "2d_pose_pca", "keypoint_speed", "encoding"],
-  "eks_mean_02": ["eks_mean", "confidence_filter", "linear_interpolate", "keypoint_speed", "encoding"]
+  "step_01": ["confidence_filter", "linear_interpolate", "2d_pose_pca", "keypoint_speed", "encoding"],
+  "step_02": ["confidence_filter", "linear_interpolate", "keypoint_speed", "encoding"]
 }

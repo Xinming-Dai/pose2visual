@@ -68,6 +68,8 @@ import pandas as pd
 
 from pose2visual.encoding.litpose_keypoints import (
     CAMERAS,
+    DEFAULT_POSITION,
+    POSITION_COLUMNS,
     bin_to_intervals,
     check_filter_settings_match,
     csv_filename,
@@ -78,6 +80,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_keypoint_csv,
     load_output_name,
     load_pca_settings,
+    load_position_columns,
     load_step_order,
     load_unfiltered_keypoints,
     load_video_preds_dir,
@@ -258,6 +261,7 @@ def build_dynamic_vars(
     pca: dict[str, Any] | None = None,
     no_filter_keypoints: list[str] | None = None,
     visibility: dict[str, Any] | None = None,
+    position_columns: tuple[str, str] = POSITION_COLUMNS[DEFAULT_POSITION],
 ) -> tuple[dict[str, np.ndarray], dict[str, float], dict[str, Any] | None]:
     """Bin the speed of each keypoint and the binary visibility features onto every split.
 
@@ -276,6 +280,8 @@ def build_dynamic_vars(
         visibility: output of `load_visibility_features`; each feature becomes one extra column
             after the speed columns, with the value of the nearest frame in every bin. `None` =
             no binary feature.
+        position_columns: `(x_column, y_column)` of the csv holding the keypoint positions, from
+            `load_position_columns`; the likelihood column is always `likelihood`.
 
     Returns:
         Tuple `(z_trials_time, masked_fraction, pca_info)`: split name -> `[K_split, n_bins, 1,
@@ -293,7 +299,7 @@ def build_dynamic_vars(
     positions: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     exempt = set(no_filter_keypoints or [])
     for name in keypoints:
-        x, y, likelihood = get_keypoint_coords(df, name)
+        x, y, likelihood = get_keypoint_coords(df, name, position_columns)
         x_interp, y_interp, masked_fraction[name] = interpolate_keypoint(
             x, y, likelihood, times, None if name in exempt else likelihood_threshold,
         )
@@ -337,9 +343,9 @@ def extract_session(
         eid: session id.
         camera: `'left'` or `'right'`.
         video_preds_dir: directory holding the Lightning Pose prediction csvs. Point this at the
-            combined csv's folder (see `litpose_step_pipelines`) when `step_order` names a
-            pipeline whose first step is `ensemble_median` or `eks_mean`; this function does not
-            resolve or build that csv itself.
+            ensemble-median or EKS csv's folder to use those predictions; this function does not
+            build that csv itself. Which columns are the position is the yaml's
+            `position.columns`.
         output_folder: folder name under `video_preds_dir`, see `output_folder_name`.
         neural_input_dir: root dir containing `<eid>/<eid>_aligned.npz` and `<eid>/params.json`.
         video_timestamps_dir: directory containing `_ibl_{left,right}Camera.times.<eid>.npy`.
@@ -351,7 +357,8 @@ def extract_session(
         config_path: encoding yaml the settings came from, recorded in `params.json`. Its
             `filter.group_set.unfiltered_groups` and `visibility` section must agree with the step A
             json; `None` (outside the cli) means no keypoint is exempt from confidence filtering
-            and there is no binary feature.
+            and there is no binary feature. Its `position.columns` picks the csv columns used as
+            keypoint position and must agree with the step A json (`None` = `x`, `y`).
         pca: output of `resolve_pca` (`None` = no pca); the flag and the effective number of
             components of each group are stored for step C.
 
@@ -382,9 +389,13 @@ def extract_session(
         None if config_path is None
         else load_visibility_features(config_path, keypoint_info['keypoints'])
     )
+    position_columns = (
+        POSITION_COLUMNS[DEFAULT_POSITION] if config_path is None
+        else load_position_columns(config_path)
+    )
     check_filter_settings_match(
         keypoint_info, likelihood_threshold, max_masked_frac, json_path, no_filter_keypoints,
-        visibility,
+        visibility, position_columns,
     )
     keypoints = keypoint_info['usable']
 
@@ -418,7 +429,7 @@ def extract_session(
 
     z_trials_time, masked_fraction, pca_info = build_dynamic_vars(
         df, keypoints, times, intervals, likelihood_threshold, binsize, n_bins, pca,
-        no_filter_keypoints, visibility,
+        no_filter_keypoints, visibility, position_columns,
     )
     feature_names = [] if visibility is None else list(visibility['features'])
     visible_fraction = (
@@ -486,6 +497,7 @@ def extract_session(
         'likelihood_threshold': likelihood_threshold,
         'max_masked_frac': max_masked_frac,
         'no_filter_keypoints': no_filter_keypoints,
+        'position_columns': list(position_columns),
         'speed_unit': 'pixels/second of the downsampled video frames',
         'binsize': binsize,
         'n_bins': n_bins,

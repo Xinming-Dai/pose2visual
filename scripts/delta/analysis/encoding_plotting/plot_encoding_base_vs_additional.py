@@ -521,7 +521,7 @@ def keypoint_text(
         base_keypoints: base keypoint names, or group names in group mode.
         additional_keypoints: additional keypoint names, or group names in group mode.
         camera: camera of the keypoints.
-        step_order: step pipeline name that encodes preprocessing (e.g., ensemble_median_01 with PCA).
+        step_order: step pipeline name that encodes preprocessing (e.g., step_01 with PCA).
         n_sessions: number of pooled sessions.
         stats: output of `collect_stats`.
 

@@ -205,7 +205,7 @@ def merge_session(
             f.write(f'{label},' + ','.join(str(v) for v in values) + '\n')
         merged.to_csv(f, header=False)
     logger.info(
-        f'{camera} {eid}: {merged.shape[1] // 3} keypoints -> {out_path}; '
+        f'{camera} {eid}: {len(get_keypoint_names(merged))} keypoints -> {out_path}; '
         + '; '.join(f'{src}: {kps}' for src, kps in zip(source_dirs, selected, strict=True)),
     )
     return selected

@@ -83,6 +83,7 @@ from pose2visual.encoding.litpose_keypoints import (
     expand_groups,
     keypoint_names_json_path,
     load_encoding_yaml,
+    load_position_columns,
     load_unfiltered_keypoints,
     load_visibility_features,
     load_visibility_settings,
@@ -831,6 +832,7 @@ def _run(
         json_path,
         no_filter_keypoints,
         visibility,
+        load_position_columns(args.config),
     )
 
     latent_data_dict = np.load(dynamic_vars_path)

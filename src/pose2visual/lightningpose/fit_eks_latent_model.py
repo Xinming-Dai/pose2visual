@@ -13,8 +13,8 @@ This calls ``eks.singlecam_smoother.ensemble_kalman_smoother_singlecam`` rather 
 
 Writes one csv per session and camera in the same ``(scorer, bodyparts, coords)`` 3-level-header
 format as the raw prediction csvs, named ``_iblrig_<camera>Camera.downsampled.<session>.csv`` so
-it can be used directly as a ``video_preds_dir`` (e.g. by the encoding pipeline's ``eks_mean``
-step order).
+it can be used directly as a ``video_preds_dir`` (e.g. by the encoding pipeline, whose
+``position.columns`` picks ``x, y`` or ``x_ens_median, y_ens_median``).
 Each keypoint has the coords ``x``, ``y`` (smoothed), ``likelihood`` (mean ensemble confidence),
 ``x_ens_median``, ``y_ens_median``, ``x_ens_var``, ``y_ens_var``, ``x_posterior_var`` and
 ``y_posterior_var``. The fitted ``s`` per keypoint is recorded in the run's manifest.

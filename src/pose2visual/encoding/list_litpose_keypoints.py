@@ -51,6 +51,8 @@ from pathlib import Path
 
 from pose2visual.encoding.litpose_keypoints import (
     CAMERAS,
+    DEFAULT_POSITION,
+    POSITION_COLUMNS,
     frame_fractions,
     get_keypoint_names,
     keypoint_names_json_path,
@@ -58,6 +60,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_filter_settings,
     load_keypoint_csv,
     load_merge_settings,
+    load_position_columns,
     load_unfiltered_keypoints,
     load_video_preds_dir,
     load_visibility_features,
@@ -163,11 +166,13 @@ def build_keypoint_info(
             groups exempt from confidence filtering and whose `visibility` section names the
             groups turned into binary features; `None` filters every keypoint and has no binary
             feature. For an exempt keypoint the likelihood is ignored, so `masked_fraction`
-            counts NaN x/y frames only.
+            counts NaN x/y frames only. Its `position.columns` picks the x/y columns that are
+            checked for NaN (`None` = `x`, `y`).
 
     Returns:
         Json-serializable dict with `csv_path`, `video_preds_dir`, `model_dir`, `camera`, `eid`,
         `n_frames`, `likelihood_threshold`, `max_masked_frac`, `no_filter_keypoints`,
+        `position_columns` (the x/y csv columns the yaml's `position.columns` selects),
         `keypoints`, per-keypoint `masked_fraction`, `nan_fraction` and
         `low_likelihood_fraction`, `usable`, `unusable` (names, header order),
         `unusable_reasons` (name -> text) and `skipped_masked` (name -> masked fraction, same
@@ -183,6 +188,10 @@ def build_keypoint_info(
         else load_unfiltered_keypoints(config_path, keypoints)
     )
     visibility = None if config_path is None else load_visibility_features(config_path, keypoints)
+    position_columns = (
+        POSITION_COLUMNS[DEFAULT_POSITION] if config_path is None
+        else load_position_columns(config_path)
+    )
     visibility_keypoints = {
         name for members in (visibility or {'features': {}})['features'].values()
         for name in members
@@ -190,6 +199,7 @@ def build_keypoint_info(
     fractions = {
         name: frame_fractions(
             df, name, None if name in no_filter_keypoints else likelihood_threshold,
+            position_columns,
         )
         for name in keypoints
     }
@@ -222,6 +232,7 @@ def build_keypoint_info(
         'likelihood_threshold': likelihood_threshold,
         'max_masked_frac': max_masked_frac,
         'no_filter_keypoints': no_filter_keypoints,
+        'position_columns': list(position_columns),
         'keypoints': keypoints,
         'masked_fraction': masked_fractions,
         'nan_fraction': {name: frac['nan'] for name, frac in fractions.items()},
