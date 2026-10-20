@@ -2,7 +2,7 @@
 
 For each session, saves (png and pdf) the left and right camera frames at the anchor frame with
 every Pose-EKS keypoint above the likelihood gate drawn in its own colour (without the digit
-tips of the paw far from each camera, unless `--keep-far-digits`), and the same frames with the
+tips of the paw far from each camera, see `--fingers`), and the same frames with the
 x/y traces of those keypoints from `--half-window-sec` before to the same time after the
 anchor. The source videos are auto-discovered from the csv names (IBL-2view convention, rooted at
 `--video-root` or `$IBL_2VIEW_ROOT`).
@@ -41,6 +41,8 @@ Examples:
 
   python -m pose2visual.qc.showcase --eks-dir /path/to/<run> --sessions <uuid> \\
     --anchor-frame 3000 --half-window-sec 1 --figures traces
+
+  python -m pose2visual.qc.showcase --eks-dir /path/to/<run> --sessions <uuid> --fingers none
         ''',
     )
     parser.add_argument(
@@ -86,11 +88,14 @@ Examples:
         help='Diameter in points of the keypoint dots on the frames (default: 10)',
     )
     parser.add_argument(
-        '--keep-far-digits',
-        action='store_true',
-        help='Also show the digit tips (d<n>_tip_*) of the paw on the far side of each camera '
-        '(right-side tips on the left camera and vice versa); by default they are dropped '
-        'because that paw is occluded and the model predicts the nearer one',
+        '--fingers',
+        choices=['near', 'all', 'none'],
+        default='near',
+        help="Digit tips (the keypoints d<n>_tip_*) to show: 'near' drops those of the paw on the "
+        'far side of each camera (right-side tips on the left camera and vice versa; that paw is '
+        'occluded and the model predicts the nearer one), all keeps every one, and none drops all '
+        "of them. 'none' and 'all' add .nofingers / .allfingers to the file names "
+        '(default: near)',
     )
     parser.add_argument(
         '--native-aspect',

@@ -26,6 +26,7 @@ def build_output_stem(
     session_id: str,
     anchor_frame: int,
     half_window_sec: float | None = None,
+    fingers: str = 'near',
 ) -> Path:
     """Name the figure of one session; the suffixes are added when it is saved.
 
@@ -38,14 +39,18 @@ def build_output_stem(
         session_id: session UUID.
         anchor_frame: video frame index of the anchor.
         half_window_sec: seconds shown on each side of the anchor, for the traces figure.
+        fingers: which digit tips are shown; `none` and `all` are marked in the name so they do
+            not overwrite the default figures.
 
     Returns:
-        `<out_dir>/<kind>.<session>.frame<anchor>[.pm<seconds>s]`, the seconds written with a
-        `p` for the decimal point (`pm2p5s` for 2.5).
+        `<out_dir>/<kind>.<session>.frame<anchor>[.pm<seconds>s][.nofingers|.allfingers]`, the
+        seconds written with a `p` for the decimal point (`pm2p5s` for 2.5).
     """
     parts = [kind, session_id, f'frame{anchor_frame:06d}']
     if half_window_sec is not None:
         parts.append(f'pm{half_window_sec:g}s'.replace('.', 'p'))
+    if fingers != 'near':
+        parts.append('nofingers' if fingers == 'none' else 'allfingers')
     return out_dir / '.'.join(parts)
 
 
@@ -104,17 +109,20 @@ def run(args: argparse.Namespace) -> list[Path]:
         if 'frames' in args.figures:
             fig = build_frame_figure(
                 images, data, half_window, colors, args.conf_threshold, args.dot_size,
-                args.keep_far_digits,
+                args.fingers,
             )
-            stem = build_output_stem(out_dir, 'kp_frame', session_id, args.anchor_frame)
+            stem = build_output_stem(
+                out_dir, 'kp_frame', session_id, args.anchor_frame, fingers=args.fingers,
+            )
             written += save_figure(fig, stem, args.dpi)
         if make_traces:
             fig = build_trace_figure(
                 images, data, half_window, fps, colors, args.conf_threshold, args.dot_size,
-                args.keep_far_digits,
+                args.fingers,
             )
             stem = build_output_stem(
                 out_dir, 'kp_traces', session_id, args.anchor_frame, args.half_window_sec,
+                args.fingers,
             )
             written += save_figure(fig, stem, args.dpi)
         logger.info(f'  wrote {[str(path) for path in written[-4:]]}')

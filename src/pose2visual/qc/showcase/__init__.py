@@ -9,9 +9,9 @@ Run with `python -m pose2visual.qc.showcase` (see `cli` for the flags); needs
   keypoints from `seconds` before to `seconds` after the anchor, the anchor marked by a large dot.
 
 The digit tips of the paw on the far side of each camera (occluded, the model predicts the nearer
-paw) are dropped unless `--keep-far-digits`. The left frame is resized to the size of the right
-one unless `--native-aspect` is given. Each figure is saved as png and pdf. A SLURM launcher lives
-in `scripts/delta/qc/render_showcase.sh`.
+paw) are dropped by default; `--fingers none` drops every digit tip. The left frame is resized to
+the size of the right one unless `--native-aspect` is given. Each figure is saved as png and pdf.
+A SLURM launcher lives in `scripts/delta/qc/render_showcase.sh`.
 
 Modules:
     cli: argument parsing and `main`.

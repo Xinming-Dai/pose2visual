@@ -31,11 +31,13 @@ echo "=== executing ==="
 # --anchor-frame N      frame to show (default: 200)
 # --half-window-sec S   seconds of trace on each side (default: 2.5)
 # --figures frames      only the labeled frames (or: traces)
+# --fingers none        no digit tips (d*); files get .nofingers (default near: far paw dropped)
 PYTHONPATH="${REPO}/src:${PYTHONPATH}" python -u -m pose2visual.qc.showcase \
     --eks-dir "${EKS_DIR}" \
     --sessions "${SESSION_IDS[@]}" \
     --anchor-frame 200 \
-    --half-window-sec 2.5
+    --half-window-sec 2.5 \
+    --fingers none
 STATUS=$?
 
 echo "[$(date +'%Y-%m-%d %H:%M:%S')] Job Done (exit status ${STATUS})."

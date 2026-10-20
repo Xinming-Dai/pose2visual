@@ -24,6 +24,7 @@ FIGURE_WIDTH = 16.0
 TRACE_ROW_HEIGHT = 0.85
 ANCHOR_MARKER_SIZE = 9
 DIGIT_TIP = re.compile(r'^d\d+_tip_(left|right)$')
+FINGER_MODES = ('near', 'all', 'none')
 TEXT_COLOR = '0.15'
 GRID_COLOR = '0.85'
 
@@ -67,7 +68,7 @@ def visible_keypoints(
     data: CameraData,
     frame_idx: int,
     conf_threshold: float,
-    keep_far_digits: bool = False,
+    fingers: str = 'near',
 ) -> np.ndarray:
     """Find the keypoints to show at one frame.
 
@@ -75,15 +76,22 @@ def visible_keypoints(
         data: Pose-EKS arrays of one camera.
         frame_idx: row of `data` to look at.
         conf_threshold: a keypoint is visible when its likelihood exceeds this.
-        keep_far_digits: keep the digit tips of the paw on the far side of the camera, which are
-            dropped by default (see `is_far_digit`).
+        fingers: which digit tips (fingers) to keep: 'near' drops those of the paw on the far
+            side of the camera (see `is_far_digit`), 'all' keeps every one, 'none' drops them all.
 
     Returns:
         indices of the visible keypoints with a finite position, in csv header order.
+
+    Raises:
+        ValueError: if `fingers` is not one of `FINGER_MODES`.
     """
     visible = gate_mask(data.likelihood[frame_idx], conf_threshold)
     visible &= np.isfinite(data.xy_eks[frame_idx]).all(axis=1)
-    if not keep_far_digits:
+    if fingers not in FINGER_MODES:
+        raise ValueError(f'fingers must be one of {FINGER_MODES}, got {fingers!r}')
+    if fingers == 'none':
+        visible &= ~np.array([DIGIT_TIP.match(name) is not None for name in data.columns])
+    elif fingers == 'near':
         visible &= ~np.array([is_far_digit(name, data.camera) for name in data.columns])
     return np.flatnonzero(visible)
 
@@ -96,7 +104,7 @@ def plot_frame_overlay(
     colors: np.ndarray,
     conf_threshold: float,
     dot_size: float,
-    keep_far_digits: bool = False,
+    fingers: str = 'near',
 ) -> np.ndarray:
     """Draw one camera frame with its keypoints above the likelihood gate.
 
@@ -108,13 +116,13 @@ def plot_frame_overlay(
         colors: colour of every keypoint, shape (n_keypoints, 4).
         conf_threshold: a keypoint is drawn when its likelihood exceeds this.
         dot_size: marker diameter in points.
-        keep_far_digits: also draw the far-paw digit tips (see `visible_keypoints`).
+        fingers: which digit tips to draw, 'near', 'all' or 'none' (see `visible_keypoints`).
 
     Returns:
         indices of the drawn keypoints.
     """
     xy = data.xy_eks[frame_idx]
-    drawn = visible_keypoints(data, frame_idx, conf_threshold, keep_far_digits)
+    drawn = visible_keypoints(data, frame_idx, conf_threshold, fingers)
     ax.imshow(image)
     ax.scatter(
         xy[drawn, 0],
@@ -181,7 +189,7 @@ def build_frame_figure(
     colors: np.ndarray,
     conf_threshold: float,
     dot_size: float,
-    keep_far_digits: bool = False,
+    fingers: str = 'near',
 ) -> Figure:
     """Build the labeled frames of all cameras side by side.
 
@@ -192,14 +200,14 @@ def build_frame_figure(
         colors: colour of every keypoint, shape (n_keypoints, 4).
         conf_threshold: likelihood gate.
         dot_size: marker diameter in points.
-        keep_far_digits: also draw the far-paw digit tips (see `visible_keypoints`).
+        fingers: which digit tips to draw, 'near', 'all' or 'none' (see `visible_keypoints`).
 
     Returns:
         the figure, with a colour legend of the drawn keypoints under each frame.
     """
     cameras = list(images)
     drawn = {
-        camera: visible_keypoints(data[camera], frame_idx, conf_threshold, keep_far_digits)
+        camera: visible_keypoints(data[camera], frame_idx, conf_threshold, fingers)
         for camera in cameras
     }
     image_height = _image_height(images)
@@ -209,7 +217,7 @@ def build_frame_figure(
     for cam_idx, camera in enumerate(cameras):
         plot_frame_overlay(
             fig.add_subplot(grid[0, cam_idx]), images[camera], data[camera], frame_idx, colors,
-            conf_threshold, dot_size, keep_far_digits,
+            conf_threshold, dot_size, fingers,
         )
         names = [data[camera].columns[idx] for idx in drawn[camera]]
         _add_legend(fig.add_subplot(grid[1, cam_idx]), names, colors[drawn[camera]])
@@ -264,7 +272,7 @@ def build_trace_figure(
     colors: np.ndarray,
     conf_threshold: float,
     dot_size: float,
-    keep_far_digits: bool = False,
+    fingers: str = 'near',
 ) -> Figure:
     """Build the labeled frames with the x/y traces of their keypoints underneath.
 
@@ -281,14 +289,14 @@ def build_trace_figure(
         colors: colour of every keypoint, shape (n_keypoints, 4).
         conf_threshold: likelihood gate.
         dot_size: marker diameter of the frame overlays in points.
-        keep_far_digits: also show the far-paw digit tips (see `visible_keypoints`).
+        fingers: which digit tips to show, 'near', 'all' or 'none' (see `visible_keypoints`).
 
     Returns:
         the figure.
     """
     cameras = list(images)
     rows = {
-        camera: visible_keypoints(data[camera], frame_idx, conf_threshold, keep_far_digits)
+        camera: visible_keypoints(data[camera], frame_idx, conf_threshold, fingers)
         for camera in cameras
     }
     limits = {
@@ -314,7 +322,7 @@ def build_trace_figure(
         ax_image = fig.add_subplot(grid[0, 2 * cam_idx:2 * cam_idx + 2])
         plot_frame_overlay(
             ax_image, images[camera], data[camera], frame_idx, colors, conf_threshold, dot_size,
-            keep_far_digits,
+            fingers,
         )
         _add_legend(
             fig.add_subplot(grid[1, 2 * cam_idx:2 * cam_idx + 2]),
