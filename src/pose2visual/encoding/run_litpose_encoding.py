@@ -35,13 +35,16 @@ equals the one stored in ``dynamic_vars.npz`` and records the group set and the 
 (or other component counts) never replace each other.
 
 The base fit is written once to ``<eid>/base/<hash8>/encoding_result.npz`` (with
-``base_key.json`` and ``ray_tune/``), ``<hash8>`` being a hash of the base inputs (keypoints,
+``encoding_predictions.npz``, ``base_key.json`` and ``ray_tune/``), ``<hash8>`` being a hash of the base inputs (keypoints,
 camera, seed, pca settings, data), and reused by every variant whose base inputs match, so trying
 another ``additional_keypoints`` set only needs a new ``additional_keypoints`` list;
 ``--rerun_base`` forces a refit. Each variant
 writes to ``<eid>/<variant_name>/``: ``encoding_result.npz`` (metrics and deltas, loadable
-without pickle), ``encoding_params.json`` and ``encoding.log``, both recording the Lightning
-Pose checkpoint location and the base / additional / unused keypoints.
+without pickle), ``encoding_predictions.npz`` (float32 held-out test ``gt`` / ``pred`` of every
+condition and model, ``[trials, bins, neurons]``, read by the psth / raster plot),
+``encoding_params.json`` and ``encoding.log``, both recording the Lightning
+Pose checkpoint location and the base / additional / unused keypoints. A cached base without
+``encoding_predictions.npz`` (made before it was saved) is refitted.
 
 ``output.variant_name`` defaults (null or absent) to the sorted ``additional_keypoints`` (names or group
 names, as written in the config) joined by ``_``; a string in the config overrides it. Either way an earlier result is never overwritten by
@@ -64,6 +67,7 @@ import argparse
 import hashlib
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +127,9 @@ _MAX_VARIANT_NAME_LEN = 100
 _NAME_HASH_LEN = 8
 # same floor as the encoders use before taking log of the predicted rates
 _BPS_RATE_THRESHOLD = 1e-3
+_FROZEN_CONFIG_NAME = 'encoding_config.yaml'
+# test-set gt / pred of every condition and model, read by the psth / raster plot
+_PREDICTIONS_NAME = 'encoding_predictions.npz'
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -596,8 +603,8 @@ def fit_condition(
     neural_data_dict: Any,
     tune_storage_path: str,
     seed: int,
-) -> dict[str, np.ndarray | float]:
-    """Fit RRR and CNN on one input set and collect their test metrics.
+) -> tuple[dict[str, np.ndarray | float], dict[str, np.ndarray]]:
+    """Fit RRR and CNN on one input set and collect their test metrics and predictions.
 
     Args:
         cond: condition name used as prefix of the returned keys.
@@ -608,10 +615,13 @@ def fit_condition(
         seed: random seed forwarded to the CNN trials.
 
     Returns:
-        Dict with `{cond}_{model}_{r2,bps}` scalars and `{cond}_{model}_{r2,bps}_per_neuron`
-        arrays for `rrr` and `cnn`.
+        Tuple `(metrics, predictions)`. `metrics` holds the `{cond}_{model}_{r2,bps}` scalars and
+        `{cond}_{model}_{r2,bps}_per_neuron` arrays for `rrr` and `cnn`. `predictions` holds the
+        float32 held-out test arrays `{cond}_{model}_gt` and `{cond}_{model}_pred`, each of shape
+        `[n_trials, n_bins, n_neurons]`.
     """
     metrics: dict[str, np.ndarray | float] = {}
+    predictions: dict[str, np.ndarray] = {}
     for model, train_fn in (
         ('rrr', train_rrr_encoder_with_tune),
         ('cnn', train_cnn_encoder_with_tune),
@@ -634,7 +644,9 @@ def fit_condition(
         metrics[f'{cond}_{model}_bps'] = float(result['bps'])
         metrics[f'{cond}_{model}_r2_per_neuron'] = per_neuron['r2']
         metrics[f'{cond}_{model}_bps_per_neuron'] = per_neuron['bps']
-    return metrics
+        predictions[f'{cond}_{model}_gt'] = np.asarray(result['gt'], dtype=np.float32)
+        predictions[f'{cond}_{model}_pred'] = np.asarray(result['pred'], dtype=np.float32)
+    return metrics, predictions
 
 
 def base_cache_key(
@@ -706,25 +718,45 @@ def _read_base_metrics(result_path: Path) -> dict[str, np.ndarray | float]:
     return out
 
 
+def _read_base_predictions(predictions_path: Path) -> dict[str, np.ndarray]:
+    """Load the `base_{model}_{gt,pred}` arrays of a cached base fit.
+
+    Args:
+        predictions_path: `<eid>/base/<hash8>/encoding_predictions.npz`.
+
+    Returns:
+        Dict of the float32 test arrays.
+    """
+    with np.load(predictions_path) as data:
+        return {name: np.asarray(data[name]) for name in data.files}
+
+
 def load_or_fit_base(
     base_directory: Path,
     key: dict[str, Any],
     fit: Any,
     rerun: bool,
-) -> tuple[dict[str, np.ndarray | float], str]:
+) -> tuple[dict[str, np.ndarray | float], dict[str, np.ndarray], str]:
     """Reuse the cached base fit when its key matches, otherwise fit and cache it.
 
+    A cache from before the predictions were saved (no `encoding_predictions.npz`) cannot be
+    reused, since the psth / raster plot needs the test predictions; the base is refitted.
+
     Args:
-        base_directory: `<eid>/base/<hash8>`; holds `encoding_result.npz` and `base_key.json`.
+        base_directory: `<eid>/base/<hash8>`; holds `encoding_result.npz`,
+            `encoding_predictions.npz` and `base_key.json`.
         key: output of `base_cache_key`.
-        fit: zero-argument callable returning the base metrics (`fit_condition('base', ...)`).
+        fit: zero-argument callable returning the base `(metrics, predictions)`
+            (`fit_condition('base', ...)`).
         rerun: refit even if the cache matches.
 
     Returns:
-        Tuple `(metrics, status)`; `status` is `'reused'`, `'fitted (no cache)'`,
-        `'fitted (cache key mismatch)'` or `'fitted (--rerun_base)'`.
+        Tuple `(metrics, predictions, status)`; `status` is `'reused'`, `'fitted (no cache)'`,
+        `'fitted (cache key mismatch)'`, `'fitted (no predictions cached)'` or
+        `'fitted (--rerun_base)'`.
     """
     result_path = base_directory / 'encoding_result.npz'
+    predictions_path = base_directory / _PREDICTIONS_NAME
     key_path = base_directory / 'base_key.json'
     status = 'fitted (no cache)'
     if result_path.is_file() and key_path.is_file():
@@ -732,19 +764,29 @@ def load_or_fit_base(
             cached_key = json.load(f)
         if rerun:
             status = 'fitted (--rerun_base)'
-        elif cached_key == key:
-            return _read_base_metrics(result_path), 'reused'
-        else:
+        elif cached_key != key:
             status = 'fitted (cache key mismatch)'
-    metrics = fit()
+        elif not predictions_path.is_file():
+            status = 'fitted (no predictions cached)'
+        else:
+            return (
+                _read_base_metrics(result_path),
+                _read_base_predictions(predictions_path),
+                'reused',
+            )
+    metrics, predictions = fit()
     base_directory.mkdir(parents=True, exist_ok=True)
-    # write to a temp file and rename, so a half-written result is never read as a cache
+    # write to a temp file and rename, so a half-written result is never read as a cache; the
+    # predictions go first because the result file together with the key marks a usable cache
+    tmp_predictions = base_directory / 'encoding_predictions.tmp.npz'
+    np.savez_compressed(tmp_predictions, **predictions)
+    tmp_predictions.replace(predictions_path)
     tmp_path = base_directory / 'encoding_result.tmp.npz'
     np.savez(tmp_path, base_keypoints=np.asarray(key['base_keypoints']), **metrics)
     tmp_path.replace(result_path)
     with key_path.open('w', encoding='utf-8') as f:
         json.dump(key, f, indent=2)
-    return metrics, status
+    return metrics, predictions, status
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -771,6 +813,11 @@ def main(argv: list[str] | None = None) -> None:
     # the folder name is the variant name from here on (it may carry a hash suffix)
     cfg['variant_name'] = out_dir.name
     out_dir.mkdir(parents=True, exist_ok=True)
+    # freeze the config: every later read (and the plot, via params['config']) uses this copy, so
+    # editing the yaml for another task while the job runs cannot change this run
+    config_frozen = out_dir / _FROZEN_CONFIG_NAME
+    shutil.copyfile(args.config, config_frozen)
+    args.config = config_frozen
 
     file_handler = logging.FileHandler(out_dir / 'encoding.log', mode='w')
     file_handler.setFormatter(
@@ -929,7 +976,7 @@ def _run(
     )
     params['base_dir'] = str(base_directory)
     logger.info(f'condition base: {len(base)} keypoints')
-    metrics, base_status = load_or_fit_base(
+    metrics, predictions, base_status = load_or_fit_base(
         base_directory,
         key,
         lambda: fit_condition(
@@ -943,16 +990,16 @@ def _run(
         json.dump(params, f, indent=2)
 
     logger.info(f'condition base_plus_additional: {len(base + additional)} keypoints')
-    metrics.update(
-        fit_condition(
-            'base_plus_additional',
-            eid,
-            z_full,
-            neural_data_dict,
-            str(out_dir / 'ray_tune'),
-            args.seed,
-        ),
+    metrics_full, predictions_full = fit_condition(
+        'base_plus_additional',
+        eid,
+        z_full,
+        neural_data_dict,
+        str(out_dir / 'ray_tune'),
+        args.seed,
     )
+    metrics.update(metrics_full)
+    predictions.update(predictions_full)
     metrics.update(compare_conditions(metrics))
     for model in _MODELS:
         logger.info(
@@ -964,6 +1011,10 @@ def _run(
 
     logger.info(f'Summary (held-out test set):\n{format_summary_table(metrics)}')
 
+    # predictions first: encoding_result.npz is what marks the run as finished for the plots
+    predictions_path = out_dir / _PREDICTIONS_NAME
+    np.savez_compressed(predictions_path, **predictions)
+    logger.info(f'wrote {predictions_path}')
     result_path = out_dir / 'encoding_result.npz'
     np.savez(
         result_path,

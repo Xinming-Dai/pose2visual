@@ -23,7 +23,13 @@ EID="${1:-${EID:-}}"
 CONFIG="${CONFIG:-$REPO/configs/encoding/litpose_encoding.yaml}"
 NEURAL_INPUT_DIR="${NEURAL_INPUT_DIR:-/work/hdd/bfsr/xdai3/IBL_data/synchronized/extracted_frames/neural_data}"
 
-echo "[$(date +'%Y-%m-%d %H:%M:%S')] Running litpose neural encoding with config=$CONFIG"
+# freeze the config once
+CONFIG_SOURCE="$CONFIG"
+CONFIG="$(mktemp --suffix=.yaml)"
+trap 'rm -f "$CONFIG"' EXIT
+cp "$CONFIG_SOURCE" "$CONFIG"
+
+echo "[$(date +'%Y-%m-%d %H:%M:%S')] Running litpose neural encoding with config=$CONFIG_SOURCE (frozen copy $CONFIG)"
 echo "[$(date +'%Y-%m-%d %H:%M:%S')] EID=$EID"
 
 PYTHONPATH="${REPO}/src:${PYTHONPATH:-}" python -u -m pose2visual.encoding.run_litpose_encoding \
@@ -35,23 +41,36 @@ STATUS=$?
 
 if [ "$STATUS" -ne 0 ]; then
     conda deactivate
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] Job failed (exit $STATUS); see the errors above, no plot made" >&2
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] Job failed (exit $STATUS); see the errors above, no plots made" >&2
     exit "$STATUS"
 fi
 
-# the sessions are submitted one by one: the job that finds every session of the config's
-# session.eid_group finished makes the plot, the others log which sessions are still missing.
-# SKIP_PLOT=1 turns this off. A failed plot is logged but does not fail the finished encoding.
+# SKIP_PLOT=1 turns all plots off. A failed plot is logged but does not fail the finished encoding.
 if [ -z "${SKIP_PLOT:-}" ]; then
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] Checking whether all sessions of the group are done (plot)"
+    PLOT_DIR="$REPO/scripts/delta/analysis/encoding_plotting"
+
+    # per-session plots only need this session, so they are made right away
+    for PLOT_SCRIPT in plot_psth_activity_raster.py plot_bps_scatter.py; do
+        echo "[$(date +'%Y-%m-%d %H:%M:%S')] Plotting $PLOT_SCRIPT for the session"
+        PYTHONPATH="${REPO}/src:${PYTHONPATH:-}" python -u "$PLOT_DIR/$PLOT_SCRIPT" \
+            --config "$CONFIG" \
+            ${EID:+--eid "$EID"} \
+            --no-show
+        PLOT_STATUS=$?
+        if [ "$PLOT_STATUS" -ne 0 ]; then
+            echo "[$(date +'%Y-%m-%d %H:%M:%S')] Encoding finished but $PLOT_SCRIPT failed (exit $PLOT_STATUS); rerun it by hand" >&2
+        fi
+    done
+
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] Checking whether all sessions of the group are done (bar plot)"
     PYTHONPATH="${REPO}/src:${PYTHONPATH:-}" python -u \
-        "$REPO/scripts/delta/analysis/encoding_plotting/plot_encoding_base_vs_additional.py" \
+        "$PLOT_DIR/plot_encoding_base_vs_additional.py" \
         --config "$CONFIG" \
         --only-if-complete \
         --no-show
     PLOT_STATUS=$?
     if [ "$PLOT_STATUS" -ne 0 ]; then
-        echo "[$(date +'%Y-%m-%d %H:%M:%S')] Encoding finished but the plot failed (exit $PLOT_STATUS); rerun plot_encoding_base_vs_additional.py by hand" >&2
+        echo "[$(date +'%Y-%m-%d %H:%M:%S')] Encoding finished but the bar plot failed (exit $PLOT_STATUS); rerun plot_encoding_base_vs_additional.py by hand" >&2
     fi
 fi
 
