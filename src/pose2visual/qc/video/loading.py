@@ -6,8 +6,9 @@ The csvs are written by `pose2visual.lightningpose.fit_eks_latent_model`: a 3-le
 `y_posterior_var`. A csv holds every frame of the session (100k) for every keypoint, so only the
 requested frames of the requested keypoints are read.
 
-`pose2visual.lightningpose.pca_eks` additionally saves a per-group PCA reprojection of the
-keypoints; `load_pca_positions` reads it back for the red trace of the video.
+Encoding step 0 (`pose2visual.encoding.list_litpose_keypoints`) additionally saves a per-group PCA
+reprojection of the usable keypoints as a csv (`pose2visual.encoding.save_litpose_pca`);
+`load_pca_positions` reads it back for the red trace of the video.
 """
 
 import json
@@ -16,6 +17,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+from pose2visual.encoding.litpose_keypoints import (
+    csv_filename,
+    get_keypoint_coords,
+    get_keypoint_names,
+    load_keypoint_csv,
+)
 
 REQUIRED_COORDS = (
     'x',
@@ -192,17 +200,17 @@ def load_camera_data(
 
 
 def pca_positions_path(pca_dir: str | Path, session_id: str, camera: str) -> Path:
-    """Name the PCA npz of one session and camera, as written by `lightningpose.pca_eks`.
+    """Name the PCA csv of one session and camera, as written by encoding step 0.
 
     Args:
-        pca_dir: directory of the PCA files (`<run>/pca/<group set>`).
+        pca_dir: directory of the PCA files (`<video_preds_dir>/encoding/pca/<group set>`).
         session_id: session UUID.
         camera: camera name ('left' or 'right').
 
     Returns:
-        path of `pca_positions.<session_id>.<camera>.npz` in `pca_dir`.
+        path of `_iblrig_<camera>Camera.downsampled.<session_id>.csv` in `pca_dir`.
     """
-    return Path(pca_dir) / f'pca_positions.{session_id}.{camera}.npz'
+    return Path(pca_dir) / csv_filename(camera, session_id)
 
 
 def load_pca_positions(
@@ -216,7 +224,7 @@ def load_pca_positions(
     """Read a frame range of the saved PCA reprojection for some keypoints.
 
     Args:
-        pca_dir: directory of the PCA files (`<run>/pca/<group set>`).
+        pca_dir: directory of the PCA files (`<video_preds_dir>/encoding/pca/<group set>`).
         session_id: session UUID.
         camera: camera name ('left' or 'right').
         columns: keypoint names to return, as in the csv header.
@@ -225,7 +233,7 @@ def load_pca_positions(
 
     Returns:
         array of shape (n_frames, len(columns), 2), NaN for a keypoint the PCA does not cover (e.g.
-        dropped for being masked too often); None if the npz does not exist.
+        dropped for being masked too often); None if the csv does not exist.
 
     Raises:
         ValueError: if the file has fewer than `n_frames` frames from `start_frame`.
@@ -233,18 +241,19 @@ def load_pca_positions(
     path = pca_positions_path(pca_dir, session_id, camera)
     if not path.is_file():
         return None
-    with np.load(path) as npz:
-        names = [str(name) for name in npz['keypoints']]
-        xy_pca = npz['xy_pca'][start_frame:start_frame + n_frames]
-    if len(xy_pca) < n_frames:
+    df = load_keypoint_csv(path)
+    if len(df) - start_frame < n_frames:
         raise ValueError(
-            f'{path} has only {len(xy_pca)} frames from frame {start_frame}, '
+            f'{path} has only {max(len(df) - start_frame, 0)} frames from frame {start_frame}, '
             f'but {n_frames} were requested',
         )
+    names = get_keypoint_names(df)
     out = np.full((n_frames, len(columns), 2), np.nan)
     for idx_kp, column in enumerate(columns):
         if column in names:
-            out[:, idx_kp] = xy_pca[:, names.index(column)]
+            x, y, _ = get_keypoint_coords(df, column)
+            out[:, idx_kp, 0] = x[start_frame:start_frame + n_frames]
+            out[:, idx_kp, 1] = y[start_frame:start_frame + n_frames]
     return out
 
 

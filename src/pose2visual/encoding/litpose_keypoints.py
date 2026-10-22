@@ -74,6 +74,7 @@ ENCODING_YAML_SECTIONS = {
         'video_preds_dir': 'video_preds_dir',
         'body_parts_json': 'body_parts_json',
         'eid_groups_json': 'eid_groups_json',
+        'crop_boxes_json': 'crop_boxes_json',
     },
     'output': {'output_name': 'output_name', 'variant_name': 'variant_name'},
     'filter': {

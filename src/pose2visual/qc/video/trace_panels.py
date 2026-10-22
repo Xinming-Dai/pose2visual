@@ -1,9 +1,11 @@
 """Scrolling x/y coordinate traces drawn under the QC video.
 
 One box per keypoint and axis, for the ensemble median and Pose-EKS, plus, when a PCA file exists
-(`pose2visual.lightningpose.pca_eks`), a thin red line of the PCA reprojection drawn on top. All
-traces use the same confidence gate and are never bridged across a gated-out gap. The vertical
-scale of every box is fixed over the whole clip so that motion is comparable between frames.
+(saved by encoding step 0, `pose2visual.encoding.save_litpose_pca`), a thin red line of the PCA
+reprojection drawn on top. The lines get thinner towards the front (median 3 px behind, Pose-EKS
+2 px, PCA 1 px) so all three stay visible where they overlap. All traces use the same confidence
+gate and are never bridged across a gap. The vertical scale of every box is fixed over the whole clip so that motion is
+comparable between frames.
 """
 
 from dataclasses import dataclass
@@ -14,11 +16,13 @@ import numpy as np
 from pose2visual.qc.video.style import put_text
 
 METHOD_NAMES = ('ensemble median', 'Pose-EKS')
-# BGR; the Pose-EKS line is drawn thicker
-METHOD_COLORS = ((0, 235, 245), (75, 245, 90))
-# BGR red; drawn last, one pixel wide, over the other two
+# BGR: ensemble median white, Pose-EKS green
+METHOD_COLORS = ((240, 240, 240), (75, 245, 90))
+# BGR red; drawn last, over the other two
 PCA_NAME = 'PCA reprojection'
 PCA_COLOR = (0, 0, 255)
+# line widths in drawing order (median, Pose-EKS, PCA): the widest is at the back
+LINE_THICKNESS = (3, 2, 1)
 BACKGROUND = 18
 HEADER_HEIGHT = 100
 ROW_HEIGHT = 152
@@ -168,11 +172,11 @@ def render_trace_panel(
         0.49,
     )
     x = 12
-    legend = list(zip(METHOD_NAMES, METHOD_COLORS))
+    legend = list(zip(METHOD_NAMES, METHOD_COLORS, LINE_THICKNESS))
     if any(trace.pca is not None for trace in traces):
-        legend.append((PCA_NAME, PCA_COLOR))
-    for name, color in legend:
-        cv2.line(panel, (x, 42), (x + 25, 42), color, 1 if name == PCA_NAME else 2, cv2.LINE_AA)
+        legend.append((PCA_NAME, PCA_COLOR, LINE_THICKNESS[2]))
+    for name, color, thickness in legend:
+        cv2.line(panel, (x, 42), (x + 25, 42), color, thickness, cv2.LINE_AA)
         put_text(panel, (x + 31, 47), name, 0.46, color)
         x += 205
     put_text(
@@ -204,11 +208,13 @@ def render_trace_panel(
                 x_pts = left + (frames - (frame_idx - window)) / window * (right - left)
                 series_list = [
                     (trace.values[method_idx, first:frame_idx + 1, kp_idx, axis], color, thickness)
-                    for method_idx, (color, thickness) in enumerate(zip(METHOD_COLORS, (1, 2)))
+                    for method_idx, (color, thickness) in enumerate(
+                        zip(METHOD_COLORS, LINE_THICKNESS),
+                    )
                 ]
                 if trace.pca is not None:
                     pca_series = trace.pca[first:frame_idx + 1, kp_idx, axis]
-                    series_list.append((pca_series, PCA_COLOR, 1))
+                    series_list.append((pca_series, PCA_COLOR, LINE_THICKNESS[2]))
                 for series, color, thickness in series_list:
                     y_pts = bottom - (series - low) / (high - low) * (bottom - top)
                     shown = trace.gate[first:frame_idx + 1, kp_idx] & np.isfinite(y_pts)

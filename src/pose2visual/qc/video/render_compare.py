@@ -1,11 +1,13 @@
 """Render the ensemble median vs Pose-EKS comparison video of one session.
 
-Layout: one column per camera (each with its own image panel and an SD strip), top row the
-ensemble median with an ensemble-SD cross, bottom row the Pose-EKS position with a posterior-SD
-cross, and the scrolling coordinate traces of `trace_panels` underneath. A keypoint is drawn in
-both rows only on frames where its mean ensemble likelihood exceeds the gate. The ±1 SD cross
-arms are magnified by `bar_scale`, because the SDs are often a fraction of a pixel; the strips
-print the true pixel SDs.
+Layout: one column per camera (each with its own image panel and a strip), top row the
+ensemble median with an ensemble-SD cross, middle row the Pose-EKS position with a posterior-SD
+cross, and, when every camera has a PCA reprojection (saved by encoding step 0), a bottom row with
+the PCA position (a dot without cross; its strip prints the |PCA - Pose-EKS| distance per axis).
+The scrolling coordinate traces of `trace_panels` come underneath. A keypoint is drawn in all rows
+only on frames where its mean ensemble likelihood exceeds the gate. The ±1 SD cross arms are
+magnified by `bar_scale`, because the SDs are often a fraction of a pixel; the strips print the
+true pixel SDs.
 
 The image panels can show a zoomed crop of the frame (a fixed box per camera, or one fitted around
 the drawn keypoints): the crop is cut from the full-resolution frame before it is resized, and the
@@ -61,21 +63,23 @@ class RowSpec:
 
     Attributes:
         label: panel header text.
-        sd_label: name of the SD in the strip, e.g. `ens SD x/y`.
+        sd_label: name of the number in the strip, e.g. `ens SD x/y`.
         xy_attr: `CameraData` attribute holding the positions to draw.
-        sd_attr: `CameraData` attribute holding the SD of the cross.
+        sd_attr: `CameraData` attribute holding the SD of the cross; None draws no cross and
+            the strip prints the absolute difference to the Pose-EKS position instead.
     """
 
     label: str
     sd_label: str
     xy_attr: str
-    sd_attr: str
+    sd_attr: str | None
 
 
 ROWS = (
     RowSpec('Ensemble median', 'ens SD x/y', 'xy_median', 'ens_sd'),
     RowSpec('Pose-EKS (single-camera)', 'post SD x/y', 'xy_eks', 'post_sd'),
 )
+PCA_ROW = RowSpec('PCA reprojection', '|PCA-EKS| x/y', 'pca_xy', None)
 
 
 @dataclass(frozen=True)
@@ -300,7 +304,11 @@ def draw_row(
     strip = np.full((height, STRIP_WIDTH, 3), 24, np.uint8)
 
     xy = getattr(data, row.xy_attr)[frame_idx]
-    sd = getattr(data, row.sd_attr)[frame_idx]
+    if row.sd_attr is None:
+        # no SD for the PCA: print how far it is from Pose-EKS, and draw no cross
+        sd = np.abs(xy - data.xy_eks[frame_idx])
+    else:
+        sd = getattr(data, row.sd_attr)[frame_idx]
     gate = gate_mask(data.likelihood[frame_idx], job.conf_threshold)
     origin_x, origin_y = geometry.crop[:2]
     entries = []
@@ -310,11 +318,12 @@ def draw_row(
         color = keypoint_color(column)
         x = round((xy[kp_idx, 0] - origin_x) * geometry.scale_x)
         y = round((xy[kp_idx, 1] - origin_y) * geometry.scale_y) + PANEL_HEADER
-        # cross arms: +-1 SD, magnified, in panel pixels
-        arm_x = round(sd[kp_idx, 0] * geometry.scale_x * job.bar_scale)
-        arm_y = round(sd[kp_idx, 1] * geometry.scale_y * job.bar_scale)
-        cv2.line(panel, (x - arm_x, y), (x + arm_x, y), color, 1, cv2.LINE_AA)
-        cv2.line(panel, (x, y - arm_y), (x, y + arm_y), color, 1, cv2.LINE_AA)
+        if row.sd_attr is not None:
+            # cross arms: +-1 SD, magnified, in panel pixels
+            arm_x = round(sd[kp_idx, 0] * geometry.scale_x * job.bar_scale)
+            arm_y = round(sd[kp_idx, 1] * geometry.scale_y * job.bar_scale)
+            cv2.line(panel, (x - arm_x, y), (x + arm_x, y), color, 1, cv2.LINE_AA)
+            cv2.line(panel, (x, y - arm_y), (x, y + arm_y), color, 1, cv2.LINE_AA)
         cv2.circle(panel, (x, y), 2, color, -1, cv2.LINE_AA)
         put_text(panel, (x + 5, y - 5), landmark, 0.4, color)
         entries.append(
@@ -340,12 +349,13 @@ def draw_row(
     return panel, strip
 
 
-def draw_banner(canvas: np.ndarray, job: VideoJob) -> None:
+def draw_banner(canvas: np.ndarray, job: VideoJob, show_pca: bool = False) -> None:
     """Draw the three banner lines (legend, what is shown, gate and bar scale) at the top.
 
     Args:
         canvas: full video frame, modified in place.
         job: the render settings.
+        show_pca: whether the video has the PCA row.
     """
     width = canvas.shape[1]
     keypoints = [column for data in job.data.values() for column in data.columns]
@@ -356,12 +366,21 @@ def draw_banner(canvas: np.ndarray, job: VideoJob) -> None:
         f'{" / ".join(job.group_names)} | session {job.session_id}',
         fit_font_scale('x' * 60, width - x - 16, 0.5),
     )
-    line = 'TOP: ensemble median +/- ensemble SD | BOTTOM: single-camera Pose-EKS +/- posterior SD'
+    if show_pca:
+        line = (
+            'TOP: ensemble median +/- ensemble SD | MIDDLE: single-camera Pose-EKS +/- posterior '
+            'SD | BOTTOM: PCA reprojection (strip: |PCA-EKS|)'
+        )
+    else:
+        line = (
+            'TOP: ensemble median +/- ensemble SD | BOTTOM: single-camera Pose-EKS +/- '
+            'posterior SD'
+        )
     if job.run_label:
         line += f' | {job.run_label}'
     put_text(canvas, (10, 46), line, fit_font_scale(line, width - 20, 0.5))
     line = (
-        f'Mean ensemble likelihood > {job.conf_threshold:g} on BOTH rows | +/-1 SD bars '
+        f'Mean ensemble likelihood > {job.conf_threshold:g} on ALL rows | +/-1 SD bars '
         f'magnified x{job.bar_scale:g}; strips show TRUE pixel SD | no ground truth'
     )
     put_text(canvas, (10, 67), line, fit_font_scale(line, width - 20, 0.48))
@@ -489,7 +508,10 @@ def render_video(job: VideoJob) -> Path:
     trace_widths = [width // len(cameras)] * len(cameras)
     trace_widths[-1] += width - sum(trace_widths)
     panel_height = PANEL_IMAGE_HEIGHT + PANEL_HEADER + PANEL_FOOTER
-    overlay_height = BANNER_HEIGHT + len(ROWS) * panel_height
+    # the PCA row only exists when every camera has a PCA reprojection
+    show_pca = all(data.pca_xy is not None for data in job.data.values())
+    rows = (*ROWS, PCA_ROW) if show_pca else ROWS
+    overlay_height = BANNER_HEIGHT + len(rows) * panel_height
     height = overlay_height + trace_panel_height(len(landmarks))
     traces: list[TraceData] = [
         build_trace_data(
@@ -511,7 +533,7 @@ def render_video(job: VideoJob) -> Path:
     try:
         for frame_idx in range(job.n_frames):
             canvas = np.full((height, width, 3), CANVAS_BACKGROUND, np.uint8)
-            draw_banner(canvas, job)
+            draw_banner(canvas, job, show_pca)
             col_x0 = 0
             for camera in cameras:
                 ok, frame = captures[camera].read()
@@ -524,7 +546,7 @@ def render_video(job: VideoJob) -> Path:
                     (geometry.width, PANEL_IMAGE_HEIGHT),
                     interpolation=cv2.INTER_CUBIC,
                 )
-                for row_idx, row in enumerate(ROWS):
+                for row_idx, row in enumerate(rows):
                     panel, strip = draw_row(
                         image, geometry, job.data[camera], row, frame_idx, job, fps,
                     )

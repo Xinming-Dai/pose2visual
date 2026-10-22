@@ -5,6 +5,11 @@ import json
 import logging
 from pathlib import Path
 
+from pose2visual.encoding.litpose_keypoints import (
+    DEFAULT_PCA_GROUP_SET,
+    load_encoding_yaml,
+    pca_dir_path,
+)
 from pose2visual.lightningpose.fit_eks_latent_model import (
     discover_keypoint_names,
     group_columns_for_camera,
@@ -63,36 +68,50 @@ def build_output_path(
 
 
 def load_crop_boxes(
-    groups_file: str | Path,
+    crop_boxes_file: str | Path,
+    session_id: str,
     group_set: str,
     group_name: str,
 ) -> dict[str, tuple[int, int, int, int] | None]:
-    """Read the zoom boxes of one group from the `crop_boxes` entry of a `body_parts.json` file.
+    """Read the zoom boxes of one group and session from the crop boxes file.
 
-    The entry is `crop_boxes[group_set][group][camera] = [x0, y0, x1, y1]` in source pixels, as
-    printed by `scripts/delta/qc/select_crops.py`.
+    The file (`paths.crop_boxes_json`, written by `scripts/delta/qc/select_crops.py`) has the
+    top-level keys `default` and `sessions`; both hold `[group_set][group][camera] = [x0, y0, x1,
+    y1]` in source pixels, `sessions` one such mapping per session id. Per camera the session's
+    box wins over the `default` box.
 
     Args:
-        groups_file: path of the json file.
-        group_set: top-level group set, e.g. `'nonoverlapping_analysis_groups'`.
+        crop_boxes_file: path of the json file.
+        session_id: session UUID.
+        group_set: group set, e.g. `'nonoverlapping_analysis_groups'`.
         group_name: body-part group.
 
     Returns:
-        camera name -> box; None for a camera without a box (all None when the file has no
-        `crop_boxes` entry for the group).
+        camera name -> box; None for a camera without a box (all None when neither the session
+        nor `default` has an entry for the group).
 
     Raises:
-        ValueError: if a box is not four numbers with `x1 > x0` and `y1 > y0`, or names an unknown
-            camera.
+        ValueError: if the file has a top-level key other than `default` and `sessions`, a box is
+            not four numbers with `x1 > x0` and `y1 > y0`, or an entry names an unknown camera.
     """
-    raw = json.loads(Path(groups_file).read_text())
-    entry = raw.get('crop_boxes', {}).get(group_set, {}).get(group_name, {})
-    unknown = sorted(set(entry) - {'left', 'right'})
-    if unknown:
-        raise ValueError(f'crop_boxes of {group_name!r} has unknown cameras {unknown}')
+    raw = json.loads(Path(crop_boxes_file).read_text())
+    unknown_keys = sorted(set(raw) - {'default', 'sessions'})
+    if unknown_keys:
+        raise ValueError(
+            f'{crop_boxes_file}: unknown top-level keys {unknown_keys}; expected "default" and '
+            '"sessions" (session ids go under "sessions")',
+        )
+    default = raw.get('default', {}).get(group_set, {}).get(group_name, {})
+    session = raw.get('sessions', {}).get(session_id, {}).get(group_set, {}).get(group_name, {})
+    for source, entry in (('default', default), (f'session {session_id}', session)):
+        unknown = sorted(set(entry) - {'left', 'right'})
+        if unknown:
+            raise ValueError(
+                f'crop boxes of {group_name!r} ({source}) have unknown cameras {unknown}',
+            )
     boxes: dict[str, tuple[int, int, int, int] | None] = {}
     for camera in ('left', 'right'):
-        box = entry.get(camera)
+        box = session.get(camera, default.get(camera))
         if box is not None:
             valid = (
                 isinstance(box, list)
@@ -103,12 +122,32 @@ def load_crop_boxes(
             )
             if not valid:
                 raise ValueError(
-                    f'crop_boxes of {group_name!r}/{camera} must be [x0, y0, x1, y1] with '
+                    f'crop box of {group_name!r}/{camera} must be [x0, y0, x1, y1] with '
                     f'x1 > x0 and y1 > y0, got {box!r}',
                 )
             box = tuple(round(value) for value in box)
         boxes[camera] = box
     return boxes
+
+
+def default_pca_dir(config_path: str | Path | None) -> Path | None:
+    """Folder where encoding step 0 saves the PCA of the yaml's `pca.group_set`.
+
+    Args:
+        config_path: encoding yaml (`--config`); `None` when not given.
+
+    Returns:
+        `<paths.video_preds_dir>/encoding/pca/<pca.group_set>`, or None when there is no yaml or
+        it has no `paths.video_preds_dir`.
+    """
+    if config_path is None:
+        return None
+    config = load_encoding_yaml(config_path)
+    if config.get('video_preds_dir') is None:
+        return None
+    return pca_dir_path(
+        config['video_preds_dir'], str(config.get('pca_group_set', DEFAULT_PCA_GROUP_SET)),
+    )
 
 
 def load_session_cameras(
@@ -129,7 +168,7 @@ def load_session_cameras(
         groups: body-part group name -> tokens; the keypoints of all groups are loaded, once each.
         start_frame: first frame.
         n_frames: number of frames.
-        pca_dir: directory of the files written by `pose2visual.lightningpose.pca_eks`; when
+        pca_dir: directory of the files written by encoding step 0 (`default_pca_dir`); when
             given, each camera's `pca_xy` is filled from its file (it stays None when the file does
             not exist). None loads no PCA.
 
@@ -206,10 +245,9 @@ def run(args: argparse.Namespace) -> list[Path]:
         Path(args.out_dir).resolve() if args.out_dir else eks_dir.parent / 'qc' / 'video_qc'
     )
     run_label = read_run_label(eks_dir)
-    # the PCA of `pca_eks` is per keypoint and saved per group set, so it follows --group-set
     pca_dir = (
         None if args.no_pca
-        else Path(args.pca_dir) if args.pca_dir else eks_dir.parent / 'pca' / args.group_set
+        else Path(args.pca_dir) if args.pca_dir else default_pca_dir(args.config)
     )
     video_overrides = {'left': args.video_left, 'right': args.video_right}
     cli_crops = {
@@ -247,17 +285,17 @@ def run(args: argparse.Namespace) -> list[Path]:
                     logger.warning(f'  skipping group {group_name}: no keypoint in the csv')
                     continue
             logger.info(f'  --- group {group_name} ---')
-            # explicit --crop-* win, then the group's boxes in the groups file, then auto/full
+            # explicit --crop-* win, then the boxes of the crop boxes file, then auto/full
             json_crops = (
-                {} if args.no_json_crops
-                else load_crop_boxes(args.groups_file, args.group_set, group_name)
+                {} if args.no_json_crops or args.crop_boxes_file is None
+                else load_crop_boxes(args.crop_boxes_file, session_id, args.group_set, group_name)
             )
             crops = {
                 camera: cli_crops[camera] or json_crops.get(camera) for camera in cli_crops
             }
             for camera in args.cameras:
                 if crops[camera] is not None and not cli_crops[camera]:
-                    logger.info(f'  {camera}: crop {crops[camera]} from {args.groups_file}')
+                    logger.info(f'  {camera}: crop {crops[camera]} from {args.crop_boxes_file}')
             data, _ = load_session_cameras(
                 eks_dir, session_id, args.cameras, {group_name: tokens}, args.start_frame,
                 args.n_frames, pca_dir,

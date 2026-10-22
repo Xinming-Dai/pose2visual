@@ -1,0 +1,114 @@
+{
+  "default": {
+    "nonoverlapping_analysis_groups": {
+      "eye_related": {
+        "left": [68, 5, 125, 61],
+        "right": [174, 1, 220, 47]
+      },
+      "mouth_related": {
+        "left": [19, 50, 90, 118],
+        "right": [208, 35, 281, 105]
+      },
+      "nose_pad_related": {
+        "left": [4, 17, 106, 127],
+        "right": [192, 20, 282, 94]
+      },
+      "ear_related": {
+        "left": [112, 1, 218, 111],
+        "right": [65, 0, 156, 85]
+      },
+      "digits": {
+        "left": [1, 133, 255, 288],
+        "right": [0, 108, 319, 216]
+      },
+      "forelimb": {
+        "left": [0, 135, 255, 283],
+        "right": [51, 101, 319, 221]
+      }
+    }
+  },
+  "sessions": {"51e53aff-1d5d-4182-a684-aba783d50ae5":{
+    "nonoverlapping_analysis_groups": {
+      "eye_related": {
+        "left": [68, 5, 125, 61],
+        "right": [174, 1, 220, 47]
+      },
+      "mouth_related": {
+        "left": [19, 50, 90, 118],
+        "right": [208, 35, 281, 105]
+      },
+      "nose_pad_related": {
+        "left": [4, 17, 106, 127],
+        "right": [192, 20, 282, 94]
+      },
+      "ear_related": {
+        "left": [112, 1, 218, 111],
+        "right": [65, 0, 156, 85]
+      },
+      "digits": {
+        "left": [1, 133, 255, 288],
+        "right": [0, 108, 319, 216]
+      },
+      "forelimb": {
+        "left": [0, 135, 255, 283],
+        "right": [51, 101, 319, 221]
+      }
+    }},
+  "b22f694e-4a34-4142-ab9d-2556c3487086": {
+      "nonoverlapping_analysis_groups": {
+        "eye_related": {
+          "left": [91, 10, 124, 47],
+          "right": [165, 4, 211, 36]
+        },
+        "mouth_related": {
+          "left": [33, 66, 119, 157],
+          "right": [183, 45, 281, 131]
+        },
+        "nose_pad_related": {
+          "left": [11, 24, 111, 135],
+          "right": [188, 9, 291, 111]
+        },
+        "ear_related": {
+          "left": [137, 17, 232, 104],
+          "right": [41, 18, 138, 94]
+        },
+        "digits": {
+          "left": [9, 155, 251, 266],
+          "right": [65, 134, 302, 242]
+        },
+        "forelimb": {
+          "left": [14, 166, 241, 295],
+          "right": [47, 132, 306, 243]
+        }
+      }
+    },
+    "9b528ad0-4599-4a55-9148-96cc1d93fb24": {
+      "nonoverlapping_analysis_groups": {
+        "eye_related": {
+          "left": [81, 11, 125, 51],
+          "right": [196, 25, 235, 62]
+        },
+        "mouth_related": {
+          "left": [39, 75, 114, 137],
+          "right": [225, 79, 279, 125]
+        },
+        "nose_pad_related": {
+          "left": [19, 31, 115, 121],
+          "right": [228, 42, 307, 117]
+        },
+        "ear_related": {
+          "left": [138, 11, 218, 86],
+          "right": [98, 31, 174, 93]
+        },
+        "digits": {
+          "left": [19, 157, 233, 287],
+          "right": [124, 145, 285, 232]
+        },
+        "forelimb": {
+          "left": [18, 161, 239, 289],
+          "right": [92, 143, 312, 239]
+        }
+      }
+    }
+  }
+}

@@ -12,14 +12,18 @@ Default output, one folder per group, in the EKS run folder (next to its `manife
 (`<eks-dir>/..` is the run folder). With `--save-diagnostics` also a `.diagnostics.csv` with the
 same stem. A SLURM launcher lives in `scripts/delta/qc/render_video.sh`.
 
-PCA trace: when `scripts/delta/lightningpose/pca_eks.sh` has run for the same `--group-set`, the
-coordinate traces get a thin red line of the PCA reprojection of every keypoint (`--no-pca`
-hides it).
+PCA: when encoding step 0 (`scripts/delta/lightningpose_encoding/step0_list_keypoints.sh`) has
+saved the PCA of the `--config` yaml for every camera, the video gets a third image row under
+Pose-EKS with the PCA position of every keypoint it covers, and the coordinate traces a thin red
+line (`--no-pca` hides both).
 
-Zoom: a group is zoomed to its per-camera box in the `crop_boxes` entry of the groups file
-(`crop_boxes[group_set][group][camera] = [x0, y0, x1, y1]`), drawn with the mouse using
-`scripts/delta/qc/extract_crop_frames.py` and `scripts/delta/qc/select_crops.py`. Precedence:
-`--crop-left/--crop-right`, then the groups-file box, then `--auto-crop-pad`, then the full frame.
+Zoom: a group is zoomed to its per-camera box in the crop boxes file (`--crop-boxes-file`, default
+`paths.crop_boxes_json` of `--config`, `scripts/delta/data/qc_crop_boxes.json`). The file has a
+`default` entry and, for sessions whose boxes differ, a `sessions.<eid>` entry; both hold
+`[group_set][group][camera] = [x0, y0, x1, y1]`, and per camera the session's box wins over the
+default. Draw boxes with the mouse using `scripts/delta/qc/extract_crop_frames.py` and
+`scripts/delta/qc/select_crops.py --session <eid>`. Precedence: `--crop-left/--crop-right`, then
+the crop boxes file, then `--auto-crop-pad`, then the full frame.
 """
 
 import argparse
@@ -39,8 +43,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         argv: argument list; defaults to `sys.argv[1:]`.
 
     Returns:
-        the parsed namespace; `groups_file` and `sessions_file` are filled from the `paths`
-        section of `--config` when not given explicitly.
+        the parsed namespace; `groups_file`, `sessions_file` and `crop_boxes_file` are filled from
+        the `paths` section of `--config` when not given explicitly.
     """
     parser = argparse.ArgumentParser(
         description='Ensemble median vs Pose-EKS comparison video, by body-part group',
@@ -186,17 +190,23 @@ Examples:
         'source pixels of margin (default: no zoom)',
     )
     parser.add_argument(
+        '--crop-boxes-file',
+        default=None,
+        help='json file with the zoom boxes: "default" and per-session "sessions.<eid>" entries '
+        '(default: paths.crop_boxes_json of --config; none = no zoom from a file)',
+    )
+    parser.add_argument(
         '--no-json-crops',
         action='store_true',
-        help='Ignore the per-group "crop_boxes" of --groups-file (by default each group is zoomed '
-        'to its box there, per camera, unless --crop-left/--crop-right are given)',
+        help='Ignore the crop boxes file (by default each group is zoomed to its box there, per '
+        'camera and session, unless --crop-left/--crop-right are given)',
     )
     parser.add_argument(
         '--pca-dir',
         default=None,
-        help='Directory with the pca_positions.<session>.<camera>.npz files of '
-        'pose2visual.lightningpose.pca_eks, drawn as a thin red trace '
-        '(default: <eks-dir>/../pca/<group-set>; a missing file only skips the red trace)',
+        help='Directory with the _iblrig_<camera>Camera.downsampled.<session>.csv files saved by '
+        'encoding step 0, drawn as a thin red trace (default: <paths.video_preds_dir of --config>/'
+        'encoding/pca/<pca.group_set of --config>; a missing file only skips the red trace)',
     )
     parser.add_argument(
         '--no-pca',
@@ -235,6 +245,8 @@ Examples:
             args.groups_file = config.get('body_parts_json')
         if args.sessions_file is None:
             args.sessions_file = config.get('eid_groups_json')
+        if args.crop_boxes_file is None:
+            args.crop_boxes_file = config.get('crop_boxes_json')
     if args.groups_file is None:
         parser.error('--groups-file is required (or set paths.body_parts_json in --config)')
     if args.session_group is not None and args.sessions_file is None:

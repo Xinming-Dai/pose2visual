@@ -22,6 +22,8 @@ paths:
   body_parts_json: scripts/delta/data/body_parts.json
   # neural_sessions -> group name -> eids
   eid_groups_json: scripts/delta/data/ibl_session_ids.json
+  # zoom boxes of the QC video: `default` for every session, `sessions.<eid>` where a session differs
+  crop_boxes_json: scripts/delta/data/qc_crop_boxes.json
 
 # dynamic_vars.npz and the results live in
 # <video_preds_dir>/<camera>_<output_name>/<eid>/<variant_name>/

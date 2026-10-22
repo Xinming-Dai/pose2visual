@@ -16,10 +16,10 @@ REPO=/u/xdai3/project3d/pose2visual/pose2visual
 cd "$REPO"
 
 CONFIG="${CONFIG:-configs/encoding/litpose_encoding.yaml}"
-EKS_DIR=/work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/E6c-LOO-ibl-headmlp256_3seeds/face+cheese+caz+kondo+hmv+c3d+kauf_train/eks/20261013_173251/eks
+EKS_DIR=/work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/mm_ibl_ear/20261013_173251_n_20261014_141544
 SESSION_IDS=(
-    # "9b528ad0-4599-4a55-9148-96cc1d93fb24"
-    "51e53aff-1d5d-4182-a684-aba783d50ae5"
+    "9b528ad0-4599-4a55-9148-96cc1d93fb24"
+    # "51e53aff-1d5d-4182-a684-aba783d50ae5"
     # "b22f694e-4a34-4142-ab9d-2556c3487086"
 )
 
