@@ -86,6 +86,21 @@ ENCODING_YAML_SECTIONS = {
         'base_keypoints': 'base_keypoints',
         'additional_keypoints': 'additional_keypoints',
     },
+    # neural-behavior cross-correlation, read by `pose2visual.xcorr.settings`
+    'xcorr': {
+        'output_name': 'xcorr_output_name',
+        'max_lag_sec': 'xcorr_max_lag_sec',
+        'smooth_sigma_bins': 'xcorr_smooth_sigma_bins',
+        'min_fr_hz': 'xcorr_min_fr_hz',
+        'n_permutations': 'xcorr_n_permutations',
+        'min_shift_sec': 'xcorr_min_shift_sec',
+        'alpha': 'xcorr_alpha',
+        'correction': 'xcorr_correction',
+        'seed': 'xcorr_seed',
+        'peth_window_sec': 'xcorr_peth_window_sec',
+        'peth_baseline_sec': 'xcorr_peth_baseline_sec',
+        'peth_min_trials': 'xcorr_peth_min_trials',
+    },
 }
 # keys of a section that are themselves mappings: (section, key) -> {key in the mapping: key of
 # the flat dict}, e.g. `filter.group_set.unfiltered_groups`
@@ -330,7 +345,8 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
         `position_columns` (`position.columns`),
         `visibility_group_set`, `visibility_likelihood_threshold` and `visibility_groups`
         (`visibility.*`),
-        `anatomical_group` (`anatomical_group.name`), `base_keypoints`, `additional_keypoints`
+        `anatomical_group` (`anatomical_group.name`), `base_keypoints`, `additional_keypoints`,
+        `xcorr_*` (the `xcorr` section, see `pose2visual.xcorr.settings`)
         and `pca`. `pca` is not a yaml key: it is derived from `step_order` (True when the named
         pipeline contains the `2d_pose_pca` step), so the two can never disagree.
 
@@ -1199,6 +1215,48 @@ def interpolate_keypoint(
     x_interp = np.interp(times, times[idx_valid], x[idx_valid])
     y_interp = np.interp(times, times[idx_valid], y[idx_valid])
     return x_interp, y_interp, float(masked.mean())
+
+
+def impute_keypoint_positions(
+    df: pd.DataFrame,
+    keypoints: list[str],
+    times: np.ndarray,
+    likelihood_threshold: float,
+    position_columns: tuple[str, str] = POSITION_COLUMNS[DEFAULT_POSITION],
+    no_filter_keypoints: list[str] | None = None,
+) -> tuple[dict[str, tuple[np.ndarray, np.ndarray]], dict[str, float]]:
+    """Filter by likelihood and linearly interpolate the position of several keypoints.
+
+    This is the one imputation step shared by the encoding pipeline (`build_dynamic_vars`) and
+    the cross-correlation pipeline (`pose2visual.xcorr`), so both see identical positions.
+
+    Args:
+        df: dataframe from `load_keypoint_csv`.
+        keypoints: keypoint names to impute.
+        times: frame timestamps in seconds, one per row of `df`, strictly increasing.
+        likelihood_threshold: frames below this likelihood are masked.
+        position_columns: `(x_column, y_column)` of the csv holding the keypoint positions, from
+            `load_position_columns`; the likelihood column is always `likelihood`.
+        no_filter_keypoints: keypoints exempt from confidence filtering; their likelihood is
+            ignored, so only NaN x/y frames are masked. `None` = none.
+
+    Returns:
+        Tuple `(positions, masked_fraction)`: keypoint name -> `(x, y)` finite arrays
+        `[n_frames]`, and keypoint name -> fraction of masked frames.
+
+    Raises:
+        ValueError: if a keypoint has fewer than two unmasked frames (see `interpolate_keypoint`).
+    """
+    exempt = set(no_filter_keypoints or [])
+    positions: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+    masked_fraction: dict[str, float] = {}
+    for name in keypoints:
+        x, y, likelihood = get_keypoint_coords(df, name, position_columns)
+        x_interp, y_interp, masked_fraction[name] = interpolate_keypoint(
+            x, y, likelihood, times, None if name in exempt else likelihood_threshold,
+        )
+        positions[name] = (x_interp, y_interp)
+    return positions, masked_fraction
 
 
 def speed_from_positions(x: np.ndarray, y: np.ndarray, times: np.ndarray) -> np.ndarray:

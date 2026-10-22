@@ -44,6 +44,18 @@ qc = [
     "pandas",
     "pillow",
 ]
+# neural-behavior cross-correlation (pose2visual.xcorr); rastermap orders the neurons of the
+# heatmaps (`--order depth` works without it)
+xcorr = [
+    "iblutil",
+    "matplotlib",
+    "one-api",
+    "pandas",
+    "pyyaml",
+    "rastermap",
+    "scipy",
+    "tqdm",
+]
 # bar plots of the encoding results (scripts/delta/analysis/encoding_plotting)
 plotting = [
     "matplotlib",

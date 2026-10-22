@@ -7,7 +7,7 @@ position:
 
 session:
   # session to analyze (the --eid flag overrides this)
-  eid: 781b35fd-e1f0-4d14-b2bb-95b7263082bb
+  eid: 51e53aff-1d5d-4182-a684-aba783d50ae5
   # sessions of step 1 (extract) and of the plot that step 2 makes once all of them are done; a key
   # of neural_sessions in paths.eid_groups_json, null = none. Not a constraint: --eids / EIDS override
   eid_group: ear_left
@@ -69,3 +69,29 @@ anatomical_group:
     - tongue
     - eye_related
     - ear_related
+    
+# neural-behavior cross-correlation (pose2visual.xcorr). Filtering, imputation, position columns,
+# visibility features and camera come from the sections above.
+xcorr:
+  # results in <paths.video_preds_dir>/<camera>_<output_name>/<eid>/
+  output_name: xcorr
+  # lags -max_lag_sec .. +max_lag_sec (1.0 s at 60 Hz = 121 lags)
+  max_lag_sec: 1.0
+  # gaussian sigma (in 1/60 s bins) smoothing the neural activity; 2 = the RRR encoder's value
+  smooth_sigma_bins: 2
+  # units whose mean firing rate is not above this are dropped (step 0 uses 1 / fr_thresh = 5 Hz)
+  min_fr_hz: 5.0
+  # circular-shift permutations; the smallest possible p value is 1 / (n_permutations + 1)
+  n_permutations: 1000
+  # shifts are drawn from [min_shift_sec, T - min_shift_sec]
+  min_shift_sec: 10.0
+  alpha: 0.05
+  # multiple-comparison correction over all neuron x behavior pairs: fdr_bh | bonferroni
+  correction: fdr_bh
+  seed: 42
+  # event-aligned PETHs (pose2visual.xcorr.peth): window around reward / movement onset, and the
+  # pre-event baseline the fractional rate change is measured against (both in seconds)
+  peth_window_sec: [-1.0, 1.0]
+  peth_baseline_sec: [-1.0, -0.5]
+  # an event type with fewer usable events than this is an error (not drawn from noise)
+  peth_min_trials: 20

@@ -73,8 +73,7 @@ from pose2visual.encoding.litpose_keypoints import (
     bin_to_intervals,
     check_filter_settings_match,
     csv_filename,
-    get_keypoint_coords,
-    interpolate_keypoint,
+    impute_keypoint_positions,
     keypoint_names_json_path,
     load_filter_settings,
     load_keypoint_csv,
@@ -295,15 +294,9 @@ def build_dynamic_vars(
     binned = np.zeros(
         (len(all_intervals), n_bins, len(keypoints) + len(features)), dtype=np.float32,
     )
-    masked_fraction: dict[str, float] = {}
-    positions: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-    exempt = set(no_filter_keypoints or [])
-    for name in keypoints:
-        x, y, likelihood = get_keypoint_coords(df, name, position_columns)
-        x_interp, y_interp, masked_fraction[name] = interpolate_keypoint(
-            x, y, likelihood, times, None if name in exempt else likelihood_threshold,
-        )
-        positions[name] = (x_interp, y_interp)
+    positions, masked_fraction = impute_keypoint_positions(
+        df, keypoints, times, likelihood_threshold, position_columns, no_filter_keypoints,
+    )
     pca_info = None
     if pca is not None:
         positions, pca_info = reproject_keypoints(positions, pca['groups'], pca['n_components'])
