@@ -17,7 +17,9 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# number of example curves when asked for (--n-examples 12); none are drawn by default
 N_EXAMPLES = 12
+DEFAULT_N_EXAMPLES = 0
 # same clock and format as the run folders of fit_eks_latent_model
 RUN_TIMEZONE = ZoneInfo('America/New_York')
 

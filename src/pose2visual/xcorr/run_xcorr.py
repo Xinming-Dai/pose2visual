@@ -5,8 +5,9 @@ Reads the continuous spikes of step 0 (``extract_neural_continuous``) and, for e
 the encoding pipeline's functions (``behavior``). The neural activity is smoothed like the RRR
 encoder's targets, every neuron is cross-correlated with every behavior over
 ``+-xcorr.max_lag_sec`` (``r(tau) = Corr(neural(t), behavior(t + tau))``, positive lag = neural
-activity first), and the peak of each curve is tested against a circular-shift null
-(``permutation``); all cameras share the same shifts and one multiple-comparison family. The
+activity first). Optionally (``--n-permutations``, off by default) the peak of each curve is tested
+against a circular-shift null (``permutation``); all cameras share the same shifts and one
+multiple-comparison family. The
 two time axes are never assumed to match: the behavior grid must equal the spike bin grid, the csv
 must have one row per frame timestamp, and the frame times must be increasing; the video must lie
 inside the spike recording (step 0).
@@ -19,16 +20,16 @@ used. ``--exclude`` drops keypoints by glob pattern (``--exclude 'd*'`` = the fi
 Writes under ``<video_preds_dir>/<xcorr.output_name>/<eid>/``:
 
 * ``xcorr_summary.<eid>.csv`` — one row per camera-neuron-behavior pair: ids, peak signed
-  correlation, peak absolute correlation, lag of the peak, permutation p, adjusted q and
-  significance.
+  correlation, peak absolute correlation, lag of the peak and, when the permutation test was
+  run, permutation p, adjusted q and significance.
 * ``xcorr_arrays.<eid>.npz`` — correlations ``r [C, N, B, L]`` (NaN where a camera lacks a
   behavior), lags, names, cameras, neuron order, p values and the null 95th percentile.
 * ``xcorr_params.json`` and ``xcorr_config.yaml`` — settings and alignment diagnostics.
 * ``<YYYYmmdd_HHMMSS>/`` (New York time of the run; ``--plots-subdir`` names it instead) —
   ``heatmap.all.<eid>.{png,pdf}``: every behavior on one figure,
   rows = cameras (Figure 20), each row labelled with its own camera's keypoint names; and
-  ``example_curves.<eid>.{png,pdf}``. ``replot`` redraws them from the files above without
-  recomputing anything.
+  ``example_curves.<eid>.{png,pdf}`` (only with ``--n-examples N``, off by default).
+  ``replot`` redraws them from the files above without recomputing anything.
 
 Usage::
 
@@ -71,7 +72,7 @@ from pose2visual.xcorr.permutation import (
     permutation_pvalues,
 )
 from pose2visual.xcorr.peth import load_peth
-from pose2visual.xcorr.plots import N_EXAMPLES, timestamp_subdir, write_plots
+from pose2visual.xcorr.plots import DEFAULT_N_EXAMPLES, timestamp_subdir, write_plots
 from pose2visual.xcorr.settings import (
     freeze_config,
     load_xcorr_settings,
@@ -129,7 +130,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--vmax', type=float, default=None,
         help='fix the colour scale to +-VMAX (Figure 20 uses 0.6); default: from the data.',
     )
-    parser.add_argument('--n-examples', type=int, default=N_EXAMPLES)
+    parser.add_argument(
+        '--n-examples', type=int, default=DEFAULT_N_EXAMPLES,
+        help='number of example curves to draw (default 0 = none; 12 was the former default).',
+    )
     parser.add_argument(
         '--no-peth', action='store_true',
         help='do not draw the reward / movement-onset event strips (xcorr and PETH) even if '
@@ -263,7 +267,7 @@ def run_session(
     cameras: list[str] | None = None,
     order: str = 'rastermap',
     n_permutations: int | None = None,
-    n_examples: int = N_EXAMPLES,
+    n_examples: int = DEFAULT_N_EXAMPLES,
     exclude: list[str] | None = None,
     n_jobs: int = 1,
     vmax: float | None = None,
@@ -280,7 +284,7 @@ def run_session(
         cameras: cameras to analyse; `None` = all of `CAMERAS`.
         order: neuron order of the heatmaps, one of `ORDERS`.
         n_permutations: overrides `xcorr.n_permutations`; 0 skips the significance test.
-        n_examples: number of example curves.
+        n_examples: number of example curves; 0 (default) draws none.
         exclude: glob patterns of keypoints / features to leave out (e.g. `['d*']`).
         n_jobs: cameras processed in parallel.
         vmax: half-range of the heatmap colour scale; `None` takes it from the data.

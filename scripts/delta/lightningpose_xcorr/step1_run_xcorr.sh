@@ -17,8 +17,10 @@ cd "$REPO"
 
 # Neural-behavior cross-correlation of one session (needs step0_extract_neural_continuous.sh and
 # lightningpose_encoding/step0_list_keypoints.sh for every camera). Writes one figure with every
-# behavior (rows = cameras) and example curves in <video_preds_dir>/xcorr/<eid>/<YYYYmmdd_HHMMSS>/ (New York time of the run), and the
-# per-neuron CSV and the arrays in <video_preds_dir>/xcorr/<eid>/. session.camera is not read.
+# behavior (rows = cameras) in <video_preds_dir>/xcorr/<eid>/<YYYYmmdd_HHMMSS>/ (New York time of
+# the run), and the per-neuron CSV and the arrays in <video_preds_dir>/xcorr/<eid>/. By default
+# there is no permutation test (no p / q values) and no example curves; see N_PERMUTATIONS and
+# N_EXAMPLES below. session.camera is not read.
 # To redraw only the figures later, use step2_replot_xcorr.sh. If step1b_compute_peth.sh has
 # written peth.<eid>.npz, the overview also gets the reward / movement-onset event strips (xcorr
 # and PETH).
@@ -30,6 +32,9 @@ cd "$REPO"
 #   EXCLUDE   glob patterns of keypoints to leave out (default "d*" = the finger keypoints
 #             d1_tip_left ... d4_tip_right); EXCLUDE= keeps everything
 #   ORDER     rastermap (needs `pip install rastermap`), depth or none
+#   N_PERMUTATIONS  circular-shift permutations of the significance test (default: the yaml's
+#                   xcorr.n_permutations = 0 = no test; e.g. 1000 adds p / q values)
+#   N_EXAMPLES      number of example curves to draw (default: 0 = none; e.g. 12)
 #   VMAX      fixed colour scale +-VMAX (Figure 20 uses 0.6); default: from the data
 CONFIG="${CONFIG:-$REPO/configs/encoding/litpose_encoding.yaml}"
 EID="${1:-${EID:-}}"
@@ -50,7 +55,8 @@ PYTHONPATH="${REPO}/src:${PYTHONPATH:-}" python -u -m pose2visual.xcorr.run_xcor
     --order "$ORDER" \
     --n-jobs "${SLURM_CPUS_PER_TASK:-2}" \
     ${VMAX:+--vmax "$VMAX"} \
-    ${N_PERMUTATIONS:+--n-permutations "$N_PERMUTATIONS"}
+    ${N_PERMUTATIONS:+--n-permutations "$N_PERMUTATIONS"} \
+    ${N_EXAMPLES:+--n-examples "$N_EXAMPLES"}
 STATUS=$?
 
 conda deactivate

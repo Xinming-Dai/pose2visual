@@ -2,12 +2,12 @@
 
 Reads the files ``run_xcorr`` left in ``<video_preds_dir>/<xcorr.output_name>/<eid>/``
 (``xcorr_arrays.<eid>.npz``, ``xcorr_summary.<eid>.csv`` and ``xcorr_params.json``) and writes the
-overview heatmap and the example curves into a new subfolder of that folder named by the New York
-time of the replot (``YYYYmmdd_HHMMSS``, so earlier figures are kept) with the same code as the
-run itself (``plots.write_plots``). Nothing else is written, so a replot never changes the
-results. It takes seconds: no neural data, no behavior traces and no permutations are involved,
-and the neuron order stored by the run is reused (rastermap is not run again), which also makes
-the figure reproducible.
+overview heatmap (and, with ``--n-examples N``, the example curves) into a new subfolder of that
+folder named by the New York time of the replot (``YYYYmmdd_HHMMSS``, so earlier figures are kept)
+with the same code as the run itself (``plots.write_plots``). Nothing else is written, so a replot
+never changes the results. It takes seconds: no neural data, no behavior traces and no
+permutations are involved, and the neuron order stored by the run is reused (rastermap is not run
+again), which also makes the figure reproducible.
 
 What can be changed: ``--cameras`` (draw a subset of the rows), ``--exclude`` (hide behaviors by
 glob pattern, e.g. ``'tongue_*'``), ``--vmax`` (fixed colour scale, Figure 20 uses 0.6),
@@ -36,7 +36,7 @@ import pandas as pd
 
 from pose2visual.xcorr.behavior import excluded_names
 from pose2visual.xcorr.peth import load_peth
-from pose2visual.xcorr.plots import N_EXAMPLES, timestamp_subdir, write_plots
+from pose2visual.xcorr.plots import DEFAULT_N_EXAMPLES, timestamp_subdir, write_plots
 from pose2visual.xcorr.settings import (
     freeze_config,
     load_xcorr_settings,
@@ -84,7 +84,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--vmax', type=float, default=None,
         help='fix the colour scale to +-VMAX (Figure 20 uses 0.6); default: from the data.',
     )
-    parser.add_argument('--n-examples', type=int, default=N_EXAMPLES)
+    parser.add_argument(
+        '--n-examples', type=int, default=DEFAULT_N_EXAMPLES,
+        help='number of example curves to draw (default 0 = none; 12 was the former default).',
+    )
     parser.add_argument(
         '--no-peth', action='store_true',
         help='hide the reward / movement-onset event strips (xcorr and PETH) even if '
@@ -227,7 +230,7 @@ def replot_session(
     cameras: list[str] | None = None,
     exclude: list[str] | None = None,
     vmax: float | None = None,
-    n_examples: int = N_EXAMPLES,
+    n_examples: int = DEFAULT_N_EXAMPLES,
     plots_subdir: str | None = None,
     show_peth: bool = True,
     peth_vmax: float = 1.0,
@@ -241,7 +244,7 @@ def replot_session(
         cameras: cameras to draw; `None` = all of the run.
         exclude: glob patterns of behaviors to hide.
         vmax: half-range of the colour scale; `None` takes it from the data.
-        n_examples: number of example curves.
+        n_examples: number of example curves; 0 (default) draws none.
         plots_subdir: folder of the figures inside the session folder; `None` makes a new
             folder named by the current New York time (`plots.timestamp_subdir`).
         show_peth: draw the PETH strips when `peth.<eid>.npz` exists in the session folder.

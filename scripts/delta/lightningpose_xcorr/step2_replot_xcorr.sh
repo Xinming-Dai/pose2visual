@@ -26,7 +26,7 @@ cd "$REPO"
 #   ORDER         saved (default), depth or none
 #   VMAX          fixed colour scale +-VMAX (Figure 20 uses 0.6); default: from the data
 #   PLOTS_SUBDIR  figure folder inside the session folder (default: New York time, YYYYmmdd_HHMMSS)
-#   N_EXAMPLES    number of example curves (default: 12)
+#   N_EXAMPLES    number of example curves (default: 0 = none)
 #   NO_PETH       set to 1 to leave out the reward / movement-onset event strips, xcorr and PETH
 #                 (they are drawn when step1b_compute_peth.sh has written peth.<eid>.npz)
 #   PETH_VMAX     PETH colour scale +-PETH_VMAX (default 1 = a doubling of the rate)

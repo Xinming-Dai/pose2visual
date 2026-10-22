@@ -24,7 +24,7 @@ DEFAULTS: dict[str, Any] = {
     'max_lag_sec': 1.0,
     'smooth_sigma_bins': 2.0,
     'min_fr_hz': 5.0,
-    'n_permutations': 1000,
+    'n_permutations': 0,
     'min_shift_sec': 10.0,
     'alpha': 0.05,
     'correction': 'fdr_bh',
