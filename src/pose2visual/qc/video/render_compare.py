@@ -494,6 +494,7 @@ def render_video(job: VideoJob) -> Path:
     traces: list[TraceData] = [
         build_trace_data(
             camera, data.xy_median, data.xy_eks, data.likelihood, job.conf_threshold,
+            data.pca_xy,
         )
         for camera, data in job.data.items()
     ]

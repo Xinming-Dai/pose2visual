@@ -1,6 +1,7 @@
 """Resolve sessions, groups, csvs and videos and render one QC video per session."""
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from pose2visual.preprocessing import resolve_video_path
 from pose2visual.qc.video.loading import (
     CameraData,
     load_camera_data,
+    load_pca_positions,
     read_run_label,
     resolve_eks_csv,
 )
@@ -60,6 +62,55 @@ def build_output_path(
     return out_dir / group_name / ('.'.join(parts) + '.mp4')
 
 
+def load_crop_boxes(
+    groups_file: str | Path,
+    group_set: str,
+    group_name: str,
+) -> dict[str, tuple[int, int, int, int] | None]:
+    """Read the zoom boxes of one group from the `crop_boxes` entry of a `body_parts.json` file.
+
+    The entry is `crop_boxes[group_set][group][camera] = [x0, y0, x1, y1]` in source pixels, as
+    printed by `scripts/delta/qc/select_crops.py`.
+
+    Args:
+        groups_file: path of the json file.
+        group_set: top-level group set, e.g. `'nonoverlapping_analysis_groups'`.
+        group_name: body-part group.
+
+    Returns:
+        camera name -> box; None for a camera without a box (all None when the file has no
+        `crop_boxes` entry for the group).
+
+    Raises:
+        ValueError: if a box is not four numbers with `x1 > x0` and `y1 > y0`, or names an unknown
+            camera.
+    """
+    raw = json.loads(Path(groups_file).read_text())
+    entry = raw.get('crop_boxes', {}).get(group_set, {}).get(group_name, {})
+    unknown = sorted(set(entry) - {'left', 'right'})
+    if unknown:
+        raise ValueError(f'crop_boxes of {group_name!r} has unknown cameras {unknown}')
+    boxes: dict[str, tuple[int, int, int, int] | None] = {}
+    for camera in ('left', 'right'):
+        box = entry.get(camera)
+        if box is not None:
+            valid = (
+                isinstance(box, list)
+                and len(box) == 4
+                and all(isinstance(value, (int, float)) for value in box)
+                and box[2] > box[0]
+                and box[3] > box[1]
+            )
+            if not valid:
+                raise ValueError(
+                    f'crop_boxes of {group_name!r}/{camera} must be [x0, y0, x1, y1] with '
+                    f'x1 > x0 and y1 > y0, got {box!r}',
+                )
+            box = tuple(round(value) for value in box)
+        boxes[camera] = box
+    return boxes
+
+
 def load_session_cameras(
     eks_dir: Path,
     session_id: str,
@@ -67,6 +118,7 @@ def load_session_cameras(
     groups: dict[str, list[str]],
     start_frame: int,
     n_frames: int,
+    pca_dir: Path | None = None,
 ) -> tuple[dict[str, CameraData], dict[str, Path]]:
     """Load the Pose-EKS arrays of every camera of one session.
 
@@ -77,6 +129,9 @@ def load_session_cameras(
         groups: body-part group name -> tokens; the keypoints of all groups are loaded, once each.
         start_frame: first frame.
         n_frames: number of frames.
+        pca_dir: directory of the files written by `pose2visual.lightningpose.pca_eks`; when
+            given, each camera's `pca_xy` is filled from its file (it stays None when the file does
+            not exist). None loads no PCA.
 
     Returns:
         the arrays and the csv path, each keyed by camera.
@@ -101,6 +156,12 @@ def load_session_cameras(
         data[camera] = load_camera_data(
             csv_path, columns, landmarks, camera, start_frame, n_frames,
         )
+        if pca_dir is not None:
+            data[camera].pca_xy = load_pca_positions(
+                pca_dir, session_id, camera, columns, start_frame, n_frames,
+            )
+            if data[camera].pca_xy is None:
+                logger.info(f'  {camera}: no PCA file in {pca_dir}; no red PCA trace')
         csv_paths[camera] = csv_path
     return data, csv_paths
 
@@ -145,8 +206,13 @@ def run(args: argparse.Namespace) -> list[Path]:
         Path(args.out_dir).resolve() if args.out_dir else eks_dir.parent / 'qc' / 'video_qc'
     )
     run_label = read_run_label(eks_dir)
+    # the PCA of `pca_eks` is per keypoint and saved per group set, so it follows --group-set
+    pca_dir = (
+        None if args.no_pca
+        else Path(args.pca_dir) if args.pca_dir else eks_dir.parent / 'pca' / args.group_set
+    )
     video_overrides = {'left': args.video_left, 'right': args.video_right}
-    crops = {
+    cli_crops = {
         'left': tuple(args.crop_left) if args.crop_left else None,
         'right': tuple(args.crop_right) if args.crop_right else None,
     }
@@ -181,9 +247,20 @@ def run(args: argparse.Namespace) -> list[Path]:
                     logger.warning(f'  skipping group {group_name}: no keypoint in the csv')
                     continue
             logger.info(f'  --- group {group_name} ---')
+            # explicit --crop-* win, then the group's boxes in the groups file, then auto/full
+            json_crops = (
+                {} if args.no_json_crops
+                else load_crop_boxes(args.groups_file, args.group_set, group_name)
+            )
+            crops = {
+                camera: cli_crops[camera] or json_crops.get(camera) for camera in cli_crops
+            }
+            for camera in args.cameras:
+                if crops[camera] is not None and not cli_crops[camera]:
+                    logger.info(f'  {camera}: crop {crops[camera]} from {args.groups_file}')
             data, _ = load_session_cameras(
                 eks_dir, session_id, args.cameras, {group_name: tokens}, args.start_frame,
-                args.n_frames,
+                args.n_frames, pca_dir,
             )
             job = VideoJob(
                 session_id=session_id,

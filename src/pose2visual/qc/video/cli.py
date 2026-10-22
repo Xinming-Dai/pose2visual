@@ -11,6 +11,15 @@ Default output, one folder per group, in the EKS run folder (next to its `manife
 `<eks-dir>/../qc/video_qc/<group>/qc_video.<session>.<group>.<cameras>.frames<start>_<end>.mp4`
 (`<eks-dir>/..` is the run folder). With `--save-diagnostics` also a `.diagnostics.csv` with the
 same stem. A SLURM launcher lives in `scripts/delta/qc/render_video.sh`.
+
+PCA trace: when `scripts/delta/lightningpose/pca_eks.sh` has run for the same `--group-set`, the
+coordinate traces get a thin red line of the PCA reprojection of every keypoint (`--no-pca`
+hides it).
+
+Zoom: a group is zoomed to its per-camera box in the `crop_boxes` entry of the groups file
+(`crop_boxes[group_set][group][camera] = [x0, y0, x1, y1]`), drawn with the mouse using
+`scripts/delta/qc/extract_crop_frames.py` and `scripts/delta/qc/select_crops.py`. Precedence:
+`--crop-left/--crop-right`, then the groups-file box, then `--auto-crop-pad`, then the full frame.
 """
 
 import argparse
@@ -175,6 +184,24 @@ Examples:
         default=None,
         help='For cameras without an explicit crop, zoom to the drawn keypoints plus this many '
         'source pixels of margin (default: no zoom)',
+    )
+    parser.add_argument(
+        '--no-json-crops',
+        action='store_true',
+        help='Ignore the per-group "crop_boxes" of --groups-file (by default each group is zoomed '
+        'to its box there, per camera, unless --crop-left/--crop-right are given)',
+    )
+    parser.add_argument(
+        '--pca-dir',
+        default=None,
+        help='Directory with the pca_positions.<session>.<camera>.npz files of '
+        'pose2visual.lightningpose.pca_eks, drawn as a thin red trace '
+        '(default: <eks-dir>/../pca/<group-set>; a missing file only skips the red trace)',
+    )
+    parser.add_argument(
+        '--no-pca',
+        action='store_true',
+        help='Do not draw the PCA trace',
     )
     parser.add_argument(
         '--out-dir',

@@ -5,6 +5,9 @@ The csvs are written by `pose2visual.lightningpose.fit_eks_latent_model`: a 3-le
 `x_ens_median`, `y_ens_median`, `x_ens_var`, `y_ens_var`, `x_posterior_var` and
 `y_posterior_var`. A csv holds every frame of the session (100k) for every keypoint, so only the
 requested frames of the requested keypoints are read.
+
+`pose2visual.lightningpose.pca_eks` additionally saves a per-group PCA reprojection of the
+keypoints; `load_pca_positions` reads it back for the red trace of the video.
 """
 
 import json
@@ -46,6 +49,8 @@ class CameraData:
             (the observation noise of the smoother); shape (n_frames, n_keypoints, 2).
         post_sd: posterior SD, `sqrt(x_posterior_var)`: the smoother's uncertainty about the
             position; shape (n_frames, n_keypoints, 2).
+        pca_xy: PCA reprojection of the position, shape (n_frames, n_keypoints, 2), NaN for a
+            keypoint without PCA; None when no PCA file was loaded.
     """
 
     camera: str
@@ -57,6 +62,7 @@ class CameraData:
     likelihood: np.ndarray
     ens_sd: np.ndarray
     post_sd: np.ndarray
+    pca_xy: np.ndarray | None = None
 
     @property
     def n_frames(self) -> int:
@@ -183,6 +189,63 @@ def load_camera_data(
         ens_sd=_sd('x_ens_var', 'y_ens_var'),
         post_sd=_sd('x_posterior_var', 'y_posterior_var'),
     )
+
+
+def pca_positions_path(pca_dir: str | Path, session_id: str, camera: str) -> Path:
+    """Name the PCA npz of one session and camera, as written by `lightningpose.pca_eks`.
+
+    Args:
+        pca_dir: directory of the PCA files (`<run>/pca/<group set>`).
+        session_id: session UUID.
+        camera: camera name ('left' or 'right').
+
+    Returns:
+        path of `pca_positions.<session_id>.<camera>.npz` in `pca_dir`.
+    """
+    return Path(pca_dir) / f'pca_positions.{session_id}.{camera}.npz'
+
+
+def load_pca_positions(
+    pca_dir: str | Path,
+    session_id: str,
+    camera: str,
+    columns: list[str],
+    start_frame: int,
+    n_frames: int,
+) -> np.ndarray | None:
+    """Read a frame range of the saved PCA reprojection for some keypoints.
+
+    Args:
+        pca_dir: directory of the PCA files (`<run>/pca/<group set>`).
+        session_id: session UUID.
+        camera: camera name ('left' or 'right').
+        columns: keypoint names to return, as in the csv header.
+        start_frame: first frame.
+        n_frames: number of frames.
+
+    Returns:
+        array of shape (n_frames, len(columns), 2), NaN for a keypoint the PCA does not cover (e.g.
+        dropped for being masked too often); None if the npz does not exist.
+
+    Raises:
+        ValueError: if the file has fewer than `n_frames` frames from `start_frame`.
+    """
+    path = pca_positions_path(pca_dir, session_id, camera)
+    if not path.is_file():
+        return None
+    with np.load(path) as npz:
+        names = [str(name) for name in npz['keypoints']]
+        xy_pca = npz['xy_pca'][start_frame:start_frame + n_frames]
+    if len(xy_pca) < n_frames:
+        raise ValueError(
+            f'{path} has only {len(xy_pca)} frames from frame {start_frame}, '
+            f'but {n_frames} were requested',
+        )
+    out = np.full((n_frames, len(columns), 2), np.nan)
+    for idx_kp, column in enumerate(columns):
+        if column in names:
+            out[:, idx_kp] = xy_pca[:, names.index(column)]
+    return out
 
 
 def read_run_label(eks_dir: str | Path) -> str | None:

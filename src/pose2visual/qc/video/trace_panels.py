@@ -1,8 +1,9 @@
 """Scrolling x/y coordinate traces drawn under the QC video.
 
-One box per keypoint and axis, for the ensemble median and Pose-EKS. Both traces use the same
-confidence gate and are never bridged across a gated-out gap. The vertical scale of every box is
-fixed over the whole clip so that motion is comparable between frames.
+One box per keypoint and axis, for the ensemble median and Pose-EKS, plus, when a PCA file exists
+(`pose2visual.lightningpose.pca_eks`), a thin red line of the PCA reprojection drawn on top. All
+traces use the same confidence gate and are never bridged across a gated-out gap. The vertical
+scale of every box is fixed over the whole clip so that motion is comparable between frames.
 """
 
 from dataclasses import dataclass
@@ -15,6 +16,9 @@ from pose2visual.qc.video.style import put_text
 METHOD_NAMES = ('ensemble median', 'Pose-EKS')
 # BGR; the Pose-EKS line is drawn thicker
 METHOD_COLORS = ((0, 235, 245), (75, 245, 90))
+# BGR red; drawn last, one pixel wide, over the other two
+PCA_NAME = 'PCA reprojection'
+PCA_COLOR = (0, 0, 255)
 BACKGROUND = 18
 HEADER_HEIGHT = 100
 ROW_HEIGHT = 152
@@ -33,12 +37,15 @@ class TraceData:
             (2, n_frames, n_keypoints, 2).
         gate: frames drawn per keypoint, shape (n_frames, n_keypoints).
         limits: fixed vertical axis limits `(low, high)`, shape (n_keypoints, 2 axes, 2).
+        pca: PCA reprojection drawn as a red line, shape (n_frames, n_keypoints, 2) with NaN where
+            a keypoint has none; None for no red line.
     """
 
     camera: str
     values: np.ndarray
     gate: np.ndarray
     limits: np.ndarray
+    pca: np.ndarray | None = None
 
 
 def trace_panel_height(n_keypoints: int) -> int:
@@ -101,6 +108,7 @@ def build_trace_data(
     xy_eks: np.ndarray,
     likelihood: np.ndarray,
     conf_threshold: float,
+    xy_pca: np.ndarray | None = None,
 ) -> TraceData:
     """Assemble the trace inputs of one camera.
 
@@ -110,13 +118,15 @@ def build_trace_data(
         xy_eks: Pose-EKS position, same shape.
         likelihood: mean ensemble likelihood, shape (n_frames, n_keypoints).
         conf_threshold: likelihood gate.
+        xy_pca: PCA reprojection, same shape as `xy_median`, or None.
 
     Returns:
-        the `TraceData` with fixed limits computed over the whole clip.
+        the `TraceData` with fixed limits computed over the whole clip (also covering the PCA).
     """
     values = np.stack([xy_median, xy_eks])
     gate = gate_mask(likelihood, conf_threshold)
-    return TraceData(camera, values, gate, compute_trace_limits(values, gate))
+    all_values = values if xy_pca is None else np.concatenate([values, xy_pca[None]])
+    return TraceData(camera, values, gate, compute_trace_limits(all_values, gate), xy_pca)
 
 
 def _polyline_groups(indices: np.ndarray) -> list[np.ndarray]:
@@ -158,14 +168,17 @@ def render_trace_panel(
         0.49,
     )
     x = 12
-    for name, color in zip(METHOD_NAMES, METHOD_COLORS):
-        cv2.line(panel, (x, 42), (x + 25, 42), color, 2, cv2.LINE_AA)
+    legend = list(zip(METHOD_NAMES, METHOD_COLORS))
+    if any(trace.pca is not None for trace in traces):
+        legend.append((PCA_NAME, PCA_COLOR))
+    for name, color in legend:
+        cv2.line(panel, (x, 42), (x + 25, 42), color, 1 if name == PCA_NAME else 2, cv2.LINE_AA)
         put_text(panel, (x + 31, 47), name, 0.46, color)
         x += 205
     put_text(
         panel,
         (12, 67),
-        'Both traces share the likelihood gate. Gaps are hidden. Smoothness is not accuracy.',
+        'All traces share the likelihood gate. Gaps are hidden. Smoothness is not accuracy.',
         0.43,
     )
 
@@ -189,15 +202,23 @@ def render_trace_panel(
                     put_text(panel, (x0 + 3, y_line + 4), f'{value:.1f}', 0.34)
 
                 x_pts = left + (frames - (frame_idx - window)) / window * (right - left)
-                for method_idx, color in enumerate(METHOD_COLORS):
-                    series = trace.values[method_idx, first:frame_idx + 1, kp_idx, axis]
+                series_list = [
+                    (trace.values[method_idx, first:frame_idx + 1, kp_idx, axis], color, thickness)
+                    for method_idx, (color, thickness) in enumerate(zip(METHOD_COLORS, (1, 2)))
+                ]
+                if trace.pca is not None:
+                    pca_series = trace.pca[first:frame_idx + 1, kp_idx, axis]
+                    series_list.append((pca_series, PCA_COLOR, 1))
+                for series, color, thickness in series_list:
                     y_pts = bottom - (series - low) / (high - low) * (bottom - top)
                     shown = trace.gate[first:frame_idx + 1, kp_idx] & np.isfinite(y_pts)
-                    pts = np.rint(np.column_stack([x_pts, y_pts])).astype(np.int32, copy=False)
+                    # NaN rows are not drawn (see `shown`); zero them only to make the cast safe
+                    pts = np.rint(
+                        np.column_stack([x_pts, np.nan_to_num(y_pts)]),
+                    ).astype(np.int32, copy=False)
                     # draw each run of gated frames separately: never bridge a confidence gap
                     for run in _polyline_groups(np.flatnonzero(shown)):
                         if len(run) > 1:
-                            thickness = 2 if method_idx == 1 else 1
                             cv2.polylines(panel, [pts[run]], False, color, thickness, cv2.LINE_AA)
                         elif len(run) == 1:
                             cv2.circle(panel, tuple(pts[run[0]]), 1, color, -1)
