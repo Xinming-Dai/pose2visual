@@ -42,6 +42,10 @@ visibility:
   likelihood_threshold: 0.7
   groups: [tongue]
 
+# optional: binned IBL motion-energy traces that become extra features. Step 1 copies them 
+motion_energy:
+  traces: [whisker]
+
 # optional: take each body part from the model that predicts it best. Step 0 builds one csv per
 # session and camera in paths.video_preds_dir from these models.
 merge:
@@ -64,11 +68,12 @@ anatomical_group:
   base_keypoints:
     - nose_pad_related
     - forelimb
-  additional_keypoints:
-    - mouth_related
-    - tongue
     - eye_related
     - ear_related
+  additional_keypoints:
+    - mouth_related
+    - whisker
+    - tongue
     
 # neural-behavior cross-correlation (pose2visual.xcorr). Filtering, imputation, position columns,
 # visibility features and camera come from the sections above.
@@ -81,8 +86,10 @@ xcorr:
   smooth_sigma_bins: 2
   # units whose mean firing rate is not above this are dropped (step 0 uses 1 / fr_thresh = 5 Hz)
   min_fr_hz: 5.0
-  # circular-shift permutations; the smallest possible p value is 1 / (n_permutations + 1)
-  n_permutations: 1000
+  # circular-shift permutations; the smallest possible p value is 1 / (n_permutations + 1).
+  # 0 (default) skips the significance test: no p / q values, no significant column and no
+  # threshold line in the example curves. Use 1000 to run it (or --n-permutations / N_PERMUTATIONS)
+  n_permutations: 0
   # shifts are drawn from [min_shift_sec, T - min_shift_sec]
   min_shift_sec: 10.0
   alpha: 0.05

@@ -20,9 +20,12 @@ the session (those in ``dynamic_vars.npz``, see ``litpose_keypoints.expand_group
 resolved keypoints can differ between sessions. A group of the yaml's ``visibility`` section
 (e.g. ``tongue``) resolves to its binary column ``<group>_visible`` (0/1, see
 ``extract_litpose_dynamic_vars_trials``) instead of keypoint speeds; its settings enter the run
-signature, so another threshold never reuses a result. The resolved names are what the encoders see and
-what ``encoding_params.json`` / ``encoding_result.npz`` store as ``base_keypoints`` /
-``additional_keypoints``; the group names are stored as ``base_groups`` / ``additional_groups``.
+signature, so another threshold never reuses a result. A trace of the yaml's ``motion_energy``
+section (e.g. ``whisker``) is selected the same way and resolves to its column
+``<trace>_motion_energy`` (copied from ``<eid>_aligned.npz`` by step B). The resolved names are
+what the encoders see and what ``encoding_params.json`` / ``encoding_result.npz`` store as
+``base_keypoints`` / ``additional_keypoints``; the group names are stored as ``base_groups`` /
+``additional_groups``.
 
 Before fitting, the features of each condition are checked to be finite (step B already
 interpolates over masked frames, so there is nothing to impute). PCA is not done here: when the yaml's
@@ -87,10 +90,12 @@ from pose2visual.encoding.litpose_keypoints import (
     expand_groups,
     keypoint_names_json_path,
     load_encoding_yaml,
+    load_motion_energy_settings,
     load_position_columns,
     load_unfiltered_keypoints,
     load_visibility_features,
     load_visibility_settings,
+    motion_energy_feature_name,
     output_folder_name,
     session_output_dir,
     validate_filter_settings,
@@ -212,7 +217,8 @@ def run_signature(
         group mode); `anatomical_group` is only present when it is not `all`, and
         `unfiltered_groups` / `filter_group_set` only when groups are exempt from confidence
         filtering and `visibility` (group set, groups, threshold) only when the yaml has a
-        `visibility` section, so results from before they existed keep matching.
+        `visibility` section, and `motion_energy` (sorted traces) only when the yaml has a
+        `motion_energy` section, so results from before they existed keep matching.
     """
     signature = {
         'camera': cfg['camera'],
@@ -236,6 +242,8 @@ def run_signature(
             'groups': sorted(cfg['visibility']['groups']),
             'likelihood_threshold': cfg['visibility']['likelihood_threshold'],
         }
+    if cfg.get('motion_energy'):
+        signature['motion_energy'] = sorted(cfg['motion_energy'])
     return signature
 
 
@@ -338,7 +346,8 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
         confidence filtering, default empty), `filter_group_set` as str, `pca` as bool (derived
         from `step_order`: whether the pipeline has the `2d_pose_pca` step; step B applies it,
         step C checks it), `pca_group_set` as str and `visibility` (`load_visibility_settings`:
-        `None` without a `visibility` section). The actual keypoint source is still
+        `None` without a `visibility` section) and `motion_energy` (`load_motion_energy_settings`:
+        `None` without a `motion_energy` section). The actual keypoint source is still
         `video_preds_dir`.
 
     Raises:
@@ -349,7 +358,7 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
             is empty, `anatomical_group.name` is a group set but `paths.body_parts_json` is
             missing or does not hold it, a listed name is not a group of it, `pca.enabled` is still
             in the yaml (removed), `step_order` is missing or an unknown pipeline name, or the
-            `visibility` section is invalid.
+            `visibility` or `motion_energy` section is invalid.
     """
     cfg = load_encoding_yaml(path)
     if eid is not None:
@@ -396,6 +405,7 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
             'groups up',
         )
     cfg['visibility'] = load_visibility_settings(path)
+    cfg['motion_energy'] = load_motion_energy_settings(path)
     cfg['pca_group_set'] = str(cfg.get('pca_group_set', DEFAULT_PCA_GROUP_SET))
     cfg['anatomical_group'] = str(cfg.get('anatomical_group', ANATOMICAL_GROUP_ALL))
     if cfg['anatomical_group'] != ANATOMICAL_GROUP_ALL:
@@ -405,15 +415,54 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
                 'paths.body_parts_json',
             )
         groups = load_groups(cfg['body_parts_json'], cfg['anatomical_group'])
+        # a motion-energy trace is selected by its name, like a group
+        selectable = set(groups) | set(cfg['motion_energy'] or [])
         for key in ('base_keypoints', 'additional_keypoints'):
-            unknown = sorted(set(cfg[key]) - set(groups))
+            unknown = sorted(set(cfg[key]) - selectable)
             if unknown:
                 raise ValueError(
                     f'{path}: anatomical_group.{key} {unknown} are not groups of '
-                    f'{cfg["anatomical_group"]!r}; '
+                    f'{cfg["anatomical_group"]!r} or motion_energy.traces; '
                     f'groups: {sorted(groups)}',
                 )
     return cfg
+
+
+def expand_selection(
+    names: list[str],
+    groups: dict[str, list[str]],
+    traces: list[str] | None,
+    available: list[str],
+) -> list[str]:
+    """Resolve group names and motion-energy trace names to feature columns.
+
+    Args:
+        names: `base_keypoints` or `additional_keypoints` of the config in group mode.
+        groups: group name -> keypoint name tokens, as from `load_groups`.
+        traces: `motion_energy.traces` of the config, `None` without that section.
+        available: feature names stored in `dynamic_vars.npz`.
+
+    Returns:
+        The columns of the groups (see `expand_groups`) followed by the `<trace>_motion_energy`
+        column of every trace in `names`, in `names` order.
+
+    Raises:
+        ValueError: if a group is unknown or has no usable keypoint, or a trace column is not
+            in `available` (step 1 was run without that trace).
+    """
+    traces = traces or []
+    selected = expand_groups([name for name in names if name not in traces], groups, available)
+    for name in names:
+        if name not in traces:
+            continue
+        feature = motion_energy_feature_name(name)
+        if feature not in available:
+            raise ValueError(
+                f'{feature!r} is not in dynamic_vars.npz (features: {available}); rerun '
+                'extract_litpose_dynamic_vars_trials (step 1) with motion_energy.traces set',
+            )
+        selected.append(feature)
+    return selected
 
 
 def split_keypoints(
@@ -907,8 +956,8 @@ def _run(
         groups = load_groups(cfg['body_parts_json'], cfg['anatomical_group'])
         base_groups = cfg['base_keypoints']
         additional_groups = cfg['additional_keypoints']
-        base = expand_groups(base_groups, groups, available)
-        additional = expand_groups(additional_groups, groups, available)
+        base = expand_selection(base_groups, groups, cfg['motion_energy'], available)
+        additional = expand_selection(additional_groups, groups, cfg['motion_energy'], available)
         logger.info(f'base groups {base_groups} -> keypoints {base}')
         logger.info(f'additional groups {additional_groups} -> keypoints {additional}')
     unused = split_keypoints(base, additional, keypoint_info, available)
@@ -934,6 +983,7 @@ def _run(
         'max_masked_frac': cfg['max_masked_frac'],
         'no_filter_keypoints': no_filter_keypoints,
         'visibility': visibility,
+        'motion_energy': cfg['motion_energy'],
         'skipped_masked_keypoints': keypoint_info['skipped_masked'],
         'step_order': cfg['step_order'],
     }

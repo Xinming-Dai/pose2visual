@@ -29,16 +29,18 @@ echo "=== executing ==="
 # one video per group in <run>/qc/video_qc/<group>/ (~2.5 min per group for 2000 frames); drop --groups
 # to render every group of the group set (raise -t accordingly, ~15 min per session for 6 groups)
 # --cameras left            only one camera
-# --auto-crop-pad 12        zoom to the drawn keypoints (or --crop-left/--crop-right X0 Y0 X1 Y1)
-# --start-frame / --n-frames  clip (default: first 2000 frames)
+# zoom: each group uses its per-camera box in "crop_boxes" of body_parts.json (made with
+#   extract_crop_frames.py + select_crops.py in this folder); --no-json-crops turns that off
+# --auto-crop-pad 12        zoom to the drawn keypoints when a camera has no box (or
+#                           --crop-left/--crop-right X0 Y0 X1 Y1, which override the json boxes)
 PYTHONPATH="${REPO}/src:${PYTHONPATH}" python -u -m pose2visual.qc.video \
     --eks-dir "${EKS_DIR}" \
     --config "${CONFIG}" \
     --sessions "${SESSION_IDS[@]}" \
     --group-set nonoverlapping_analysis_groups \
-    --groups mouth_related \
     --start-frame 0 \
     --n-frames 2000
+        # --groups ear_related \
 STATUS=$?
 
 echo "[$(date +'%Y-%m-%d %H:%M:%S')] Job Done (exit status ${STATUS})."

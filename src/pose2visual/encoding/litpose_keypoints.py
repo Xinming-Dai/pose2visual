@@ -46,6 +46,10 @@ DEFAULT_MERGE_GROUP_SET = 'nonoverlapping_analysis_groups'
 DEFAULT_VISIBILITY_GROUP_SET = 'nonoverlapping_analysis_groups'
 # suffix of the binary feature a `visibility.groups` entry becomes: `tongue` -> `tongue_visible`
 VISIBILITY_SUFFIX = '_visible'
+# `motion_energy.traces` entries, each stored in `<eid>_aligned.npz` as
+# `<split>_<camera>_<trace>_motion_energy` (see `ibl_data_utils._WHISKER_MOTION_ENERGY`)
+MOTION_ENERGY_TRACES = ('whisker',)
+MOTION_ENERGY_SUFFIX = '_motion_energy'
 # `merge.sources[*].groups` value meaning "every keypoint no other source claims"
 MERGE_REST = 'rest'
 # `position.columns` value -> csv columns holding the keypoint position; `ens_post_mean` is
@@ -81,6 +85,7 @@ ENCODING_YAML_SECTIONS = {
         'likelihood_threshold': 'visibility_likelihood_threshold',
         'groups': 'visibility_groups',
     },
+    'motion_energy': {'traces': 'motion_energy_traces'},
     'anatomical_group': {
         'name': 'anatomical_group',
         'base_keypoints': 'base_keypoints',
@@ -344,7 +349,7 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
         `pca_group_set` (`pca.group_set`), `merge_group_set` and `merge_sources` (`merge.*`),
         `position_columns` (`position.columns`),
         `visibility_group_set`, `visibility_likelihood_threshold` and `visibility_groups`
-        (`visibility.*`),
+        (`visibility.*`), `motion_energy_traces` (`motion_energy.traces`),
         `anatomical_group` (`anatomical_group.name`), `base_keypoints`, `additional_keypoints`,
         `xcorr_*` (the `xcorr` section, see `pose2visual.xcorr.settings`)
         and `pca`. `pca` is not a yaml key: it is derived from `step_order` (True when the named
@@ -746,6 +751,69 @@ def load_visibility_features(
             f'{config_path}: keypoints {duplicated} belong to several visibility groups',
         )
     return {'likelihood_threshold': settings['likelihood_threshold'], 'features': features}
+
+
+def motion_energy_feature_name(trace: str) -> str:
+    """Name of the feature column of a `motion_energy.traces` entry.
+
+    Args:
+        trace: motion-energy trace, e.g. `'whisker'`.
+
+    Returns:
+        The feature name, e.g. `'whisker_motion_energy'`. It starts with the trace name, like a
+        visibility feature starts with its group name.
+    """
+    return f'{trace}{MOTION_ENERGY_SUFFIX}'
+
+
+def motion_energy_npz_key(split: str, camera: str, trace: str) -> str:
+    """Key of a binned motion-energy trace in `<eid>_aligned.npz`.
+
+    Args:
+        split: `'train'`, `'val'` or `'test'`.
+        camera: `'left'` or `'right'`.
+        trace: motion-energy trace, e.g. `'whisker'`.
+
+    Returns:
+        The key, e.g. `'train_left_whisker_motion_energy'`.
+    """
+    return f'{split}_{camera}_{motion_energy_feature_name(trace)}'
+
+
+def load_motion_energy_settings(config_path: str | Path) -> list[str] | None:
+    """Read and validate the optional `motion_energy` section of the encoding yaml.
+
+    Each listed trace becomes one feature column `<trace>_motion_energy` (see
+    `motion_energy_feature_name`) copied by step B from the binned trace of the session's camera
+    in `<eid>_aligned.npz`; no filtering, interpolation or PCA applies to it.
+
+    Args:
+        config_path: path of the encoding yaml.
+
+    Returns:
+        `None` when the yaml has no `motion_energy` section, otherwise the traces (duplicates
+        dropped).
+
+    Raises:
+        ValueError: if the yaml is invalid (see `load_encoding_yaml`), `motion_energy.traces` is
+            not a non-empty list or holds a trace that is not in `MOTION_ENERGY_TRACES`.
+    """
+    cfg = load_encoding_yaml(config_path)
+    if 'motion_energy_traces' not in cfg:
+        return None
+    traces = cfg['motion_energy_traces']
+    if not isinstance(traces, list) or not traces or not all(isinstance(t, str) for t in traces):
+        raise ValueError(
+            f'{config_path}: motion_energy.traces must be a non-empty list of trace names, '
+            f'got {traces!r}',
+        )
+    unknown = sorted(set(traces) - set(MOTION_ENERGY_TRACES))
+    if unknown:
+        raise ValueError(
+            f'{config_path}: motion_energy.traces {unknown} are unknown; '
+            f'available: {list(MOTION_ENERGY_TRACES)}',
+        )
+    return list(dict.fromkeys(traces))
 
 
 def load_merge_settings(config_path: str | Path) -> dict[str, Any] | None:
