@@ -1,4 +1,4 @@
-"""Step A: list the keypoint names of every Lightning Pose prediction csv.
+"""Step A: list the keypoint names of every Lightning Pose prediction csv, then save the PCA.
 
 For each ``_iblrig_<camera>Camera.downsampled.<eid>.csv`` in ``--video-preds-dir`` (default: the
 ``video_preds_dir`` of ``--config``) this writes
@@ -38,12 +38,22 @@ keypoints has a likelihood above ``visibility.likelihood_threshold``). The json 
 ``visibility`` (threshold and feature -> keypoints) with the share of visible frames as
 ``visible_fraction``; steps B and C fail when the yaml's ``visibility`` differs from it.
 
+When the yaml's ``step_order`` pipeline contains ``2d_pose_pca``, the last part of this step is the
+PCA: for every listed csv it writes ``<video-preds-dir>/encoding/pca/<pca.group_set>/
+_iblrig_<camera>Camera.downsampled.<eid>.csv`` (named like the csv it was made from; and ``pca_config.<eid>.<camera>.json``), the interpolated and
+PCA-reprojected positions of the usable keypoints plus the raw positions of the ``visibility``
+keypoints (see ``save_litpose_pca``), which step B reads
+instead of computing the PCA itself. It needs ``--video-timestamps-dir``. Rerunning this step
+recomputes the listing and the PCA (cheap) but, as said above, keeps the merged csvs that are up
+to date.
+
 Usage::
 
     PYTHONPATH=src python -m pose2visual.encoding.list_litpose_keypoints \\
       --config configs/encoding/litpose_encoding.yaml \\
       [--video-preds-dir <model_dir>/video_preds] [--likelihood-threshold 0.9] \\
-      [--max-masked-frac 0.3] [--eids <eid1> <eid2> | --eid-group sable] [--cameras left right]
+      [--max-masked-frac 0.3] [--eids <eid1> <eid2> | --eid-group sable] [--cameras left right] \\
+      [--video-timestamps-dir <dir>]
 """
 
 import argparse
@@ -71,6 +81,7 @@ from pose2visual.encoding.litpose_keypoints import (
     visibility_features_from_df,
 )
 from pose2visual.encoding.merge_litpose_keypoints import merge_sessions
+from pose2visual.encoding.save_litpose_pca import resolve_pca, save_pca_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +155,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help='overrides max_masked_frac of --config for this run; skip a keypoint when the '
         'fraction of masked frames (NaN x/y or low likelihood) exceeds this',
+    )
+    parser.add_argument(
+        '--video-timestamps-dir',
+        type=str,
+        default=None,
+        help='directory containing _ibl_{left,right}Camera.times.<eid>.npy; required when the '
+        'step_order of --config has the 2d_pose_pca step, whose PCA is saved here',
     )
     parser.add_argument(
         '--force-merge',
@@ -281,7 +299,9 @@ def main(argv: list[str] | None = None) -> None:
             `visibility` section is invalid or names a group without keypoint in a csv,
             neither `--video-preds-dir` nor the config's `video_preds_dir` is given, both
             `--eids` and `--eid-group` are given, `--eid-group` is given without
-            `--eid-groups-json` or `paths.eid_groups_json`, or the group is unknown.
+            `--eid-groups-json` or `paths.eid_groups_json`, the `step_order` has a PCA but
+            `--video-timestamps-dir` is missing, or the PCA settings are invalid.
+        RuntimeError: if the PCA of a session/camera failed (see `save_pca_sessions`).
     """
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     args = parse_args(argv)
@@ -311,6 +331,11 @@ def main(argv: list[str] | None = None) -> None:
         f'likelihood_threshold={likelihood_threshold}, max_masked_frac={max_masked_frac}',
     )
 
+    if resolve_pca(args.config) is not None and args.video_timestamps_dir is None:
+        raise ValueError(
+            f'the step_order of {args.config} has a 2d_pose_pca step, whose PCA is saved by '
+            'this step: pass --video-timestamps-dir',
+        )
     selected_eids = resolve_session_eids(
         args.config, args.eids, args.eid_group, args.eid_groups_json,
     )
@@ -350,10 +375,12 @@ def main(argv: list[str] | None = None) -> None:
             )
         csvs = [item for item in csvs if item[1] in selected_eids]
         logger.info(f'selected {len(selected_eids)} session(s), {len(csvs)} csvs')
+    infos: list[tuple[str, str, dict]] = []
     for camera, eid, csv_path in csvs:
         info = build_keypoint_info(
             csv_path, camera, eid, likelihood_threshold, max_masked_frac, args.config,
         )
+        infos.append((camera, eid, info))
         json_path = keypoint_names_json_path(video_preds_dir, camera, eid)
         json_path.parent.mkdir(parents=True, exist_ok=True)
         with json_path.open('w', encoding='utf-8') as f:
@@ -364,6 +391,8 @@ def main(argv: list[str] | None = None) -> None:
             f'{info["no_filter_keypoints"]}, visible fraction: {info["visible_fraction"]} '
             f'-> {json_path}',
         )
+    if args.video_timestamps_dir is not None:
+        save_pca_sessions(args.config, infos, video_preds_dir, args.video_timestamps_dir)
 
 
 if __name__ == '__main__':

@@ -13,10 +13,16 @@ binsize, end, n_bins)``), so the output has the same contract as ``dynamic_vars_
 Each keypoint goes through likelihood filtering (frames below ``filter.likelihood_threshold`` or
 with NaN x/y are masked; keypoints of ``filter.group_set.unfiltered_groups`` skip the likelihood
 test and only lose their NaN x/y frames), linear interpolation over the masked frames,
-optionally a PCA reprojection of the x/y of each body-part group (when the yaml's ``step_order`` pipeline contains
-``2d_pose_pca``, see ``litpose_step_pipelines`` and ``litpose_pca``; the group counts come from ``PCA_n_components`` in the yaml's
-``paths.body_parts_json``), then speed extraction and binning. The speed is taken in the original
-pixel space on the reprojected positions, so the variables keep their keypoint names.
+optionally a PCA reprojection of the x/y of each body-part group (when the yaml's ``step_order``
+pipeline contains ``2d_pose_pca``, see ``litpose_step_pipelines`` and ``litpose_pca``; the group
+counts come from ``PCA_n_components`` in the yaml's ``paths.body_parts_json``), then speed
+extraction and binning. The speed is taken in the original pixel space on the reprojected
+positions, so the variables keep their keypoint names. This step does not compute the PCA: step 0
+(``list_litpose_keypoints``, see ``save_litpose_pca``) saves the reprojected positions in
+``<video-preds-dir>/encoding/pca/<pca.group_set>/_iblrig_<camera>Camera.downsampled.<eid>.csv``, and this step
+reads them (and fails if they are missing or were made with other settings: rerun step 0). The
+file also holds the raw x/y/likelihood of the ``visibility`` keypoints, from which the binary
+features are computed (the likelihood is the one of the prediction csv).
 Groups of the yaml's ``visibility`` section (e.g. the tongue, often hidden) take none of these
 steps: each becomes one binary ``<group>_visible`` column, 1 in a frame where any of its keypoints
 has a likelihood above ``visibility.likelihood_threshold`` (computed on the raw likelihood, a NaN
@@ -30,8 +36,8 @@ keypoints: the binned IBL motion energy of the camera, already on the spikes' gr
 applies.
 ``filter.likelihood_threshold``, ``filter.max_masked_frac`` and the PCA settings come from
 ``--config`` (the nested encoding yaml, shared by all steps). ``step_order`` is required there and
-also decides whether PCA runs, so a missing or unknown ``step_order`` fails before any session is
-processed; the ``pca`` flag is stored in ``dynamic_vars.npz`` for step C to check. Reads
+also decides whether the saved PCA is used, so a missing or unknown ``step_order`` fails before
+any session is processed; the ``pca`` flag is stored in ``dynamic_vars.npz`` for step C to check. Reads
 ``<video-preds-dir>/encoding/keypoint_names/<camera>_<eid>.json`` (step A) to decide which
 keypoints are usable, and fails if that json was written with other settings than the yaml (rerun
 step A). Writes
@@ -39,7 +45,7 @@ step A). Writes
 ``params.json`` (which records the Lightning Pose checkpoint directory, the ``merge`` info when
 ``video_preds_dir`` holds csvs merged from several models by ``merge_litpose_keypoints``, and the
 config's ``step_order``; ``step_order`` does not change how the csv at ``--video-preds-dir`` is read, it
-only decides the PCA). ``--output-name`` is camera-free (default: ``output.output_name`` of
+only decides whether the saved PCA is used). ``--output-name`` is camera-free (default: ``output.output_name`` of
 ``--config``); the camera is always prefixed (see ``output_folder_name``), so the cameras get
 separate folders, e.g. ``left_encoding`` and ``right_encoding`` for ``--output-name encoding``.
 
@@ -78,19 +84,19 @@ from pose2visual.encoding.litpose_keypoints import (
     bin_to_intervals,
     check_filter_settings_match,
     csv_filename,
+    get_keypoint_coords,
     impute_keypoint_positions,
     keypoint_names_json_path,
     load_filter_settings,
+    load_frame_times,
     load_keypoint_csv,
     load_motion_energy_settings,
     load_output_name,
-    load_pca_settings,
     load_position_columns,
     load_step_order,
     load_unfiltered_keypoints,
     load_video_preds_dir,
     load_visibility_features,
-    load_visibility_settings,
     merge_info_path,
     motion_energy_feature_name,
     motion_energy_npz_key,
@@ -101,7 +107,7 @@ from pose2visual.encoding.litpose_keypoints import (
     speed_from_positions,
     visibility_features_from_df,
 )
-from pose2visual.encoding.litpose_pca import load_pca_n_components, reproject_keypoints
+from pose2visual.encoding.save_litpose_pca import load_pca_csv, resolve_pca
 
 logger = logging.getLogger(__name__)
 
@@ -188,75 +194,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_frame_times(
-    video_timestamps_dir: str | Path,
-    camera: str,
-    eid: str,
-) -> tuple[np.ndarray, Path]:
-    """Load the frame timestamps of a camera, falling back to the left camera.
-
-    Args:
-        video_timestamps_dir: directory containing `_ibl_<camera>Camera.times.<eid>.npy`.
-        camera: `'left'` or `'right'`.
-        eid: session id.
-
-    Returns:
-        Tuple `(times, path)` of the timestamps in seconds and the file they came from.
-
-    Raises:
-        FileNotFoundError: if neither the camera's nor the left camera's file exists.
-    """
-    video_timestamps_dir = Path(video_timestamps_dir)
-    for cam in dict.fromkeys((camera, 'left')):
-        path = video_timestamps_dir / f'_ibl_{cam}Camera.times.{eid}.npy'
-        # the IBL cameras are synchronized, so using the left file for the right camera is the
-        # normal case and not worth a warning; the file used is recorded in params.json
-        if path.is_file():
-            return np.load(path), path
-    raise FileNotFoundError(
-        f'no _ibl_{camera}Camera.times.{eid}.npy or _ibl_leftCamera.times.{eid}.npy in '
-        f'{video_timestamps_dir}',
-    )
-
-
-def resolve_pca(config_path: str | Path) -> dict[str, Any] | None:
-    """Read the PCA settings of the yaml and load the groups they refer to.
-
-    PCA is on exactly when the `step_order` pipeline contains the `2d_pose_pca` step. Groups of
-    the yaml's `visibility` section are left out when they are groups of the PCA group set too:
-    their keypoints are not speed features, so there is nothing to reproject.
-
-    Args:
-        config_path: path of the encoding yaml.
-
-    Returns:
-        `None` when the `step_order` pipeline has no `2d_pose_pca` step, otherwise a dict with `body_parts_json`, `group_set`,
-        `groups` (group name -> tokens) and `n_components` (group name -> requested count).
-
-    Raises:
-        ValueError: if the yaml settings or the `PCA_n_components` of the json are invalid.
-    """
-    settings = load_pca_settings(config_path)
-    if not settings['enabled']:
-        return None
-    groups, n_components = load_pca_n_components(
-        settings['body_parts_json'], settings['group_set'],
-    )
-    visibility = load_visibility_settings(config_path)
-    if visibility is not None and visibility['group_set'] == settings['group_set']:
-        groups = {
-            name: tokens for name, tokens in groups.items()
-            if name not in visibility['groups']
-        }
-        n_components = {name: n_components[name] for name in groups}
-    return {
-        'body_parts_json': settings['body_parts_json'],
-        'group_set': settings['group_set'],
-        'groups': groups,
-        'n_components': n_components,
-    }
-
-
 def build_dynamic_vars(
     df: pd.DataFrame,
     keypoints: list[str],
@@ -265,11 +202,11 @@ def build_dynamic_vars(
     likelihood_threshold: float,
     binsize: float,
     n_bins: int,
-    pca: dict[str, Any] | None = None,
+    pca_df: pd.DataFrame | None = None,
     no_filter_keypoints: list[str] | None = None,
     visibility: dict[str, Any] | None = None,
     position_columns: tuple[str, str] = POSITION_COLUMNS[DEFAULT_POSITION],
-) -> tuple[dict[str, np.ndarray], dict[str, float], dict[str, Any] | None]:
+) -> tuple[dict[str, np.ndarray], dict[str, float]]:
     """Bin the speed of each keypoint and the binary visibility features onto every split.
 
     Args:
@@ -280,8 +217,11 @@ def build_dynamic_vars(
         likelihood_threshold: frames below this likelihood are masked.
         binsize: bin size in seconds.
         n_bins: bins per interval.
-        pca: output of `resolve_pca`; `None` takes the speed of the interpolated positions as
-            they are, otherwise the positions are first reprojected per body-part group.
+        pca_df: dataframe from `load_pca_csv` holding the PCA-reprojected `x` / `y` of every
+            keypoint in `keypoints` and the keypoints of `visibility` (made by step 0, see
+            `save_litpose_pca`); the speeds and the visibility features are taken from it.
+            `None` takes the speed of the interpolated positions as they are, and the
+            visibility features from `df`.
         no_filter_keypoints: keypoints exempt from confidence filtering; their likelihood is
             ignored, so only NaN x/y frames are masked and interpolated. `None` = none.
         visibility: output of `load_visibility_features`; each feature becomes one extra column
@@ -291,23 +231,27 @@ def build_dynamic_vars(
             `load_position_columns`; the likelihood column is always `likelihood`.
 
     Returns:
-        Tuple `(z_trials_time, masked_fraction, pca_info)`: split name -> `[K_split, n_bins, 1,
-        D]` float32 array (`D = len(keypoints)` plus the number of visibility features),
-        keypoint name -> fraction of masked frames, and the `reproject_keypoints` info (`None`
-        without pca).
+        Tuple `(z_trials_time, masked_fraction)`: split name -> `[K_split, n_bins, 1, D]` float32
+        array (`D = len(keypoints)` plus the number of visibility features), and keypoint name ->
+        fraction of masked frames (of the raw predictions, also with `pca_df`).
     """
     splits = list(intervals)
     all_intervals = np.concatenate([intervals[split] for split in splits], axis=0)
-    features = {} if visibility is None else visibility_features_from_df(df, visibility)
+    # the likelihood of the visibility keypoints is the same in the raw and the PCA csv
+    features = (
+        {} if visibility is None
+        else visibility_features_from_df(df if pca_df is None else pca_df, visibility)
+    )
     binned = np.zeros(
         (len(all_intervals), n_bins, len(keypoints) + len(features)), dtype=np.float32,
     )
     positions, masked_fraction = impute_keypoint_positions(
         df, keypoints, times, likelihood_threshold, position_columns, no_filter_keypoints,
     )
-    pca_info = None
-    if pca is not None:
-        positions, pca_info = reproject_keypoints(positions, pca['groups'], pca['n_components'])
+    if pca_df is not None:
+        # already masked, interpolated and reprojected by step 0; only the masked fraction above
+        # comes from the raw predictions
+        positions = {name: get_keypoint_coords(pca_df, name)[:2] for name in keypoints}
     for idx_kp, name in enumerate(keypoints):
         speed = speed_from_positions(*positions[name], times)
         binned[:, :, idx_kp] = bin_to_intervals(speed, times, all_intervals, binsize, n_bins)
@@ -322,7 +266,7 @@ def build_dynamic_vars(
         n_split = len(intervals[split])
         out[split] = binned[start:start + n_split, :, None, :]
         start += n_split
-    return out, masked_fraction, pca_info
+    return out, masked_fraction
 
 
 def append_motion_energy(
@@ -401,18 +345,19 @@ def extract_session(
             json; `None` (outside the cli) means no keypoint is exempt from confidence filtering
             and there is no binary feature. Its `position.columns` picks the csv columns used as
             keypoint position and must agree with the step A json (`None` = `x`, `y`).
-        pca: output of `resolve_pca` (`None` = no pca); the flag and the effective number of
-            components of each group are stored for step C.
+        pca: output of `resolve_pca` (`None` = no pca); the saved PCA of step 0 is read and
+            checked against it, and the flag and the effective number of components of each group
+            are stored for step C.
 
     Returns:
         Path of the written `dynamic_vars.npz`.
 
     Raises:
-        FileNotFoundError: if the step A json is missing.
+        FileNotFoundError: if the step A json, or with `pca` the PCA csv of step 0, is missing.
         ValueError: if the step A json was written with other filter settings (thresholds or
             exempt keypoints, visibility features) than the config, the csv row count differs from the number of frame
-            timestamps, or the
-            number of bins disagrees with the spikes in `<eid>_aligned.npz`.
+            timestamps, the number of bins disagrees with the spikes in `<eid>_aligned.npz`, or
+            the saved PCA does not match (see `load_pca_csv`).
     """
     video_preds_dir = Path(video_preds_dir)
 
@@ -469,8 +414,12 @@ def extract_session(
         for split in _SPLITS
     }
 
-    z_trials_time, masked_fraction, pca_info = build_dynamic_vars(
-        df, keypoints, times, intervals, likelihood_threshold, binsize, n_bins, pca,
+    pca_df, pca_info = (
+        (None, None) if pca is None
+        else load_pca_csv(video_preds_dir, pca, keypoint_info, eid, camera, csv_path, len(df))
+    )
+    z_trials_time, masked_fraction = build_dynamic_vars(
+        df, keypoints, times, intervals, likelihood_threshold, binsize, n_bins, pca_df,
         no_filter_keypoints, visibility, position_columns,
     )
     feature_names = [] if visibility is None else list(visibility['features'])
@@ -486,7 +435,9 @@ def extract_session(
         if visibility is None
         else {
             feature: float(values.astype(float).mean())
-            for feature, values in visibility_features_from_df(df, visibility).items()
+            for feature, values in visibility_features_from_df(
+                df if pca_df is None else pca_df, visibility,
+            ).items()
         }
     )
     if visible_fraction:

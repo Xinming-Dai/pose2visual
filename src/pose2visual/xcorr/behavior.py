@@ -16,15 +16,13 @@ from typing import Any
 
 import numpy as np
 
-from pose2visual.encoding.extract_litpose_dynamic_vars_trials import (
-    build_dynamic_vars,
-    load_frame_times,
-)
+from pose2visual.encoding.extract_litpose_dynamic_vars_trials import build_dynamic_vars
 from pose2visual.encoding.litpose_keypoints import (
     check_filter_settings_match,
     csv_filename,
     keypoint_names_json_path,
     load_filter_settings,
+    load_frame_times,
     load_keypoint_csv,
     load_position_columns,
     load_unfiltered_keypoints,
@@ -178,9 +176,8 @@ def build_continuous_behavior(
     ):
         raise ValueError('intervals must be contiguous and of equal length')
     n_bins = int(np.ceil(lengths[0] / binsize))
-    binned, masked_fraction, _ = build_dynamic_vars(
+    binned, masked_fraction = build_dynamic_vars(
         df, keypoints, times, {'all': intervals}, likelihood_threshold, binsize, n_bins,
-        pca=None,
         no_filter_keypoints=no_filter_keypoints,
         visibility=visibility,
         position_columns=position_columns,

@@ -58,7 +58,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from pose2visual.encoding.extract_litpose_dynamic_vars_trials import load_frame_times
 from pose2visual.encoding.litpose_keypoints import (
     ANATOMICAL_GROUP_ALL,
     DEFAULT_PCA_GROUP_SET,
@@ -71,6 +70,7 @@ from pose2visual.encoding.litpose_keypoints import (
     keypoint_names_json_path,
     load_encoding_yaml,
     load_filter_settings,
+    load_frame_times,
     load_keypoint_csv,
     load_position_columns,
     load_unfiltered_keypoints,

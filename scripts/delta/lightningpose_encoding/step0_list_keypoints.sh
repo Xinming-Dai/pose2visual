@@ -47,15 +47,27 @@ fi
 if [ -n "${MAX_MASKED_FRAC:-}" ]; then
     OVERRIDE_ARGS+=(--max-masked-frac "$MAX_MASKED_FRAC")
 fi
+if [ -n "${FORCE_MERGE:-}" ]; then
+    OVERRIDE_ARGS+=(--force-merge)
+fi
 
 echo "[$(date +'%Y-%m-%d %H:%M:%S')] Listing keypoints with config=$CONFIG (video_preds_dir: ${VIDEO_PREDS_DIR:-from config})"
 echo "SESSION_ARGS: ${SESSION_ARGS[*]:-none, using session.eid_group of CONFIG (all csvs if unset)}"
+echo "step_order (decides whether the PCA is saved, from CONFIG): $(grep -E '^step_order:' "$CONFIG" || echo 'step_order: not set (step 0 will fail)')"
+echo "pca group set (from CONFIG): $(grep -E '^ +group_set:' "$CONFIG" || echo 'group_set: default')"
 
 PYTHONPATH="${REPO}/src:${PYTHONPATH:-}" python -m pose2visual.encoding.list_litpose_keypoints \
     --config "$CONFIG" \
+    --video-timestamps-dir "/work/hdd/bfsr/xdai3/IBL-2view/timestamps" \
     "${SESSION_ARGS[@]}" \
     "${OVERRIDE_ARGS[@]}"
+STATUS=$?
 
 conda deactivate
 
-echo "[$(date +'%Y-%m-%d %H:%M:%S')] Job done -> <video_preds_dir>/encoding/keypoint_names/"
+if [ "$STATUS" -ne 0 ]; then
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] Job failed (exit $STATUS); see the errors above" >&2
+    exit "$STATUS"
+fi
+
+echo "[$(date +'%Y-%m-%d %H:%M:%S')] Job done -> <video_preds_dir>/encoding/keypoint_names/ and, with 2d_pose_pca, <video_preds_dir>/encoding/pca/<group_set>/"

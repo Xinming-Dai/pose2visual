@@ -47,6 +47,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_video_preds_dir,
     merge_info_path,
     resolve_session_eids,
+    write_keypoint_csv,
 )
 from pose2visual.lightningpose.fit_eks_latent_model import load_groups
 
@@ -207,13 +208,7 @@ def merge_session(
     ]
     merged = pd.concat(parts, axis=1)
     out_path = Path(output_dir) / name
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    # header rows by hand: pandas would add a blank index-name row to a MultiIndex header
-    with out_path.open('w', encoding='utf-8') as f:
-        for level, label in enumerate(('scorer', 'bodyparts', 'coords')):
-            values = merged.columns.get_level_values(level)
-            f.write(f'{label},' + ','.join(str(v) for v in values) + '\n')
-        merged.to_csv(f, header=False)
+    write_keypoint_csv(out_path, merged)
     logger.info(
         f'{camera} {eid}: {len(get_keypoint_names(merged))} keypoints -> {out_path}; '
         + '; '.join(f'{src}: {kps}' for src, kps in zip(source_dirs, selected, strict=True)),

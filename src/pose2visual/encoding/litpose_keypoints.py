@@ -13,6 +13,9 @@ Directory layout under ``video_preds_dir`` (``<model_dir>/video_preds``)::
         ``merge`` section (``merge_litpose_keypoints`` builds the csvs of this directory from
         several models)
     encoding/keypoint_names/<camera>_<eid>.json     step A, one per csv
+    encoding/pca/<group_set>/_iblrig_<camera>Camera.downsampled.<eid>.csv     step A, when the
+        ``step_order`` pipeline has ``2d_pose_pca``: the PCA-reprojected positions of the usable
+        keypoints (and ``pca_config.<eid>.<camera>.json`` next to it); step B reads them
     <camera>_<output_name>/<eid>/dynamic_vars.npz   step B
     <camera>_<output_name>/<eid>/base/encoding_result.npz
         step C, base fit, reused by variants
@@ -187,6 +190,93 @@ def merge_info_path(video_preds_dir: str | Path) -> Path:
         `<video_preds_dir>/encoding/merge_info.json`, written by `merge_litpose_keypoints`.
     """
     return Path(video_preds_dir) / 'encoding' / 'merge_info.json'
+
+
+def pca_dir_path(video_preds_dir: str | Path, group_set: str) -> Path:
+    """Folder of the PCA-reprojected positions written by step A.
+
+    Args:
+        video_preds_dir: directory holding the Lightning Pose prediction csvs.
+        group_set: group set of `paths.body_parts_json` the PCA was fit on (`pca.group_set`).
+
+    Returns:
+        `<video_preds_dir>/encoding/pca/<group_set>`.
+    """
+    return Path(video_preds_dir) / 'encoding' / 'pca' / group_set
+
+
+def pca_positions_csv_path(
+    video_preds_dir: str | Path,
+    group_set: str,
+    eid: str,
+    camera: str,
+) -> Path:
+    """Path of the csv with the PCA-reprojected positions of one camera and session.
+
+    It has the name of the prediction csv it was made from (`csv_filename`); the folder says it
+    holds the PCA.
+
+    Args:
+        video_preds_dir: directory holding the Lightning Pose prediction csvs.
+        group_set: group set the PCA was fit on.
+        eid: session id.
+        camera: `'left'` or `'right'`.
+
+    Returns:
+        `<video_preds_dir>/encoding/pca/<group_set>/_iblrig_<camera>Camera.downsampled.<eid>.csv`.
+    """
+    return pca_dir_path(video_preds_dir, group_set) / csv_filename(camera, eid)
+
+
+def pca_config_json_path(
+    video_preds_dir: str | Path,
+    group_set: str,
+    eid: str,
+    camera: str,
+) -> Path:
+    """Path of the json recording how `pca_positions_csv_path` was made.
+
+    Args:
+        video_preds_dir: directory holding the Lightning Pose prediction csvs.
+        group_set: group set the PCA was fit on.
+        eid: session id.
+        camera: `'left'` or `'right'`.
+
+    Returns:
+        `<video_preds_dir>/encoding/pca/<group_set>/pca_config.<eid>.<camera>.json`.
+    """
+    return pca_dir_path(video_preds_dir, group_set) / f'pca_config.{eid}.{camera}.json'
+
+
+def load_frame_times(
+    video_timestamps_dir: str | Path,
+    camera: str,
+    eid: str,
+) -> tuple[np.ndarray, Path]:
+    """Load the frame timestamps of a camera, falling back to the left camera.
+
+    Args:
+        video_timestamps_dir: directory containing `_ibl_<camera>Camera.times.<eid>.npy`.
+        camera: `'left'` or `'right'`.
+        eid: session id.
+
+    Returns:
+        Tuple `(times, path)` of the timestamps in seconds and the file they came from.
+
+    Raises:
+        FileNotFoundError: if neither the camera's nor the left camera's file exists.
+    """
+    video_timestamps_dir = Path(video_timestamps_dir)
+    for cam in dict.fromkeys((camera, 'left')):
+        path = video_timestamps_dir / f'_ibl_{cam}Camera.times.{eid}.npy'
+        # the IBL cameras are synchronized, so using the left file for the right camera is the
+        # normal case and not worth a warning; the file used is recorded in params.json
+        if path.is_file():
+            return np.load(path), path
+    raise FileNotFoundError(
+        f'no _ibl_{camera}Camera.times.{eid}.npy or _ibl_leftCamera.times.{eid}.npy in '
+        f'{video_timestamps_dir}',
+    )
 
 
 def output_folder_name(camera: str, output_name: str) -> str:
@@ -1114,6 +1204,23 @@ def load_keypoint_csv(csv_path: str | Path) -> pd.DataFrame:
         Dataframe with `(scorer, bodypart, coord)` column levels, one row per frame.
     """
     return pd.read_csv(csv_path, header=[0, 1, 2], index_col=0)
+
+
+def write_keypoint_csv(csv_path: str | Path, df: pd.DataFrame) -> None:
+    """Write a Lightning Pose style csv with its three header rows (inverse of the reader).
+
+    Args:
+        csv_path: output path; missing parent folders are created.
+        df: dataframe with `(scorer, bodypart, coord)` column levels, as from `load_keypoint_csv`.
+    """
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    # header rows by hand: pandas would add a blank index-name row to a MultiIndex header
+    with csv_path.open('w', encoding='utf-8') as f:
+        for level, label in enumerate(('scorer', 'bodyparts', 'coords')):
+            values = df.columns.get_level_values(level)
+            f.write(f'{label},' + ','.join(str(v) for v in values) + '\n')
+        df.to_csv(f, header=False)
 
 
 def get_keypoint_names(df: pd.DataFrame) -> list[str]:
