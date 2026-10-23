@@ -27,7 +27,8 @@ cd "$REPO"
 # writes its own subfolder of <video_preds_dir>/xcorr/<eid>/ (step-0 inputs stay in that folder):
 #   A  PETHs (pose2visual.xcorr.peth, optional, soft failure), then the baseline
 #      neural-behavior cross-correlation (pose2visual.xcorr.run_xcorr), whose heatmap carries
-#      the reward / movement-onset strips -> experiment_A_baseline/
+#      the reward / movement-onset strips -> experiment_A_baseline/<time>/, plus the same
+#      heatmap with neurons in depth order -> experiment_A_baseline/<time>_depth/
 #   B  PCA of the face group (pose2visual.xcorr.experiments.pca --no-plot) -> experiment_B_pca/
 #   C  relative motion (pose2visual.xcorr.experiments.relative_motion --no-plot)
 #      -> experiment_C_relative_motion/
@@ -48,6 +49,8 @@ cd "$REPO"
 #                       finger keypoints d1_tip_left ... d4_tip_right); EXCLUDE= keeps everything
 #   ORDER               A: neuron order of the heatmap: rastermap (needs
 #                       `pip install rastermap`), depth or none
+#   SKIP_DEPTH_ORDER    A: set to 1 to skip the extra depth-order heatmap (<time>_depth/); it is
+#                       never drawn twice when ORDER=depth
 #   N_PERMUTATIONS      A: circular-shift permutations of the significance test (default: the
 #                       yaml's xcorr.n_permutations = 0 = no test; e.g. 1000 adds p / q values)
 #   N_COMPONENTS        B: number of principal components to keep for the face group (default 2)
@@ -82,6 +85,7 @@ if [ -n "$RUN_A" ]; then
         --cameras "${CAMERA_LIST[@]}" \
         ${EXCLUDE_LIST[@]:+--exclude "${EXCLUDE_LIST[@]}"} \
         --order "$ORDER" \
+        ${SKIP_DEPTH_ORDER:+--no-depth-plot} \
         --n-jobs "${SLURM_CPUS_PER_TASK:-2}" \
         ${N_PERMUTATIONS:+--n-permutations "$N_PERMUTATIONS"}
     STATUS_A=$?

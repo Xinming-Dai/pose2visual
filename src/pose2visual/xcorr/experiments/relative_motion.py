@@ -103,6 +103,7 @@ from pose2visual.xcorr.experiments.common import (
     experiment_dir,
     relabel_overview,
     resolve_order,
+    write_figure_guide,
 )
 from pose2visual.xcorr.experiments.masked_crosscorr import masked_cross_correlation
 from pose2visual.xcorr.plots import timestamp_subdir
@@ -120,6 +121,62 @@ MIN_RELIABLE_KEYPOINTS = 2
 SELF_CHECK_RTOL = 1e-4
 SELF_CHECK_ATOL = 1e-3
 DIFFERENCE_COLORBAR = 'relative minus original correlation'
+# (stem, meaning) rows of the figure guide (`common.write_figure_guide`)
+HEATMAP_GUIDE = (
+    ('heatmap.original_speed', "baseline xcorr of each keypoint's absolute speed"),
+    (
+        'heatmap.relative_speed',
+        "xcorr of each keypoint's speed after its group centroid (the shared translation of the "
+        "group's keypoints) is subtracted at every frame; uncorrected keypoints keep the "
+        'original xcorr',
+    ),
+    (
+        'heatmap.difference',
+        '`relative_speed - original_speed` per keypoint, neuron and lag: strongly negative = '
+        'that correlation came from the shared (head/face) translation; uncorrected columns are '
+        'exactly 0',
+    ),
+)
+GROUP_MEAN_GUIDE = (
+    (
+        'heatmap.group_mean.original_speed',
+        '`heatmap.original_speed` with one column per anatomical group: the mean xcorr over the '
+        "group's keypoints (per camera, neuron and lag)",
+    ),
+    (
+        'heatmap.group_mean.relative_speed',
+        "`heatmap.relative_speed` averaged the same way over each group's keypoints",
+    ),
+    (
+        'heatmap.group_mean.difference',
+        "`heatmap.difference` averaged over each group's keypoints (= `group_mean.relative_speed "
+        "- group_mean.original_speed`). A `--no-centroid-groups` group is split by side "
+        '(`forelimb.left`, `forelimb.right`) instead of averaged across sides; a keypoint with no '
+        'anatomical group keeps its own column',
+    ),
+)
+SCATTER_GUIDE = (
+    'scatter.peak_abs_r',
+    'one dot per neuron-keypoint pair: peak \\|r\\| over lags of the original speed (x) against '
+    'the relative speed (y); grey = not corrected (on the diagonal by construction); below the '
+    'diagonal = removing the centroid lost correlation',
+)
+VARIANCE_GUIDE = (
+    'bar.variance',
+    'per keypoint, variance of position (top) and speed (bottom), original against centroid '
+    'removed, log axis; `*` = corrected',
+)
+CENTROID_GUIDE = (
+    'centroid_trajectories',
+    'one row per corrected camera/group: centroid x and y over a middle excerpt (undefined '
+    'frames shaded), centroid speed against the mean member speed (how much of the motion is '
+    'shared), and x and y over the whole session',
+)
+GROUPS_TABLE_GUIDE = (
+    'groups_table',
+    'which groups were centroid-corrected and which kept their original speed, why, and the '
+    'fraction of frames defined',
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -907,7 +964,7 @@ def plot_results(
     summary: pd.DataFrame,
     group_rows: list[dict[str, Any]],
     centroids: list[dict[str, Any]],
-) -> None:
+) -> list[Path]:
     """Draw every Experiment C figure from already-computed (or reloaded) arrays.
 
     Shared by `run_session` (freshly computed arrays) and
@@ -936,11 +993,17 @@ def plot_results(
             `relative_groups.<eid>.json`'s per-camera `groups` plans).
         centroids: centroid trajectory data, one dict per corrected camera/group
             (`run_session`'s `centroids`); empty skips the trajectory figure.
+
+    Returns:
+        The written figure files, png and pdf of each figure, then the figure guide
+        `figures.<eid>.md` (`common.write_figure_guide`).
     """
     # lazy: matplotlib is only needed to draw
     from pose2visual.xcorr.experiments import diagnostics
     from pose2visual.xcorr.figures import heatmap_vmax, plot_xcorr_overview, save_figure
 
+    paths: list[Path] = []
+    guide = [*HEATMAP_GUIDE, *GROUP_MEAN_GUIDE, SCATTER_GUIDE, VARIANCE_GUIDE]
     with warnings.catch_warnings():
         # keypoints a camera does not have are all NaN
         warnings.simplefilter('ignore', RuntimeWarning)
@@ -973,7 +1036,7 @@ def plot_results(
             fig, f'{eid}: {label}; colour scale +-{panel_scale:.2f}; each strip: neurons x lag, '
             'number = max |value|', colorbar,
         )
-        save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}')
+        paths += save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}')
     mean_labels = group_mean_labels(names, groups, no_centroid)
     group_names, (r_original_mean, r_relative_mean, difference_mean), valid_mean = (
         group_mean_arrays([r_original, r_relative, difference], valid, mean_labels)
@@ -1002,7 +1065,7 @@ def plot_results(
             fig, f'{eid}: {label}; colour scale +-{panel_scale:.2f}; each strip: neurons x lag, '
             'number = max |value|', colorbar,
         )
-        save_figure(fig, plots_dir / f'heatmap.group_mean.{stem}.{eid}')
+        paths += save_figure(fig, plots_dir / f'heatmap.group_mean.{stem}.{eid}')
     scatter_panels = []
     for idx_c, camera in enumerate(cams):
         idx_b = np.flatnonzero(valid[idx_c])
@@ -1011,16 +1074,27 @@ def plot_results(
             'relative': peak_relative[idx_c][:, idx_b],
             'groups': [groups[i] for i in idx_b], 'corrected': corrected[idx_c, idx_b],
         })
-    save_figure(
+    paths += save_figure(
         diagnostics.plot_peak_scatter(scatter_panels), plots_dir / f'scatter.peak_abs_r.{eid}',
     )
-    save_figure(diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}')
+    paths += save_figure(
+        diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}',
+    )
     if centroids:
-        save_figure(
+        paths += save_figure(
             diagnostics.plot_centroid_trajectories(centroids),
             plots_dir / f'centroid_trajectories.{eid}',
         )
-    save_figure(diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}')
+        guide.append(CENTROID_GUIDE)
+    paths += save_figure(
+        diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}',
+    )
+    guide.append(GROUPS_TABLE_GUIDE)
+    paths.append(write_figure_guide(
+        plots_dir, eid, 'Experiment C: relative motion', order_label, scale, difference_scale,
+        'relative_speed', guide,
+    ))
+    return paths
 
 
 def main(argv: list[str] | None = None) -> None:

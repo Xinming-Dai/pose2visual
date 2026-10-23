@@ -168,7 +168,7 @@ def replot_session(
     order: str = 'saved',
     vmax: float | None = None,
     plots_subdir: str | None = None,
-) -> Path:
+) -> list[Path]:
     """Redraw the Experiment C figures of one finished session.
 
     Args:
@@ -181,7 +181,7 @@ def replot_session(
             a new folder named by the current New York time.
 
     Returns:
-        The folder the figures were written into.
+        The written figure files, png and pdf of each figure.
 
     Raises:
         FileNotFoundError: if the session has no saved Experiment C results.
@@ -195,13 +195,12 @@ def replot_session(
         config_path, eid, order, results['neuron_ids'], results['neuron_depths'],
     )
     plots_dir = out_dir / (plots_subdir or timestamp_subdir())
-    plot_results(
+    return plot_results(
         plots_dir, eid, results['lags_sec'], results['cameras'], results['names'],
         results['groups'], results['valid'], results['r_original'], results['r_relative'],
         idx_order, order_label, vmax, results['corrected'], results['no_centroid'],
         results['summary'], results['group_rows'], results['centroids'],
     )
-    return plots_dir
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -222,10 +221,10 @@ def main(argv: list[str] | None = None) -> None:
         for idx, eid in enumerate(eids, start=1):
             logger.info(f'=== [{idx}/{len(eids)}] {eid} ===')
             try:
-                plots_dir = replot_session(
+                paths = replot_session(
                     config, eid, args.cameras, args.order, args.vmax, plots_subdir,
                 )
-                logger.info(f'wrote {plots_dir}')
+                logger.info(f'wrote {[str(p) for p in paths]}')
             except Exception as error:  # noqa: BLE001 - one session must not stop the others
                 logger.error(f'{eid} failed: {error}')
                 failures[eid] = str(error)

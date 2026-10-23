@@ -60,6 +60,7 @@ from pose2visual.xcorr.experiments.common import (
     experiment_dir,
     relabel_overview,
     resolve_order,
+    write_figure_guide,
 )
 from pose2visual.xcorr.experiments.masked_crosscorr import masked_cross_correlation
 from pose2visual.xcorr.experiments.relative_motion import (
@@ -78,6 +79,51 @@ PAW_TOKENS = frozenset({'wrist', 'd1', 'd2', 'd3', 'd4'})
 UNASSIGNED_GROUP = 'unassigned'
 DEFAULT_N_COMPONENTS = 2
 DIFFERENCE_COLORBAR = 'pca minus original correlation'
+# (stem, meaning) rows of the figure guide (`common.write_figure_guide`)
+HEATMAP_GUIDE = (
+    (
+        'heatmap.original_speed',
+        "baseline xcorr of each keypoint's absolute speed (the same quantity as Experiment A)",
+    ),
+    (
+        'heatmap.pca_speed',
+        "PCA on speed: each face keypoint's position is reprojected onto the face group's top "
+        'principal components (denoised, back in pixels), its speed recomputed and '
+        "cross-correlated under the keypoint's own name; paw and unassigned keypoints keep the "
+        'original xcorr',
+    ),
+    (
+        'heatmap.difference',
+        '`pca_speed - original_speed` per keypoint, neuron and lag: positive = the denoised speed '
+        'correlates more positively than the raw speed; non-face columns are exactly 0',
+    ),
+)
+POSITION_PCA_GUIDE = (
+    'heatmap.position_pca',
+    'PCA on positions: xcorr of the face component scores themselves (`face_pc1_position`, '
+    '`face_pc2_position`, ...), one column per component, with its own colour scale (see the '
+    'figure title)',
+)
+SCATTER_GUIDE = (
+    'scatter.peak_abs_r',
+    'one dot per neuron-keypoint pair: peak \\|r\\| over lags of the original speed (x) against '
+    'the PCA speed (y); grey = PCA not applied (on the diagonal by construction); below the '
+    'diagonal = the denoising lost correlation',
+)
+VARIANCE_GUIDE = (
+    'bar.variance',
+    'per keypoint, variance of position (top) and speed (bottom), original against '
+    'PCA-denoised, log axis; `*` = PCA applied',
+)
+GROUPS_TABLE_GUIDE = (
+    'groups_table',
+    'which group got PCA and which kept its original speed, and the fraction of frames defined '
+    '(the table is shared with Experiment C: read "centroid subtracted" as "PCA applied")',
+)
+EXPLAINED_VARIANCE_GUIDE = (
+    'bar.explained_variance',
+    '% of the face position variance explained by each kept component, one panel per camera',
+)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -575,7 +621,7 @@ def plot_results(
     pca_applied: np.ndarray,
     summary: pd.DataFrame,
     camera_report: dict[str, Any],
-) -> None:
+) -> list[Path]:
     """Draw every Experiment B figure from already-computed (or reloaded) arrays.
 
     Shared by `run_session` (freshly computed arrays) and
@@ -603,11 +649,17 @@ def plot_results(
         summary: per-keypoint statistics table (`run_session`'s `summary`).
         camera_report: camera -> `plan`/`explained_variance_ratio`/`n_components` (`run_session`'s
             `camera_report`, or the `cameras` entry of a saved `pca_groups.<eid>.json`).
+
+    Returns:
+        The written figure files, png and pdf of each figure, then the figure guide
+        `figures.<eid>.md` (`common.write_figure_guide`).
     """
     # lazy: matplotlib is only needed to draw
     from pose2visual.xcorr.experiments import diagnostics
     from pose2visual.xcorr.figures import heatmap_vmax, plot_xcorr_overview, save_figure
 
+    paths: list[Path] = []
+    guide = list(HEATMAP_GUIDE)
     scale = vmax if vmax is not None else heatmap_vmax(r_original)
     ylabel = f'neurons ({order_label} order)'
     difference = r_speed_pca_masked - r_original
@@ -634,7 +686,7 @@ def plot_results(
             fig, f'{eid}: {label}; colour scale +-{panel_scale:.2f}; each strip: neurons x lag, '
             'number = max |value|', colorbar,
         )
-        save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}')
+        paths += save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}')
     if valid_position.any():
         pos_scale = heatmap_vmax(r_position_pca)
         pos_groups = ['face_position'] * len(position_names)
@@ -646,7 +698,8 @@ def plot_results(
             fig, f'{eid}: PCA on positions (face group component scores); colour scale '
             f'+-{pos_scale:.2f}', BASELINE_COLORBAR_LABEL,
         )
-        save_figure(fig, plots_dir / f'heatmap.position_pca.{eid}')
+        paths += save_figure(fig, plots_dir / f'heatmap.position_pca.{eid}')
+        guide.append(POSITION_PCA_GUIDE)
     with warnings.catch_warnings():
         # a camera without a keypoint is all NaN
         warnings.simplefilter('ignore', RuntimeWarning)
@@ -660,25 +713,38 @@ def plot_results(
             'relative': peak_pca[idx_c][:, idx_b],
             'groups': [groups_out[i] for i in idx_b], 'corrected': pca_applied[idx_c, idx_b],
         })
-    save_figure(
+    paths += save_figure(
         diagnostics.plot_peak_scatter(scatter_panels), plots_dir / f'scatter.peak_abs_r.{eid}',
     )
+    guide.append(SCATTER_GUIDE)
     if not summary.empty:
-        save_figure(diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}')
+        paths += save_figure(
+            diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}',
+        )
+        guide.append(VARIANCE_GUIDE)
     group_rows = [
         {'camera': camera, **entry}
         for camera, info in camera_report.items() for entry in info['plan']
     ]
-    save_figure(diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}')
+    paths += save_figure(
+        diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}',
+    )
+    guide.append(GROUPS_TABLE_GUIDE)
     variance_entries = [
         {'camera': camera, 'explained_variance_ratio': info['explained_variance_ratio']}
         for camera, info in camera_report.items() if info['explained_variance_ratio'] is not None
     ]
     if variance_entries:
-        save_figure(
+        paths += save_figure(
             diagnostics.plot_pca_explained_variance(variance_entries),
             plots_dir / f'bar.explained_variance.{eid}',
         )
+        guide.append(EXPLAINED_VARIANCE_GUIDE)
+    paths.append(write_figure_guide(
+        plots_dir, eid, 'Experiment B: PCA', order_label, scale, difference_scale, 'pca_speed',
+        guide,
+    ))
+    return paths
 
 
 def main(argv: list[str] | None = None) -> None:

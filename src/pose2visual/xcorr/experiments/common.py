@@ -5,8 +5,9 @@ Experiments B and C do not depend on Experiment A (baseline, ``pose2visual.xcorr
 against with the baseline's own functions (`run_xcorr.run_cameras`, same yaml settings, same
 neural smoothing and neuron selection), so B, C and A can run at the same time. Only the neuron
 order of the figures is borrowed from A when its arrays exist (`resolve_order`). This module also
-creates each experiment's own output folder and relabels the baseline overview figure for
-quantities that are not Pearson correlations. Nothing here writes into the baseline's files.
+creates each experiment's own output folder, relabels the baseline overview figure for
+quantities that are not Pearson correlations and writes the guide to the figure names of a plot
+folder (`write_figure_guide`). Nothing here writes into the baseline's files.
 """
 
 import json
@@ -246,6 +247,65 @@ def experiment_dir(session_dir: str | Path, name: str) -> Path:
     """
     path = Path(session_dir) / name
     path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_figure_guide(
+    plots_dir: str | Path,
+    eid: str,
+    title: str,
+    order_label: str,
+    scale: float,
+    difference_scale: float,
+    corrected_stem: str,
+    figures: list[tuple[str, str]],
+) -> Path:
+    """Write `figures.<eid>.md` next to the figures: what every file name in the folder means.
+
+    Args:
+        plots_dir: folder the figures were written into.
+        eid: session id.
+        title: experiment title, e.g. `'Experiment B: PCA'`.
+        order_label: name of the neuron order the heatmaps are drawn in.
+        scale: shared half-range of the original and corrected heatmaps.
+        difference_scale: half-range of the difference heatmaps.
+        corrected_stem: stem of the corrected heatmap, e.g. `'pca_speed'`.
+        figures: `(stem, meaning)` of each figure drawn, in drawing order; `stem` excludes the
+            eid and the suffix.
+
+    Returns:
+        The written markdown file.
+    """
+    lines = [
+        f'# {title}: figures ({eid})',
+        '',
+        f'Every figure is saved as `<stem>.{eid}.png` and `<stem>.{eid}.pdf`; the parts of a stem '
+        'are separated by `.`, so `heatmap.group_mean.difference` is a `heatmap` of variant '
+        '`group_mean.difference`.',
+        '',
+        '## Reading a `heatmap.*` figure',
+        '',
+        '- One row per camera; one narrow strip per column (a keypoint, or a group for '
+        '`group_mean`), neurons on y and lag on x. Columns of one body-part group sit together '
+        'under one group label; a left- and a right-camera keypoint of the same body part share '
+        'a column.',
+        f'- Neurons are drawn in **{order_label}** order (the same order in every strip).',
+        '- The number on a strip is the max |value| of that strip.',
+        f'- `heatmap.original_speed` and `heatmap.{corrected_stem}` (and their `group_mean` '
+        f'versions) share the colour scale +-{scale:.2f}, so they can be compared by eye; the '
+        f'`difference` heatmaps have their own scale +-{difference_scale:.2f}.',
+        '- Values are neuron-behavior cross-correlations (Pearson r at each lag); `difference` '
+        f'is `{corrected_stem} - original_speed`, so it is exactly 0 for a column that was not '
+        'corrected.',
+        '',
+        '## Figures',
+        '',
+        '| file | what it shows |',
+        '|---|---|',
+    ]
+    lines += [f'| `{stem}.{eid}` | {meaning} |' for stem, meaning in figures]
+    path = Path(plots_dir) / f'figures.{eid}.md'
+    path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
     return path
 
 

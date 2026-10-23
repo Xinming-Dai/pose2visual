@@ -31,6 +31,8 @@ This is Experiment A (baseline). Writes under
   rows = cameras (Figure 20), each row labelled with its own camera's keypoint names; and
   ``example_curves.<eid>.{png,pdf}`` (only with ``--n-examples N``, off by default).
   ``replot`` redraws them from the files above without recomputing anything.
+* ``<YYYYmmdd_HHMMSS>_depth/`` — the same figures with the neurons in probe-depth order, written
+  unless ``--order depth`` (already depth) or ``--no-depth-plot``.
 
 Usage::
 
@@ -149,6 +151,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--plots-subdir', type=str, default=None,
         help='folder of the figures inside experiment_A_baseline (default: a new folder named by '
         'the New York time of the run, YYYYmmdd_HHMMSS, so no earlier figure is overwritten).',
+    )
+    parser.add_argument(
+        '--no-depth-plot', action='store_true',
+        help='do not also draw the figures in probe-depth order into <plots-subdir>_depth.',
     )
     return parser.parse_args(argv)
 
@@ -300,7 +306,8 @@ def run_session(
     plots_subdir: str | None = None,
     show_peth: bool = True,
     peth_vmax: float = 1.0,
-) -> dict[str, Path]:
+    depth_plot: bool = True,
+) -> dict[str, Path | None]:
     """Cross-correlate the neurons of one session with the behavior of every camera.
 
     Args:
@@ -318,9 +325,12 @@ def run_session(
             folder named by the current New York time (`plots.timestamp_subdir`).
         show_peth: draw the PETH strips when `peth.<eid>.npz` exists (see `peth`).
         peth_vmax: half-range of the PETH colour scale.
+        depth_plot: also draw the figures in probe-depth order into `<plots_subdir>_depth`
+            (skipped when `order` is already `'depth'`).
 
     Returns:
-        Dict of the main outputs: `summary`, `arrays`, `params` and `heatmap` (the png).
+        Dict of the main outputs: `summary`, `arrays`, `params`, `heatmap` (the png) and
+        `heatmap_depth` (the depth-order png, or `None` when it was not drawn).
 
     Raises:
         FileNotFoundError: if step 0 has not been run for the session.
@@ -474,6 +484,18 @@ def run_session(
         arrays['valid'], idx_order, table, order, vmax, n_examples, arrays.get('null_p95'),
         peth, peth_vmax,
     )
+    # the same figures in probe-depth order, like the second pass of step2_plot_xcorr.sh
+    depth_subdir = None
+    heatmap_depth = None
+    if depth_plot and order != 'depth':
+        depth_subdir = f'{plots_subdir}_depth'
+        idx_depth = neuron_order('depth', neural, neuron_info['depth'].to_numpy())
+        depth_plots = write_plots(
+            out_dir / depth_subdir, eid, r_all, lags_sec, names, groups, cameras,
+            arrays['valid'], idx_depth, table, 'depth', vmax, n_examples, arrays.get('null_p95'),
+            peth, peth_vmax,
+        )
+        heatmap_depth = depth_plots['heatmap'][0]
 
     # sync diagnostic only: where does the population rate peak against each behavior
     pop = neural.sum(axis=1, keepdims=True)
@@ -521,6 +543,7 @@ def run_session(
                 ),
                 'heatmap_vmax': plots['vmax'],
                 'plots_subdir': plots_subdir,
+                'depth_plots_subdir': depth_subdir,
                 'peth_drawn': peth is not None,
             },
             f,
@@ -528,7 +551,7 @@ def run_session(
         )
     return {
         'summary': summary_path, 'arrays': arrays_path, 'params': params_path,
-        'heatmap': plots['heatmap'][0],
+        'heatmap': plots['heatmap'][0], 'heatmap_depth': heatmap_depth,
     }
 
 
@@ -555,7 +578,7 @@ def main(argv: list[str] | None = None) -> None:
                 run_session(
                     config, eid, args.video_timestamps_dir, args.cameras, args.order,
                     args.n_permutations, args.n_examples, args.exclude, args.n_jobs, args.vmax,
-                    plots_subdir, not args.no_peth, args.peth_vmax,
+                    plots_subdir, not args.no_peth, args.peth_vmax, not args.no_depth_plot,
                 )
             except Exception as error:  # noqa: BLE001 - one session must not stop the others
                 logger.error(f'{eid} failed: {error}')
