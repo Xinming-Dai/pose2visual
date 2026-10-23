@@ -17,7 +17,8 @@ runs changes nothing; the copy is saved as ``xcorr_config.yaml``. ``session.came
 used. ``--exclude`` drops keypoints by glob pattern (``--exclude 'd*'`` = the fingers), and
 ``--n-jobs 2`` processes the two cameras in parallel.
 
-Writes under ``<video_preds_dir>/<xcorr.output_name>/<eid>/``:
+This is Experiment A (baseline). Writes under
+``<video_preds_dir>/<xcorr.output_name>/<eid>/experiment_A_baseline/``:
 
 * ``xcorr_summary.<eid>.csv`` — one row per camera-neuron-behavior pair: ids, peak signed
   correlation, peak absolute correlation, lag of the peak and, when the permutation test was
@@ -74,6 +75,7 @@ from pose2visual.xcorr.permutation import (
 from pose2visual.xcorr.peth import load_peth
 from pose2visual.xcorr.plots import DEFAULT_N_EXAMPLES, timestamp_subdir, write_plots
 from pose2visual.xcorr.settings import (
+    baseline_dir,
     freeze_config,
     load_xcorr_settings,
     resolve_eids,
@@ -145,7 +147,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='folder of the figures inside the session folder (default: a new folder named by '
+        help='folder of the figures inside experiment_A_baseline (default: a new folder named by '
         'the New York time of the run, YYYYmmdd_HHMMSS, so no earlier figure is overwritten).',
     )
     return parser.parse_args(argv)
@@ -172,6 +174,30 @@ def behavior_groups(names: list[str], groups: dict[str, list[str]]) -> dict[str,
     if rest:
         out[OTHER_GROUP] = rest
     return out
+
+
+def grouped_behaviors(
+    cfg: dict[str, Any],
+    camera_names: list[list[str]],
+) -> tuple[list[str], list[str]]:
+    """Union of the behaviors of every camera, ordered and labelled by anatomical group.
+
+    Args:
+        cfg: encoding yaml (`anatomical_group`, `pca_group_set`, `body_parts_json`).
+        camera_names: behavior names of each camera.
+
+    Returns:
+        `(names, groups)`: the union of the names, grouped by body part, and the group of each.
+    """
+    group_set = cfg.get('anatomical_group')
+    if group_set in (None, ANATOMICAL_GROUP_ALL):
+        group_set = cfg.get('pca_group_set') or DEFAULT_PCA_GROUP_SET
+    body_groups = load_groups(cfg['body_parts_json'], str(group_set))
+    union = list(dict.fromkeys(name for names in camera_names for name in names))
+    column_groups = behavior_groups(union, body_groups)
+    names = [union[idx] for idxs in column_groups.values() for idx in idxs]
+    groups = [group for group, idxs in column_groups.items() for _ in idxs]
+    return names, groups
 
 
 def _camera_job(
@@ -234,7 +260,7 @@ def _camera_job(
     return behavior
 
 
-def _run_cameras(
+def run_cameras(
     cameras: list[str],
     n_jobs: int,
     **job_kwargs: Any,
@@ -288,7 +314,7 @@ def run_session(
         exclude: glob patterns of keypoints / features to leave out (e.g. `['d*']`).
         n_jobs: cameras processed in parallel.
         vmax: half-range of the heatmap colour scale; `None` takes it from the data.
-        plots_subdir: folder of the figures inside the session folder; `None` makes a new
+        plots_subdir: folder of the figures inside `experiment_A_baseline`; `None` makes a new
             folder named by the current New York time (`plots.timestamp_subdir`).
         show_peth: draw the PETH strips when `peth.<eid>.npz` exists (see `peth`).
         peth_vmax: half-range of the PETH colour scale.
@@ -310,9 +336,10 @@ def run_session(
     settings = load_xcorr_settings(config_path)
     if n_permutations is not None:
         settings['n_permutations'] = n_permutations
-    out_dir = xcorr_dir(config_path, eid, settings['output_name'])
+    session_dir = xcorr_dir(config_path, eid, settings['output_name'])
+    out_dir = baseline_dir(config_path, eid, settings['output_name'])
 
-    npz_path = out_dir / 'neural_continuous.npz'
+    npz_path = session_dir / 'neural_continuous.npz'
     if not npz_path.is_file():
         raise FileNotFoundError(f'{npz_path} not found; run extract_neural_continuous first')
     neural_file = np.load(npz_path)
@@ -320,7 +347,7 @@ def run_session(
     intervals = neural_file['intervals']
     bin_right_edges = neural_file['bin_right_edges']
     binsize = float(neural_file['binsize'])
-    with (out_dir / f'{eid}_meta.pkl').open('rb') as f:
+    with (session_dir / f'{eid}_meta.pkl').open('rb') as f:
         meta = pickle.load(f)
 
     neural = smooth_neural(spikes, settings['smooth_sigma_bins'])
@@ -347,7 +374,7 @@ def run_session(
         min_shift_bins = max(int(np.ceil(settings['min_shift_sec'] / binsize)), max_lag_bins + 1)
         shifts = draw_shifts(n_time, n_perm, min_shift_bins, rng)
 
-    results = _run_cameras(
+    results = run_cameras(
         cameras, n_jobs,
         config_path=config_path, eid=eid, video_timestamps_dir=video_timestamps_dir,
         intervals=intervals, bin_right_edges=bin_right_edges, binsize=binsize,
@@ -392,15 +419,7 @@ def run_session(
     table['neuron_rank'] = np.argsort(idx_order)[table['neuron_idx'].to_numpy()]
 
     # union of the behaviors, grouped by body part; a camera without one gets NaN
-    group_set = cfg.get('anatomical_group')
-    if group_set in (None, ANATOMICAL_GROUP_ALL):
-        group_set = cfg.get('pca_group_set') or DEFAULT_PCA_GROUP_SET
-    body_groups = load_groups(cfg['body_parts_json'], str(group_set))
-    union = list(dict.fromkeys(name for res in results for name in res['names']))
-    column_groups = behavior_groups(union, body_groups)
-    columns = [idx for idxs in column_groups.values() for idx in idxs]
-    names = [union[idx] for idx in columns]
-    groups = [group for group, idxs in column_groups.items() for _ in idxs]
+    names, groups = grouped_behaviors(cfg, [res['names'] for res in results])
     r_all = np.full((len(results), neural.shape[1], len(names), lags_sec.size), np.nan)
     p_all = np.full((len(results), neural.shape[1], len(names)), np.nan)
     q_all = p_all.copy()

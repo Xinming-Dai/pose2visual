@@ -1,6 +1,7 @@
 """Redraw the figures of a finished cross-correlation run, without recomputing anything.
 
-Reads the files ``run_xcorr`` left in ``<video_preds_dir>/<xcorr.output_name>/<eid>/``
+Reads the files ``run_xcorr`` (Experiment A, baseline) left in
+``<video_preds_dir>/<xcorr.output_name>/<eid>/experiment_A_baseline/``
 (``xcorr_arrays.<eid>.npz``, ``xcorr_summary.<eid>.csv`` and ``xcorr_params.json``) and writes the
 overview heatmap (and, with ``--n-examples N``, the example curves) into a new subfolder of that
 folder named by the New York time of the replot (``YYYYmmdd_HHMMSS``, so earlier figures are kept)
@@ -38,10 +39,10 @@ from pose2visual.xcorr.behavior import excluded_names
 from pose2visual.xcorr.peth import load_peth
 from pose2visual.xcorr.plots import DEFAULT_N_EXAMPLES, timestamp_subdir, write_plots
 from pose2visual.xcorr.settings import (
+    baseline_dir,
     freeze_config,
     load_xcorr_settings,
     resolve_eids,
-    xcorr_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,17 +100,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='folder of the figures inside the session folder (default: a new folder named by '
+        help='folder of the figures inside experiment_A_baseline (default: a new folder named by '
         'the New York time of the run, YYYYmmdd_HHMMSS, so no earlier figure is overwritten).',
     )
     return parser.parse_args(argv)
 
 
-def load_results(session_dir: str | Path, eid: str) -> dict[str, Any]:
-    """Load the saved results of one session.
+def load_results(out_dir: str | Path, eid: str) -> dict[str, Any]:
+    """Load the saved baseline results of one session.
 
     Args:
-        session_dir: `<video_preds_dir>/<xcorr.output_name>/<eid>`.
+        out_dir: `<video_preds_dir>/<xcorr.output_name>/<eid>/experiment_A_baseline`.
         eid: session id.
 
     Returns:
@@ -121,9 +122,9 @@ def load_results(session_dir: str | Path, eid: str) -> dict[str, Any]:
         FileNotFoundError: if the arrays or the summary csv are missing.
         ValueError: if the arrays file lacks a required entry.
     """
-    session_dir = Path(session_dir)
-    arrays_path = session_dir / f'xcorr_arrays.{eid}.npz'
-    summary_path = session_dir / f'xcorr_summary.{eid}.csv'
+    out_dir = Path(out_dir)
+    arrays_path = out_dir / f'xcorr_arrays.{eid}.npz'
+    summary_path = out_dir / f'xcorr_summary.{eid}.csv'
     for path in (arrays_path, summary_path):
         if not path.is_file():
             raise FileNotFoundError(f'{path} not found; run pose2visual.xcorr.run_xcorr first')
@@ -131,7 +132,7 @@ def load_results(session_dir: str | Path, eid: str) -> dict[str, Any]:
     missing = [key for key in _REQUIRED_KEYS if key not in data.files]
     if missing:
         raise ValueError(f'{arrays_path} lacks {missing}; it was made by an older version')
-    params_path = session_dir / 'xcorr_params.json'
+    params_path = out_dir / 'xcorr_params.json'
     order_label = 'saved'
     if params_path.is_file():
         order_label = json.loads(params_path.read_text(encoding='utf-8')).get('order', 'saved')
@@ -245,9 +246,9 @@ def replot_session(
         exclude: glob patterns of behaviors to hide.
         vmax: half-range of the colour scale; `None` takes it from the data.
         n_examples: number of example curves; 0 (default) draws none.
-        plots_subdir: folder of the figures inside the session folder; `None` makes a new
+        plots_subdir: folder of the figures inside `experiment_A_baseline`; `None` makes a new
             folder named by the current New York time (`plots.timestamp_subdir`).
-        show_peth: draw the PETH strips when `peth.<eid>.npz` exists in the session folder.
+        show_peth: draw the PETH strips when `peth.<eid>.npz` exists in `experiment_A_baseline`.
         peth_vmax: half-range of the PETH colour scale.
 
     Returns:
@@ -260,9 +261,9 @@ def replot_session(
     if order not in REPLOT_ORDERS:
         raise ValueError(f'unknown order {order!r}; use one of {list(REPLOT_ORDERS)}')
     settings = load_xcorr_settings(config_path)
-    session_dir = xcorr_dir(config_path, eid, settings['output_name'])
+    out_dir = baseline_dir(config_path, eid, settings['output_name'])
     plots_subdir = plots_subdir or timestamp_subdir()
-    full = load_results(session_dir, eid)
+    full = load_results(out_dir, eid)
     n_neurons = full['r'].shape[1]
     if order == 'saved':
         idx_order = np.asarray(full['neuron_order'])
@@ -276,11 +277,11 @@ def replot_session(
     label = full['order_label'] if order == 'saved' else order
     peth = None
     if show_peth and full['neuron_ids'] is not None:
-        peth = load_peth(session_dir, eid, full['neuron_ids'])
+        peth = load_peth(out_dir, eid, full['neuron_ids'])
         if peth is None:
             logger.info('no peth.<eid>.npz: run pose2visual.xcorr.peth to add the PETH strips')
     return write_plots(
-        session_dir / plots_subdir, eid, results['r'], results['lags_sec'], results['names'],
+        out_dir / plots_subdir, eid, results['r'], results['lags_sec'], results['names'],
         results['groups'], results['cameras'], results['valid'], idx_order, results['table'],
         label, vmax, n_examples, results['null_p95'], peth, peth_vmax,
     )

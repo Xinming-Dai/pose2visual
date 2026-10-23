@@ -1,22 +1,32 @@
 """Optional follow-up experiments on the neural-behavior cross-correlation.
 
-Both start from a finished baseline run (``pose2visual.xcorr.run_xcorr``), only read its files and
-write to their own folder inside the session folder, so the baseline figures and arrays are never
-changed. They ask whether the similar xcorr patterns of ear, eye, nose and mouth keypoints come
-from shared motion:
+Both need only step 0, not a finished Experiment A (baseline, ``pose2visual.xcorr.run_xcorr``):
+they recompute the original keypoint-speed cross-correlations with the baseline's own code
+(``common.compute_original``), so A, B and C can run at the same time. Each writes to its own
+folder inside the session folder; when A has run on the same neurons, its saved neuron order is
+used for their figures. They ask whether the similar xcorr patterns of ear, eye, nose and mouth
+keypoints come from shared motion:
 
-* ``rank1`` (Experiment A, ``experiment_A_rank1/``): subtract the rank-1 approximation of the
-  ``(neurons * lags, behaviors)`` xcorr matrix of each camera; heatmaps of the original, the
-  rank-1 component and the SVD residual, the explained fraction and the loadings.
-* ``relative_motion`` (Experiment B, ``experiment_B_relative_motion/``): subtract the centroid of
+* ``pca`` (Experiment B, ``experiment_B_pca/``): PCA of the face group (eye, pupil, mouth,
+  upperlip, lowerlip, tongue, nose, pad, ear; both sides pooled into one fit); the top component
+  scores become new behaviors ("PCA on positions") and the face positions reprojected onto those
+  same components give a denoised per-keypoint speed ("PCA on speed"). ``left_paw`` / ``right_paw``
+  (``wrist``, ``d1``-``d4`` by side) and any keypoint matching neither keep their original speed
+  unchanged.
+* ``relative_motion`` (Experiment C, ``experiment_C_relative_motion/``): subtract the centroid of
   each anatomical group with two or more keypoints from the keypoint coordinates, recompute the
   speed and the xcorrs, and compare with the original speed. Groups with a single keypoint
   keep their original speed and are listed in the report.
 * ``masked_crosscorr``: the baseline's Pearson cross-correlation for traces with missing samples
-  (used by ``relative_motion``).
-* ``common`` and ``diagnostics``: baseline loaders and the diagnostic figures.
+  (used by ``pca`` and ``relative_motion``).
+* ``common`` and ``diagnostics``: the original-xcorr computation, neuron order and the
+  diagnostic figures.
 
-Each experiment has its own command line (``python -m pose2visual.xcorr.experiments.rank1`` or
-``.relative_motion``); see ``scripts/delta/lightningpose_xcorr/step3a_experiment_rank1.sh`` and
-``step3b_experiment_relative_motion.sh``. Importing the package is cheap.
+Each experiment computes and (unless ``--no-plot``) plots in one command line
+(``python -m pose2visual.xcorr.experiments.pca`` or ``.relative_motion``); its ``replot_*``
+counterpart (``replot_pca`` / ``replot_relative_motion``) redraws the figures of a finished run
+from the saved arrays/csv/json with no recomputation, the same split
+``pose2visual.xcorr.run_xcorr``/``replot`` uses for the baseline. See
+``scripts/delta/lightningpose_xcorr/step1_compute_xcorr.sh`` (computes the baseline and both
+experiments) and ``step2_plot_xcorr.sh`` (plots all three). Importing the package is cheap.
 """

@@ -36,6 +36,11 @@ DEFAULTS: dict[str, Any] = {
 CORRECTIONS = ('fdr_bh', 'bonferroni')
 _PREFIX = 'xcorr_'
 
+# one subfolder of the session folder per experiment; step-0 inputs stay in the session folder
+EXPERIMENT_BASELINE = 'experiment_A_baseline'
+EXPERIMENT_PCA = 'experiment_B_pca'
+EXPERIMENT_RELMOTION = 'experiment_C_relative_motion'
+
 
 def _check_number(
     name: str,
@@ -204,6 +209,23 @@ def xcorr_dir(config_path: str | Path, eid: str, output_name: str) -> Path:
     if video_preds_dir is None:
         raise ValueError(f'{config_path}: paths.video_preds_dir is required')
     return Path(video_preds_dir) / output_name / eid
+
+
+def baseline_dir(config_path: str | Path, eid: str, output_name: str) -> Path:
+    """Directory holding the outputs of Experiment A (baseline xcorr and PETH) of one session.
+
+    Args:
+        config_path: path of the encoding yaml (`paths.video_preds_dir` is read from it).
+        eid: session id.
+        output_name: folder name, `xcorr.output_name`.
+
+    Returns:
+        `<video_preds_dir>/<output_name>/<eid>/experiment_A_baseline`; not created.
+
+    Raises:
+        ValueError: if the yaml has no `paths.video_preds_dir`.
+    """
+    return xcorr_dir(config_path, eid, output_name) / EXPERIMENT_BASELINE
 
 
 @contextmanager

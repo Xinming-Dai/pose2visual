@@ -1,4 +1,4 @@
-"""Experiment B: remove the shared translation of an anatomical group before the xcorr.
+"""Experiment C: remove the shared translation of an anatomical group before the xcorr.
 
 Question: do the eye, ear, nose and mouth keypoints correlate with the same neurons in the same way
 because they move together (head or face translation), or does a neuron-specific relationship
@@ -39,7 +39,17 @@ movement and are left out; no permutation test is run (the masked estimator woul
 per-shift normalization); the spec's backward difference ``|dp| / dt`` is replaced by the
 baseline's central difference so that the only change is the centroid subtraction.
 
-Everything is written to ``<session>/experiment_B_relative_motion/``; the baseline is only read.
+Alongside the per-keypoint heatmaps (``heatmap.{original_speed,relative_speed,difference}``), a
+group-mean version of each (``heatmap.group_mean.*``) averages the xcorr of every anatomical
+group's members (``group_mean_labels``, ``group_mean_arrays``). A ``--no-centroid-groups`` member
+is, by the same reasoning that keeps its centroid from being subtracted, pooled per body side
+instead of across sides, so ``wrist_left`` and ``wrist_right`` each get their own group-mean strip
+(``forelimb.left`` / ``forelimb.right``) rather than being averaged together.
+
+The original speed cross-correlations it is compared against are recomputed here with the
+baseline's own code (``common.compute_original``), so this does not wait for Experiment A; only the
+neuron order of the figures is taken from A when A has run (``common.resolve_order``). Everything
+is written to ``<session>/experiment_C_relative_motion/``.
 
 Usage::
 
@@ -51,6 +61,7 @@ Usage::
 import argparse
 import json
 import logging
+import pickle
 import warnings
 from pathlib import Path
 from typing import Any
@@ -88,16 +99,15 @@ from pose2visual.xcorr.behavior import (
 from pose2visual.xcorr.crosscorr import constant_columns
 from pose2visual.xcorr.experiments.common import (
     BASELINE_COLORBAR_LABEL,
-    EXPERIMENT_B,
+    compute_original,
     experiment_dir,
-    load_baseline,
-    load_neural,
     relabel_overview,
+    resolve_order,
 )
 from pose2visual.xcorr.experiments.masked_crosscorr import masked_cross_correlation
 from pose2visual.xcorr.plots import timestamp_subdir
 from pose2visual.xcorr.run_xcorr import OTHER_GROUP, behavior_groups
-from pose2visual.xcorr.settings import freeze_config, resolve_eids
+from pose2visual.xcorr.settings import EXPERIMENT_RELMOTION, freeze_config, resolve_eids
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +132,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parsed arguments.
     """
     parser = argparse.ArgumentParser(
-        description='Experiment B: xcorr of keypoint speed after removing the group centroid.',
+        description='Experiment C: xcorr of keypoint speed after removing the group centroid.',
     )
     parser.add_argument('--config', type=str, required=True, help='encoding yaml.')
     parser.add_argument('--eids', type=str, nargs='+', default=None, help='session ids.')
@@ -134,13 +144,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--cameras', type=str, nargs='+', default=None,
-        help='cameras to analyse; default: all of the baseline run.',
+        help='cameras to analyse (default: left right).',
     )
     parser.add_argument(
         '--exclude', type=str, nargs='*', default=[], metavar='PATTERN',
-        help="extra glob patterns of keypoints to leave out, on top of the patterns the baseline "
-        "run used (read from its xcorr_params.json); an excluded keypoint is neither compared "
-        'nor part of a centroid. Quote them.',
+        help="glob patterns of keypoints to leave out, e.g. 'd*'; use the same patterns as the "
+        'baseline run to compare like with like. An excluded keypoint is neither compared nor '
+        'part of a centroid. Quote them.',
     )
     parser.add_argument(
         '--no-centroid-groups', type=str, nargs='*', default=list(DEFAULT_NO_CENTROID_GROUPS),
@@ -161,7 +171,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='figure folder inside experiment_B_relative_motion (default: New York time).',
+        help='figure folder inside experiment_C_relative_motion (default: New York time).',
+    )
+    parser.add_argument(
+        '--no-plot', action='store_true',
+        help='compute and save the arrays/csv/json only, draw no figures; redraw them later '
+        'with pose2visual.xcorr.experiments.replot_relative_motion.',
+    )
+    parser.add_argument(
+        '--n-jobs', type=int, default=1,
+        help='cameras processed in parallel for the original xcorr (default: 1).',
     )
     return parser.parse_args(argv)
 
@@ -214,6 +233,84 @@ def plan_groups(
             corrected, reason = True, f'{len(members)} keypoints: centroid subtracted'
         plan.append({'group': group, 'members': members, 'corrected': corrected, 'reason': reason})
     return plan
+
+
+# separator of a side-split group-mean label, e.g. 'forelimb.left'; a '.' (not '_') so a label
+# never ends in exactly '_left' / '_right' and figures.align_behaviors's mirroring never merges
+# the two sides back together
+GROUP_MEAN_SIDE_SEP = '.'
+
+
+def group_mean_labels(
+    names: list[str],
+    groups: list[str],
+    no_centroid_groups: list[str],
+) -> list[str]:
+    """Pooling label of each behavior for the group-mean xcorr plot.
+
+    `OTHER_GROUP` behaviors are never pooled with anything else (label = the keypoint's own name),
+    the same reasoning `plan_groups` uses for unrelated keypoints. A group in `no_centroid_groups`
+    is, by the same reasoning that keeps it from being centroid-corrected, not one body part: if a
+    member's name ends in `_left` or `_right` its label splits off that side
+    (`group + GROUP_MEAN_SIDE_SEP + side`); a member with no side suffix still pools under the
+    group name. Every other group pools by its group name.
+
+    Args:
+        names: the `B` behavior names.
+        groups: body-part group of each behavior (`B` entries, `run_xcorr.behavior_groups` order).
+        no_centroid_groups: groups whose members are not treated as one rigid body
+            (`run_session`'s resolved `no_centroid_groups`).
+
+    Returns:
+        One pooling label per behavior, in `names` order.
+    """
+    labels = []
+    for name, group in zip(names, groups):
+        if group == OTHER_GROUP:
+            labels.append(name)
+        elif group in no_centroid_groups:
+            side = next((s for s in ('left', 'right') if name.endswith(f'_{s}')), None)
+            labels.append(f'{group}{GROUP_MEAN_SIDE_SEP}{side}' if side else group)
+        else:
+            labels.append(group)
+    return labels
+
+
+def group_mean_arrays(
+    arrays: list[np.ndarray],
+    valid: np.ndarray,
+    labels: list[str],
+) -> tuple[list[str], list[np.ndarray], np.ndarray]:
+    """Mean of one or more `[C, N, B, L]` arrays over the behaviors sharing each pooling label.
+
+    Args:
+        arrays: correlation arrays, all `[C, N, B, L]` (e.g. original, relative and difference),
+            `NaN` wherever `valid` is `False`.
+        valid: boolean `[C, B]`, whether camera `c` has behavior `b`.
+        labels: pooling label of each of the `B` behaviors (`group_mean_labels`).
+
+    Returns:
+        `(unique_labels, means, valid_group)`: `unique_labels` in order of first appearance in
+        `labels`; `means`, one `[C, N, len(unique_labels), L]` array per entry of `arrays`
+        (`nanmean` over the members of each label, `NaN` where a label has no valid member in a
+        camera); `valid_group`, boolean `[C, len(unique_labels)]`, True where at least one member
+        is valid.
+    """
+    unique_labels = list(dict.fromkeys(labels))
+    n_cam, n_neuron, _, n_lag = arrays[0].shape
+    valid_group = np.zeros((n_cam, len(unique_labels)), dtype=bool)
+    means = [np.full((n_cam, n_neuron, len(unique_labels), n_lag), np.nan) for _ in arrays]
+    for idx_g, label in enumerate(unique_labels):
+        idx_b = [i for i, name_label in enumerate(labels) if name_label == label]
+        valid_group[:, idx_g] = valid[:, idx_b].any(axis=1)
+        for idx_c in np.flatnonzero(valid_group[:, idx_g]):
+            cols = [i for i in idx_b if valid[idx_c, i]]
+            with warnings.catch_warnings():
+                # a member can still be all-NaN at some neuron/lag (e.g. a short valid stretch)
+                warnings.simplefilter('ignore', RuntimeWarning)
+                for mean, array in zip(means, arrays):
+                    mean[idx_c, :, idx_g, :] = np.nanmean(array[idx_c, :, cols, :], axis=0)
+    return unique_labels, means, valid_group
 
 
 def relative_group_motion(
@@ -572,7 +669,7 @@ def explanation_text(report: dict[str, Any]) -> str:
         Markdown text.
     """
     lines = [
-        f'# Experiment B: relative motion ({report["eid"]})',
+        f'# Experiment C: relative motion ({report["eid"]})',
         '',
         '**Removed**: the group centroid (the shared translation of the members) at every frame, '
         'for groups with two or more tracked keypoints. **Remains**: the movement of each '
@@ -622,50 +719,45 @@ def run_session(
     min_valid_fraction: float = DEFAULT_MIN_VALID_FRACTION,
     vmax: float | None = None,
     plots_subdir: str | None = None,
-) -> dict[str, Path]:
-    """Run Experiment B on one session.
+    skip_plot: bool = False,
+    n_jobs: int = 1,
+) -> dict[str, Path | None]:
+    """Run Experiment C on one session.
 
     Args:
         config_path: path of the encoding yaml.
         eid: session id.
         video_timestamps_dir: directory with the camera timestamp files.
-        cameras: cameras to analyse; `None` = all of the baseline run.
-        exclude: extra glob patterns of keypoints to leave out; the patterns the baseline run
-            used are always applied too, so the keypoint set matches the baseline's.
+        cameras: cameras to analyse; `None` = all of `run_xcorr.CAMERAS`.
+        exclude: glob patterns of keypoints to leave out (use the baseline's patterns).
         no_centroid_groups: groups that keep their original speed; `None` = the default
             (`DEFAULT_NO_CENTROID_GROUPS`), `[]` = correct every group with two or more keypoints.
         min_valid_fraction: smallest fraction of defined bins of a corrected keypoint.
         vmax: shared half-range of the colour scale; `None` applies the baseline's rule to the
             original xcorrs.
         plots_subdir: figure folder name; `None` = New York time of the run.
+        skip_plot: compute and save only, draw no figures; redraw them later with
+            `pose2visual.xcorr.experiments.replot_relative_motion`.
+        n_jobs: cameras processed in parallel for the original xcorr.
 
     Returns:
-        Dict of the written paths: `arrays`, `summary`, `groups`, `groups_md` and `plots`.
+        Dict of the written paths: `arrays`, `summary`, `groups`, `groups_md` and `plots`
+        (`None` when `skip_plot` is `True`).
 
     Raises:
-        FileNotFoundError: if the baseline run or step 0 is missing.
-        ValueError: if the baseline lacks neuron ids, the neurons or lags differ from the
-            baseline's, or the recomputed absolute speeds disagree with the baseline.
+        FileNotFoundError: if step 0 is missing.
+        ValueError: if the absolute speeds recomputed from positions disagree with the
+            baseline traces, or no keypoint is left to compare.
     """
-    # lazy: matplotlib is only needed to draw
-    from pose2visual.xcorr.experiments import diagnostics
-    from pose2visual.xcorr.figures import heatmap_vmax, plot_xcorr_overview, save_figure
-
     no_centroid = list(
         DEFAULT_NO_CENTROID_GROUPS if no_centroid_groups is None else no_centroid_groups,
     )
-    base = load_baseline(config_path, eid, cameras, exclude)
-    exclude = list(dict.fromkeys(base['exclude_patterns'] + list(exclude or [])))
-    if base['neuron_ids'] is None:
-        raise ValueError('the baseline arrays have no neuron_ids; rerun the baseline xcorr')
-    neural = load_neural(
-        base['session_dir'], eid, base['settings'], base['neuron_ids'], base['lags_sec'],
-    )
+    base = compute_original(config_path, eid, video_timestamps_dir, cameras, exclude, n_jobs)
+    exclude = base['exclude_patterns']
+    neural = base['neural']
     cams, lags_sec = base['cameras'], base['lags_sec']
-    idx_order = np.asarray(base['neuron_order'])
     body_groups = resolve_body_groups(config_path)
-    out_dir = experiment_dir(base['session_dir'], EXPERIMENT_B)
-    plots_dir = out_dir / (plots_subdir or timestamp_subdir())
+    out_dir = experiment_dir(base['session_dir'], EXPERIMENT_RELMOTION)
 
     # keypoints (not visibility features) of the baseline, in its grouped order
     idx_motion = [i for i, n in enumerate(base['names']) if not n.endswith(VISIBILITY_SUFFIX)]
@@ -758,23 +850,104 @@ def run_session(
         arrays_path, r_relative=r_relative.astype(np.float32),
         r_original=r_original.astype(np.float32), corrected=corrected, valid=valid,
         lags_sec=lags_sec, cameras=np.asarray(cams), behavior_names=np.asarray(names),
-        behavior_groups=np.asarray(groups), neuron_order=idx_order,
-        neuron_ids=np.asarray(base['neuron_ids']),
+        behavior_groups=np.asarray(groups), neuron_ids=base['neuron_ids'],
+        neuron_depths=base['neuron_depths'],
     )
     summary_path = out_dir / f'relative_summary.{eid}.csv'
     summary.to_csv(summary_path, index=False)
     report = {
         'eid': eid, 'cameras': camera_report, 'no_centroid_groups': no_centroid,
-        'min_valid_fraction': min_valid_fraction, 'plots_subdir': plots_dir.name,
+        'min_valid_fraction': min_valid_fraction,
     }
     groups_path = out_dir / f'relative_groups.{eid}.json'
     groups_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
     groups_md_path = out_dir / f'relative_groups.{eid}.md'
     groups_md_path.write_text(explanation_text(report), encoding='utf-8')
+    # centroid trajectories are frame-rate position traces, not part of the spike-grid arrays
+    # above and not reconstructible from them; pickled here so replot_relative_motion can redraw
+    # the trajectory figure with no recomputation (positions would otherwise need reloading from
+    # the keypoint csvs). group_rows is not pickled: it is exactly the flattening of
+    # report['cameras'][camera]['groups'] over cameras, already in relative_groups.<eid>.json.
+    centroids_path = out_dir / f'relative_centroids.{eid}.pkl'
+    with centroids_path.open('wb') as f:
+        pickle.dump(centroids, f)
 
-    # figures: the baseline's overview for the same keypoints, in the baseline's neuron order
+    plots_dir = None
+    if not skip_plot:
+        plots_dir = out_dir / (plots_subdir or timestamp_subdir())
+        idx_order, order_label = resolve_order(
+            config_path, eid, 'saved', base['neuron_ids'], base['neuron_depths'],
+        )
+        plot_results(
+            plots_dir, eid, lags_sec, cams, names, groups, valid, r_original, r_relative,
+            idx_order, order_label, vmax, corrected, no_centroid, summary, group_rows,
+            centroids,
+        )
+    return {
+        'arrays': arrays_path, 'summary': summary_path, 'groups': groups_path,
+        'groups_md': groups_md_path, 'plots': plots_dir,
+    }
+
+
+def plot_results(
+    plots_dir: str | Path,
+    eid: str,
+    lags_sec: np.ndarray,
+    cams: list[str],
+    names: list[str],
+    groups: list[str],
+    valid: np.ndarray,
+    r_original: np.ndarray,
+    r_relative: np.ndarray,
+    idx_order: np.ndarray,
+    order_label: str,
+    vmax: float | None,
+    corrected: np.ndarray,
+    no_centroid: list[str],
+    summary: pd.DataFrame,
+    group_rows: list[dict[str, Any]],
+    centroids: list[dict[str, Any]],
+) -> None:
+    """Draw every Experiment C figure from already-computed (or reloaded) arrays.
+
+    Shared by `run_session` (freshly computed arrays) and
+    `pose2visual.xcorr.experiments.replot_relative_motion` (arrays reloaded from the saved
+    npz/csv/json), so a figure always looks the same whether it is drawn right after the compute
+    step or redrawn later with different `vmax`/`cameras`.
+
+    Args:
+        plots_dir: folder the figures are written into (created if missing).
+        eid: session id.
+        lags_sec: lag axis.
+        cams: cameras, in plotting order.
+        names: behavior (keypoint) names, baseline order.
+        groups: anatomical group of each behavior (`names` order).
+        valid: boolean `[C, B]`.
+        r_original: baseline xcorr `[C, N, B, L]`, NaN where not `valid`.
+        r_relative: relative-motion xcorr `[C, N, B, L]`, NaN where not `valid`.
+        idx_order: neuron order to draw the heatmaps in.
+        order_label: name of the neuron order, for the y-axis label.
+        vmax: shared half-range of the colour scale; `None` applies the baseline's rule.
+        corrected: boolean `[C, B]`, whether the centroid was subtracted for that behavior.
+        no_centroid: groups that keep their original speed (`run_session`'s `no_centroid`).
+        summary: per-keypoint statistics table (`run_session`'s `summary`).
+        group_rows: one dict per camera/group entry, for the group-decision table
+            (`run_session`'s `group_rows`, or the concatenation of a saved
+            `relative_groups.<eid>.json`'s per-camera `groups` plans).
+        centroids: centroid trajectory data, one dict per corrected camera/group
+            (`run_session`'s `centroids`); empty skips the trajectory figure.
+    """
+    # lazy: matplotlib is only needed to draw
+    from pose2visual.xcorr.experiments import diagnostics
+    from pose2visual.xcorr.figures import heatmap_vmax, plot_xcorr_overview, save_figure
+
+    with warnings.catch_warnings():
+        # keypoints a camera does not have are all NaN
+        warnings.simplefilter('ignore', RuntimeWarning)
+        peak_original = np.nanmax(np.abs(r_original), axis=3)
+        peak_relative = np.nanmax(np.abs(r_relative), axis=3)
     scale = vmax if vmax is not None else heatmap_vmax(r_original)
-    ylabel = f'neurons ({base["order_label"]} order)'
+    ylabel = f'neurons ({order_label} order)'
     difference = r_relative - r_original
     difference_scale = heatmap_vmax(difference)
     panels = [
@@ -801,6 +974,35 @@ def run_session(
             'number = max |value|', colorbar,
         )
         save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}')
+    mean_labels = group_mean_labels(names, groups, no_centroid)
+    group_names, (r_original_mean, r_relative_mean, difference_mean), valid_mean = (
+        group_mean_arrays([r_original, r_relative, difference], valid, mean_labels)
+    )
+    group_panels = [
+        (
+            'original_speed', r_original_mean, scale,
+            'original speed (absolute), group mean', BASELINE_COLORBAR_LABEL,
+        ),
+        (
+            'relative_speed', r_relative_mean, scale,
+            'relative speed (group centroid removed where corrected), group mean',
+            BASELINE_COLORBAR_LABEL,
+        ),
+        (
+            'difference', difference_mean, difference_scale,
+            'relative minus original speed xcorr, group mean', DIFFERENCE_COLORBAR,
+        ),
+    ]
+    for stem, data, panel_scale, label, colorbar in group_panels:
+        fig = plot_xcorr_overview(
+            data[:, idx_order], lags_sec, group_names, cams, group_names, valid_mean, eid,
+            panel_scale, ylabel=ylabel,
+        )
+        relabel_overview(
+            fig, f'{eid}: {label}; colour scale +-{panel_scale:.2f}; each strip: neurons x lag, '
+            'number = max |value|', colorbar,
+        )
+        save_figure(fig, plots_dir / f'heatmap.group_mean.{stem}.{eid}')
     scatter_panels = []
     for idx_c, camera in enumerate(cams):
         idx_b = np.flatnonzero(valid[idx_c])
@@ -819,14 +1021,10 @@ def run_session(
             plots_dir / f'centroid_trajectories.{eid}',
         )
     save_figure(diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}')
-    return {
-        'arrays': arrays_path, 'summary': summary_path, 'groups': groups_path,
-        'groups_md': groups_md_path, 'plots': plots_dir,
-    }
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Run Experiment B for every selected session; failures are listed at the end.
+    """Run Experiment C for every selected session; failures are listed at the end.
 
     Args:
         argv: argument list; `None` uses `sys.argv`.
@@ -846,6 +1044,7 @@ def main(argv: list[str] | None = None) -> None:
                 paths = run_session(
                     config, eid, args.video_timestamps_dir, args.cameras, args.exclude,
                     args.no_centroid_groups, args.min_valid_fraction, args.vmax, plots_subdir,
+                    args.no_plot, args.n_jobs,
                 )
                 logger.info(f'wrote {[str(p) for p in paths.values()]}')
             except Exception as error:  # noqa: BLE001 - one session must not stop the others

@@ -24,7 +24,9 @@ Pipeline (see ``scripts/delta/lightningpose_xcorr``):
 
 Settings live in the ``xcorr`` section of ``configs/encoding/litpose_encoding.yaml``
 (``settings``); filtering and imputation come from the encoding sections of that yaml. The
-cameras are a command-line choice, ``session.camera`` is not read; results go to
-``<video_preds_dir>/<xcorr.output_name>/<eid>/``.
+cameras are a command-line choice, ``session.camera`` is not read. Step-0 inputs go to
+``<video_preds_dir>/<xcorr.output_name>/<eid>/``; each experiment writes its own subfolder there:
+``experiment_A_baseline/`` (``run_xcorr`` and ``peth``), ``experiment_B_pca/`` and
+``experiment_C_relative_motion/`` (``experiments``).
 Importing the package is cheap: heavy dependencies are imported inside the functions using them.
 """

@@ -58,7 +58,8 @@ def save_figure(fig: Figure, stem: Path, dpi: int = 200) -> list[Path]:
     # a dot in the stem (the session id is separated from other parts by dots) is not a suffix
     paths = [stem.parent / f'{stem.name}.png', stem.parent / f'{stem.name}.pdf']
     for path in paths:
-        fig.savefig(path, dpi=dpi)
+        # tight bbox keeps text that runs past the canvas (e.g. a long title) instead of cutting it
+        fig.savefig(path, dpi=dpi, bbox_inches='tight', pad_inches=0.1)
     return paths
 
 

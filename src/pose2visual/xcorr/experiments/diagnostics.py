@@ -1,10 +1,11 @@
 """Diagnostic and summary figures of the optional xcorr experiments.
 
-Experiment A (``rank1``): the singular-value spectrum, the loadings of the leading component, its
-neuron x lag pattern and the example curves of the residual. Experiment B (``relative_motion``):
-the variance removed by the centroid subtraction, original against relative peak correlations,
-the centroid trajectories and the table of corrected and skipped groups. Like ``figures``, they
-build ``matplotlib.figure.Figure`` objects directly (no pyplot backend) and the caller saves them.
+Experiment B (``pca``): the explained-variance bars of the face group's kept components, the
+variance removed by the PCA denoising, original against pca-denoised peak correlations, and the
+table of PCA-applied and passthrough groups. Experiment C (``relative_motion``): the variance
+removed by the centroid subtraction, original against relative peak correlations, the centroid
+trajectories and the table of corrected and skipped groups. Like ``figures``, they build
+``matplotlib.figure.Figure`` objects directly (no pyplot backend) and the caller saves them.
 """
 
 from typing import Any
@@ -15,7 +16,7 @@ from matplotlib.figure import Figure
 
 TEXT_COLOR = '0.15'
 ORIGINAL_COLOR = '0.35'
-RANK1_COLOR = '#0072B2'
+PRIMARY_COLOR = '#0072B2'
 RESIDUAL_COLOR = '#D55E00'
 # Okabe-Ito, colour-blind safe; groups beyond the eighth reuse colours
 GROUP_PALETTE = (
@@ -37,113 +38,27 @@ def group_colors(groups: list[str]) -> dict[str, str]:
     return {g: GROUP_PALETTE[idx % len(GROUP_PALETTE)] for idx, g in enumerate(unique)}
 
 
-def plot_rank1_diagnostics(
-    cameras: list[dict[str, Any]],
-    lags_sec: np.ndarray,
-    title: str,
-) -> Figure:
-    """Spectrum, loadings, shared pattern and per-behavior explained fraction of rank 1.
-
-    One row per camera, four panels: the leading squared singular values as a fraction of the
-    squared Frobenius norm; the loadings ``v_0`` of the behaviors (coloured by group); the shared
-    neuron x lag pattern ``u_0`` (neurons in display order); and the fraction of each behavior's
-    own squared norm that rank 1 explains.
+def plot_pca_explained_variance(entries: list[dict[str, Any]]) -> Figure:
+    """Explained-variance ratio of the face group's kept components, one bar panel per camera.
 
     Args:
-        cameras: one dict per camera with `camera`, `singular_fractions`, `names`, `groups`,
-            `loadings`, `pattern` (``[N, L]``, neurons in display order) and `frac_behavior`.
-        lags_sec: lag in seconds of each pattern column.
-        title: figure title.
+        entries: one dict per camera with `camera` and `explained_variance_ratio` (list of
+            floats, one per kept component, in component order).
 
     Returns:
-        The figure.
+        The figure: one panel per camera, a bar per component.
     """
-    n_rows = len(cameras)
-    height_rows = [max(3.2, 0.2 * len(c['names'])) for c in cameras]
-    fig = Figure(figsize=(17, sum(height_rows) + 1.2), layout='constrained')
-    grid = fig.add_gridspec(n_rows, 4, height_ratios=height_rows, width_ratios=[1, 1.3, 1.3, 1])
-    for idx_row, cam in enumerate(cameras):
-        colors = group_colors(cam['groups'])
-        ax = fig.add_subplot(grid[idx_row, 0])
-        fractions = np.asarray(cam['singular_fractions'])
-        ax.bar(np.arange(1, fractions.size + 1), 100 * fractions, color=ORIGINAL_COLOR)
-        ax.set_xlabel('component', fontsize=7)
-        ax.set_ylabel(f'{cam["camera"]} camera\n% of squared norm', fontsize=7)
-        ax.set_title('singular values', fontsize=8, color=TEXT_COLOR)
+    fig = Figure(figsize=(3.2 * len(entries), 3.0), layout='constrained')
+    axes = fig.subplots(1, len(entries), squeeze=False)[0]
+    for ax, entry in zip(axes, entries):
+        ratio = 100 * np.asarray(entry['explained_variance_ratio'])
+        pos = np.arange(1, ratio.size + 1)
+        ax.bar(pos, ratio, color=ORIGINAL_COLOR)
+        ax.set_xticks(pos)
+        ax.set_xlabel('component', fontsize=8)
+        ax.set_ylabel('% of face variance explained', fontsize=8)
+        ax.set_title(f'{entry["camera"]} camera', fontsize=9, color=TEXT_COLOR)
         ax.tick_params(labelsize=7)
-        pos = np.arange(len(cam['names']))
-        ax = fig.add_subplot(grid[idx_row, 1])
-        ax.barh(pos, cam['loadings'], color=[colors[g] for g in cam['groups']])
-        ax.axvline(0.0, color='k', lw=0.5)
-        ax.set_yticks(pos, cam['names'], fontsize=6)
-        ax.invert_yaxis()
-        ax.set_title('loadings v0 (colour = group)', fontsize=8, color=TEXT_COLOR)
-        ax.tick_params(axis='x', labelsize=7)
-        ax = fig.add_subplot(grid[idx_row, 2])
-        pattern = np.asarray(cam['pattern'])
-        limit = float(np.max(np.abs(pattern))) or 1.0
-        image = ax.imshow(
-            pattern, aspect='auto', cmap='bwr', vmin=-limit, vmax=limit, interpolation='nearest',
-            extent=(float(lags_sec[0]), float(lags_sec[-1]), pattern.shape[0], 0),
-        )
-        ax.axvline(0.0, color='k', lw=0.4, ls=':')
-        ax.set_xlabel('lag (s)', fontsize=7)
-        ax.set_ylabel('neurons (display order)', fontsize=7)
-        ax.set_title('shared pattern u0 (unit norm)', fontsize=8, color=TEXT_COLOR)
-        ax.tick_params(labelsize=7)
-        fig.colorbar(image, ax=ax, shrink=0.8).ax.tick_params(labelsize=6)
-        ax = fig.add_subplot(grid[idx_row, 3])
-        ax.barh(pos, 100 * np.asarray(cam['frac_behavior']),
-                color=[colors[g] for g in cam['groups']])
-        ax.set_yticks(pos, cam['names'], fontsize=6)
-        ax.invert_yaxis()
-        ax.set_xlim(0, 100)
-        ax.set_xlabel('% of the behavior\'s squared norm', fontsize=7)
-        ax.set_title('explained by rank 1', fontsize=8, color=TEXT_COLOR)
-        ax.tick_params(axis='x', labelsize=7)
-    fig.suptitle(title, fontsize=9, color=TEXT_COLOR)
-    return fig
-
-
-def plot_residual_examples(
-    examples: list[dict[str, Any]],
-    lags_sec: np.ndarray,
-    title: str,
-    n_cols: int = 4,
-) -> Figure:
-    """Original, rank-1 and residual curves of individual neuron-behavior pairs.
-
-    Args:
-        examples: one dict per panel with `title` and the curves `original`, `rank1` and
-            `residual`, each ``[L]``.
-        lags_sec: lag in seconds of each curve entry.
-        title: figure title.
-        n_cols: panels per row.
-
-    Returns:
-        The figure.
-    """
-    n_cols = max(1, min(n_cols, len(examples)))
-    n_rows = int(np.ceil(len(examples) / n_cols))
-    fig = Figure(figsize=(3.4 * n_cols, 2.6 * n_rows), layout='constrained')
-    axes = fig.subplots(n_rows, n_cols, sharex=True, squeeze=False)
-    for ax in axes.ravel():
-        ax.set_visible(False)
-    for ax, example in zip(axes.ravel(), examples):
-        ax.set_visible(True)
-        ax.axhline(0.0, color='k', lw=0.4)
-        ax.axvline(0.0, color='k', lw=0.4, ls=':')
-        ax.plot(lags_sec, example['original'], color=ORIGINAL_COLOR, lw=1.0, label='original')
-        ax.plot(lags_sec, example['rank1'], color=RANK1_COLOR, lw=1.0, ls='--', label='rank 1')
-        ax.plot(lags_sec, example['residual'], color=RESIDUAL_COLOR, lw=1.3, label='residual')
-        ax.set_title(example['title'], fontsize=7, color=TEXT_COLOR)
-        ax.tick_params(labelsize=7)
-    axes.ravel()[0].legend(fontsize=6, frameon=False)
-    for ax in axes[-1]:
-        ax.set_xlabel('lag (s)', fontsize=7)
-    for ax in axes[:, 0]:
-        ax.set_ylabel('xcorr / SVD residual', fontsize=7)
-    fig.suptitle(title, fontsize=9, color=TEXT_COLOR)
     return fig
 
 
@@ -176,7 +91,7 @@ def plot_variance_bars(summary: pd.DataFrame) -> Figure:
             ax.barh(pos - 0.2, sub[f'var_{kind}_original'], height=0.38, color=ORIGINAL_COLOR,
                     label='original (absolute)')
             ax.barh(pos + 0.2, sub[f'var_{kind}_relative'], height=0.38, color=RESIDUAL_COLOR,
-                    label='relative (group centroid removed)')
+                    label='corrected (centroid removed, or PCA-denoised)')
             ax.set_xscale('log')
             ax.set_yticks(pos, labels, fontsize=6)
             ax.invert_yaxis()
@@ -185,20 +100,21 @@ def plot_variance_bars(summary: pd.DataFrame) -> Figure:
             ax.set_title(f'{camera} camera: {kind}', fontsize=8, color=TEXT_COLOR)
         axes[0, idx_c].legend(fontsize=6, frameon=False)
     fig.suptitle(
-        'variance of the movement signals (* = group centroid subtracted; unstarred keypoints '
-        'keep their original signal)', fontsize=8, color=TEXT_COLOR,
+        'variance of the movement signals (* = a correction was applied, e.g. a group centroid '
+        'removed or a PCA denoising; unstarred keypoints keep their original signal)',
+        fontsize=8, color=TEXT_COLOR,
     )
     return fig
 
 
 def plot_peak_scatter(panels: list[dict[str, Any]]) -> Figure:
-    """Peak absolute xcorr of every neuron-keypoint pair, original against relative speed.
+    """Peak absolute xcorr of every neuron-keypoint pair, original against corrected speed.
 
     Args:
         panels: one dict per camera with `camera`, `original` and `relative` (``[N, B]`` peak
             absolute correlations over lags), `groups` (``B`` names) and `corrected` (bool
-            ``[B]``). Keypoints without centroid correction lie on the diagonal by
-            construction and are drawn in grey.
+            ``[B]``). Keypoints without a correction (e.g. a centroid subtraction or a PCA
+            denoising) lie on the diagonal by construction and are drawn in grey.
 
     Returns:
         The figure: one panel per camera with the identity line.
@@ -221,7 +137,7 @@ def plot_peak_scatter(panels: list[dict[str, Any]]) -> Figure:
         ax.set_ylim(0, top * 1.03)
         ax.set_aspect('equal')
         ax.set_xlabel('peak |r|, original speed', fontsize=8)
-        ax.set_ylabel('peak |r|, relative speed', fontsize=8)
+        ax.set_ylabel('peak |r|, corrected speed', fontsize=8)
         ax.set_title(f'{panel["camera"]} camera', fontsize=9, color=TEXT_COLOR)
         ax.tick_params(labelsize=7)
         handles = [
@@ -255,7 +171,9 @@ def plot_centroid_trajectories(centroids: list[dict[str, Any]]) -> Figure:
         ax_pos, ax_speed, ax_all = axes[idx]
         label = f'{info["camera"]} {info["group"]}'
         for ax, mask in ((ax_pos, sel), (ax_all, np.ones_like(sel))):
-            ax.plot(times[mask], np.asarray(info['x'])[mask], color=RANK1_COLOR, lw=0.8, label='x')
+            ax.plot(
+                times[mask], np.asarray(info['x'])[mask], color=PRIMARY_COLOR, lw=0.8, label='x',
+            )
             ax.plot(times[mask], np.asarray(info['y'])[mask], color=RESIDUAL_COLOR, lw=0.8,
                     label='y')
             ax.set_ylabel('centroid (px)', fontsize=7)

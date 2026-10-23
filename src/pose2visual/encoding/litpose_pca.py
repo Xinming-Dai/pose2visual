@@ -104,16 +104,21 @@ def assign_keypoints_to_groups(
     return members, unassigned
 
 
-def reproject_group(xy: np.ndarray, n_components: int) -> tuple[np.ndarray, np.ndarray]:
-    """Project features onto their top principal components and map them back.
+def _fit_group_basis(
+    xy: np.ndarray,
+    n_components: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Shared eigendecomposition behind `reproject_group` and `project_group`.
 
     Args:
         xy: array of shape `[n_frames, n_features]`.
         n_components: number of components to keep, in `[1, n_features]`.
 
     Returns:
-        Tuple `(xy_hat, explained_variance_ratio)`: the reprojected features `[n_frames,
-        n_features]` (float64) and the variance ratio of the kept components `[n_components]`.
+        Tuple `(mean, centered, basis, explained_variance_ratio)`: the feature mean
+        `[n_features]`, the centered input `[n_frames, n_features]` (float64), the top components
+        `[n_features, n_components]` (unit-norm, orthogonal) and their variance ratio
+        `[n_components]`.
 
     Raises:
         ValueError: if `n_components` is not in `[1, n_features]`.
@@ -130,7 +135,48 @@ def reproject_group(xy: np.ndarray, n_components: int) -> tuple[np.ndarray, np.n
     basis = eigvecs[:, idx_top]
     total = float(eigvals.clip(min=0).sum())
     ratio = eigvals[idx_top].clip(min=0) / total if total > 0 else np.zeros(n_components)
+    return mean, centered, basis, ratio
+
+
+def reproject_group(xy: np.ndarray, n_components: int) -> tuple[np.ndarray, np.ndarray]:
+    """Project features onto their top principal components and map them back.
+
+    Args:
+        xy: array of shape `[n_frames, n_features]`.
+        n_components: number of components to keep, in `[1, n_features]`.
+
+    Returns:
+        Tuple `(xy_hat, explained_variance_ratio)`: the reprojected features `[n_frames,
+        n_features]` (float64) and the variance ratio of the kept components `[n_components]`.
+
+    Raises:
+        ValueError: if `n_components` is not in `[1, n_features]`.
+    """
+    mean, centered, basis, ratio = _fit_group_basis(xy, n_components)
     return centered @ basis @ basis.T + mean, ratio
+
+
+def project_group(xy: np.ndarray, n_components: int) -> tuple[np.ndarray, np.ndarray]:
+    """Project features onto their top principal components, without mapping them back.
+
+    Unlike `reproject_group`, which returns denoised pixel-space positions, this returns the
+    component scores themselves (the centered input projected onto the basis) to use as behaviors
+    in their own right, e.g. for a cross-correlation of the leading components directly.
+
+    Args:
+        xy: array of shape `[n_frames, n_features]`.
+        n_components: number of components to keep, in `[1, n_features]`.
+
+    Returns:
+        Tuple `(scores, explained_variance_ratio)`: the component scores `[n_frames,
+        n_components]` (float64, zero mean) and the variance ratio of the kept components
+        `[n_components]`.
+
+    Raises:
+        ValueError: if `n_components` is not in `[1, n_features]`.
+    """
+    mean, centered, basis, ratio = _fit_group_basis(xy, n_components)
+    return centered @ basis, ratio
 
 
 def reproject_keypoints(
