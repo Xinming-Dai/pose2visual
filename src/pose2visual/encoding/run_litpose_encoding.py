@@ -7,10 +7,22 @@ Reads the yaml config (see ``configs/encoding/litpose_encoding.yaml``) and
 ``<eid>_aligned.npz``, so it is identical for both:
 
 * ``base``: the speed of ``base_keypoints``;
-* ``base_plus_additional``: the speed of ``base_keypoints + additional_keypoints``.
+* ``base_plus_additional``: the speed of ``base_keypoints + additional_keypoints`` (skipped when
+  ``additional_keypoints`` is empty).
 
 Keypoints listed in neither list are ``unused``. The held-out test R^2 and bits-per-spike (BPS),
-overall and per neuron, are compared; no significance test is run.
+overall and per neuron, are compared; no significance test is run. With an empty
+``additional_keypoints`` only the ``base`` condition is fitted (a base-only run): the variant folder
+is ``base_only`` by default, the result holds the ``base_*`` metrics and predictions without deltas,
+and the comparison plots, which need both conditions, do not apply.
+
+``session.camera: both`` fits one model (one RRR and one CNN) on the features of both cameras:
+the step B outputs of ``left_<output_name>`` and ``right_<output_name>`` are loaded, the lists are
+resolved against each camera's own keypoints and the selected columns are concatenated, named
+``left:<name>`` and ``right:<name>``. A trace that does not depend on the camera (``wheel_speed``,
+``licks``) is taken once, from the left camera, and keeps its plain name. With explicit keypoint
+names (``anatomical_group.name: all``) each name must exist in both cameras. The results go to
+``both_<output_name>``.
 
 The ``anatomical_group`` section holds the two lists and ``anatomical_group.name`` (default
 ``all``) says what they hold. With ``all`` they are explicit keypoint names. With a group set of
@@ -20,9 +32,9 @@ the session (those in ``dynamic_vars.npz``, see ``litpose_keypoints.expand_group
 resolved keypoints can differ between sessions. A group of the yaml's ``visibility`` section
 (e.g. ``tongue``) resolves to its binary column ``<group>_visible`` (0/1, see
 ``extract_litpose_dynamic_vars_trials``) instead of keypoint speeds; its settings enter the run
-signature, so another threshold never reuses a result. A trace of the yaml's ``motion_energy``
-section (e.g. ``whisker``) is selected the same way and resolves to its column
-``<trace>_motion_energy`` (copied from ``<eid>_aligned.npz`` by step B). The resolved names are
+signature, so another threshold never reuses a result. A trace of the yaml's ``one_api`` section
+(``whisker_motion_energy``, ``wheel_speed``, ``licks``) is selected the same way and resolves to the
+column of the same name (copied from ``<eid>_aligned.npz`` by step B). The resolved names are
 what the encoders see and what ``encoding_params.json`` / ``encoding_result.npz`` store as
 ``base_keypoints`` / ``additional_keypoints``; the group names are stored as ``base_groups`` /
 ``additional_groups``.
@@ -81,21 +93,23 @@ from sklearn.metrics import r2_score
 from pose2visual.encoding.encoder import train_cnn_encoder_with_tune, train_rrr_encoder_with_tune
 from pose2visual.encoding.litpose_keypoints import (
     ANATOMICAL_GROUP_ALL,
-    CAMERAS,
+    CAMERA_BOTH,
     DEFAULT_FILTER_GROUP_SET,
     DEFAULT_PCA_GROUP_SET,
+    ENCODING_CAMERAS,
     ENCODING_YAML_NESTED_NAMES,
+    ONE_API_TRACES,
     base_dir,
+    cameras_of,
     check_filter_settings_match,
     expand_groups,
     keypoint_names_json_path,
     load_encoding_yaml,
-    load_motion_energy_settings,
+    load_one_api_trace_settings,
     load_position_columns,
     load_unfiltered_keypoints,
     load_visibility_features,
     load_visibility_settings,
-    motion_energy_feature_name,
     output_folder_name,
     session_output_dir,
     validate_filter_settings,
@@ -127,6 +141,8 @@ _REQUIRED_CONFIG_KEYS = (
 )
 _SPLITS = ('train', 'val', 'test')
 _BASE_RESERVED_NAME = 'base'
+# default variant folder of a run without additional keypoints (only the base is fitted)
+_BASE_ONLY_NAME = 'base_only'
 # derived variant names stay well below the 255-byte file name limit
 _MAX_VARIANT_NAME_LEN = 100
 _NAME_HASH_LEN = 8
@@ -186,11 +202,13 @@ def derive_variant_name(additional: list[str]) -> str:
     `resolve_variant_dir` handles through the run signature.
 
     Args:
-        additional: `additional_keypoints` from the config.
+        additional: `additional_keypoints` from the config; empty for a base-only run.
 
     Returns:
-        Folder name.
+        Folder name; `_BASE_ONLY_NAME` when `additional` is empty.
     """
+    if not additional:
+        return _BASE_ONLY_NAME
     name = '_'.join(sorted(additional))
     if len(name) > _MAX_VARIANT_NAME_LEN:
         keep = _MAX_VARIANT_NAME_LEN - _NAME_HASH_LEN - 1
@@ -217,8 +235,8 @@ def run_signature(
         group mode); `anatomical_group` is only present when it is not `all`, and
         `unfiltered_groups` / `filter_group_set` only when groups are exempt from confidence
         filtering and `visibility` (group set, groups, threshold) only when the yaml has a
-        `visibility` section, and `motion_energy` (sorted traces) only when the yaml has a
-        `motion_energy` section, so results from before they existed keep matching.
+        `visibility` section, and `one_api` (sorted traces) only when the yaml has a `one_api`
+        section, so results from before they existed keep matching.
     """
     signature = {
         'camera': cfg['camera'],
@@ -242,8 +260,8 @@ def run_signature(
             'groups': sorted(cfg['visibility']['groups']),
             'likelihood_threshold': cfg['visibility']['likelihood_threshold'],
         }
-    if cfg.get('motion_energy'):
-        signature['motion_energy'] = sorted(cfg['motion_energy'])
+    if cfg.get('one_api'):
+        signature['one_api'] = sorted(cfg['one_api'])
     return signature
 
 
@@ -276,6 +294,52 @@ def read_pca_record(
         'n_components': {
             name: group['n_components'] for name, group in record['groups'].items()
         },
+    }
+
+
+def read_camera_pca_record(
+    video_preds_dir: str | Path,
+    output_name: str,
+    camera: str,
+    eid: str,
+) -> dict[str, Any] | None:
+    """Read the PCA settings of step B for the cameras of a step C run.
+
+    Args:
+        video_preds_dir: directory holding the Lightning Pose prediction csvs.
+        output_name: camera-free `output.output_name`.
+        camera: `session.camera`: `'left'`, `'right'` or `'both'`.
+        eid: session id.
+
+    Returns:
+        `read_pca_record` of the camera for a single camera. For `'both'`: `None` when pca is off
+        for both cameras, otherwise `{'group_set': ..., 'n_components': {'left': {...},
+        'right': {...}}}`.
+
+    Raises:
+        ValueError: for `'both'`, if only one camera has PCA settings or the two used other group
+            sets.
+    """
+    records = {
+        name: read_pca_record(video_preds_dir, output_folder_name(name, output_name), eid)
+        for name in cameras_of(camera)
+    }
+    if camera != CAMERA_BOTH:
+        return records[camera]
+    if all(record is None for record in records.values()):
+        return None
+    missing = [name for name, record in records.items() if record is None]
+    if missing:
+        raise ValueError(
+            f'step B stored pca settings for only one camera (none for {missing}); rerun '
+            'extract_litpose_dynamic_vars_trials for both cameras with the same config',
+        )
+    group_sets = {record['group_set'] for record in records.values()}
+    if len(group_sets) > 1:
+        raise ValueError(f'the cameras of step B used different pca group sets: {group_sets}')
+    return {
+        'group_set': group_sets.pop(),
+        'n_components': {name: record['n_components'] for name, record in records.items()},
     }
 
 
@@ -339,26 +403,27 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
         `anatomical_group` as str (default `all`: the lists hold keypoint names; otherwise a
         group-set key of `body_parts_json`),
         `variant_name` as str (the sorted additional keypoints joined by `_` when the file has
-        none or null), `output_folder` as str (`<camera>_<output_name>`, the folder under
+        none or null; `base_only` when there are none), `output_folder` as str
+        (`<camera>_<output_name>`, with `camera` possibly `both`; the folder under
         `video_preds_dir`), `likelihood_threshold` / `max_masked_frac` as floats (shared by all
         steps; step A and B must have used the same values), `step_order` as str (required; a name from
         `litpose_step_pipelines.json`), `unfiltered_groups` as a list of str (groups exempt from
         confidence filtering, default empty), `filter_group_set` as str, `pca` as bool (derived
         from `step_order`: whether the pipeline has the `2d_pose_pca` step; step B applies it,
         step C checks it), `pca_group_set` as str and `visibility` (`load_visibility_settings`:
-        `None` without a `visibility` section) and `motion_energy` (`load_motion_energy_settings`:
-        `None` without a `motion_energy` section). The actual keypoint source is still
-        `video_preds_dir`.
+        `None` without a `visibility` section) and `one_api` (`load_one_api_trace_settings`:
+        `None` without a `one_api` section). `additional_keypoints` may be empty: only the base is
+        fitted then. The actual keypoint source is still `video_preds_dir`.
 
     Raises:
         ValueError: if the yaml is invalid (see `load_encoding_yaml`: not nested, unknown key,
             removed `pca_n_components*` key), a required key is missing,
             `filter.likelihood_threshold` / `filter.max_masked_frac` is not a number in `[0, 1]`, the camera is unknown, a
-            given `output.variant_name` is not a plain folder name (or is `base`), a keypoint list
-            is empty, `anatomical_group.name` is a group set but `paths.body_parts_json` is
-            missing or does not hold it, a listed name is not a group of it, `pca.enabled` is still
+            given `output.variant_name` is not a plain folder name (or is `base`), the base list
+            is empty or the additional list is not a list, `anatomical_group.name` is a group set
+            but `paths.body_parts_json` is missing or does not hold it, a listed name is not a group of it, `pca.enabled` is still
             in the yaml (removed), `step_order` is missing or an unknown pipeline name, or the
-            `visibility` or `motion_energy` section is invalid.
+            `visibility` or `one_api` section is invalid.
     """
     cfg = load_encoding_yaml(path)
     if eid is not None:
@@ -371,15 +436,17 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
     cfg['likelihood_threshold'], cfg['max_masked_frac'] = validate_filter_settings(
         cfg['likelihood_threshold'], cfg['max_masked_frac'], path,
     )
-    if cfg['camera'] not in CAMERAS:
+    if cfg['camera'] not in ENCODING_CAMERAS:
         raise ValueError(
-            f'{path}: session.camera must be one of {CAMERAS}, got {cfg["camera"]!r}',
+            f'{path}: session.camera must be one of {ENCODING_CAMERAS}, got {cfg["camera"]!r}',
         )
     cfg['output_folder'] = output_folder_name(cfg['camera'], str(cfg['output_name']))
-    for key in ('base_keypoints', 'additional_keypoints'):
-        if not isinstance(cfg[key], list) or not cfg[key]:
+    # an empty additional list is a base-only run
+    for key, allow_empty in (('base_keypoints', False), ('additional_keypoints', True)):
+        if not isinstance(cfg[key], list) or not (cfg[key] or allow_empty):
             raise ValueError(
-                f'{path}: anatomical_group.{key} must be a non-empty list',
+                f'{path}: anatomical_group.{key} must be a '
+                f'{"list" if allow_empty else "non-empty list"}',
             )
         cfg[key] = [str(name) for name in cfg[key]]
     if cfg.get('variant_name') is None:
@@ -405,7 +472,7 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
             'groups up',
         )
     cfg['visibility'] = load_visibility_settings(path)
-    cfg['motion_energy'] = load_motion_energy_settings(path)
+    cfg['one_api'] = load_one_api_trace_settings(path)
     cfg['pca_group_set'] = str(cfg.get('pca_group_set', DEFAULT_PCA_GROUP_SET))
     cfg['anatomical_group'] = str(cfg.get('anatomical_group', ANATOMICAL_GROUP_ALL))
     if cfg['anatomical_group'] != ANATOMICAL_GROUP_ALL:
@@ -415,14 +482,14 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
                 'paths.body_parts_json',
             )
         groups = load_groups(cfg['body_parts_json'], cfg['anatomical_group'])
-        # a motion-energy trace is selected by its name, like a group
-        selectable = set(groups) | set(cfg['motion_energy'] or [])
+        # a one_api trace is selected by its name, like a group
+        selectable = set(groups) | set(cfg['one_api'] or [])
         for key in ('base_keypoints', 'additional_keypoints'):
             unknown = sorted(set(cfg[key]) - selectable)
             if unknown:
                 raise ValueError(
                     f'{path}: anatomical_group.{key} {unknown} are not groups of '
-                    f'{cfg["anatomical_group"]!r} or motion_energy.traces; '
+                    f'{cfg["anatomical_group"]!r} or one_api.behavior_traces; '
                     f'groups: {sorted(groups)}',
                 )
     return cfg
@@ -434,17 +501,17 @@ def expand_selection(
     traces: list[str] | None,
     available: list[str],
 ) -> list[str]:
-    """Resolve group names and motion-energy trace names to feature columns.
+    """Resolve group names and one_api trace names to feature columns.
 
     Args:
         names: `base_keypoints` or `additional_keypoints` of the config in group mode.
         groups: group name -> keypoint name tokens, as from `load_groups`.
-        traces: `motion_energy.traces` of the config, `None` without that section.
+        traces: `one_api.behavior_traces` of the config, `None` without that section.
         available: feature names stored in `dynamic_vars.npz`.
 
     Returns:
-        The columns of the groups (see `expand_groups`) followed by the `<trace>_motion_energy`
-        column of every trace in `names`, in `names` order.
+        The columns of the groups (see `expand_groups`) followed by the column of every trace in
+        `names` (named like the trace), in `names` order.
 
     Raises:
         ValueError: if a group is unknown or has no usable keypoint, or a trace column is not
@@ -455,13 +522,12 @@ def expand_selection(
     for name in names:
         if name not in traces:
             continue
-        feature = motion_energy_feature_name(name)
-        if feature not in available:
+        if name not in available:
             raise ValueError(
-                f'{feature!r} is not in dynamic_vars.npz (features: {available}); rerun '
-                'extract_litpose_dynamic_vars_trials (step 1) with motion_energy.traces set',
+                f'{name!r} is not in dynamic_vars.npz (features: {available}); rerun '
+                'extract_litpose_dynamic_vars_trials (step 1) with it in one_api.behavior_traces',
             )
-        selected.append(feature)
+        selected.append(name)
     return selected
 
 
@@ -619,11 +685,13 @@ def format_summary_table(metrics: dict[str, np.ndarray | float]) -> str:
         metrics: output of `fit_condition` / `load_or_fit_base` merged with `compare_conditions`.
 
     Returns:
-        Multi-line, space-aligned table with one row per condition and model, followed by the
-        `base_plus_additional - base` deltas.
+        Multi-line, space-aligned table with one row per fitted condition and model, followed by
+        the `base_plus_additional - base` deltas when both conditions were fitted.
     """
     rows = [('Condition', 'Model', 'Test BPS', 'Test R2')]
     for cond in _CONDITIONS:
+        if f'{cond}_{_MODELS[0]}_bps' not in metrics:
+            continue
         for model in _MODELS:
             rows.append((
                 cond,
@@ -632,6 +700,8 @@ def format_summary_table(metrics: dict[str, np.ndarray | float]) -> str:
                 f'{metrics[f"{cond}_{model}_r2"]:.4f}',
             ))
     for model in _MODELS:
+        if f'delta_{model}_bps' not in metrics:
+            continue
         rows.append((
             f'delta ({_CONDITIONS[1]} - {_CONDITIONS[0]})',
             model.upper(),
@@ -851,7 +921,9 @@ def main(argv: list[str] | None = None) -> None:
     setup_logging()
     args = parse_args(argv)
     cfg = load_config(args.config, eid=args.eid)
-    pca_record = read_pca_record(cfg['video_preds_dir'], cfg['output_folder'], cfg['eid'])
+    pca_record = read_camera_pca_record(
+        cfg['video_preds_dir'], str(cfg['output_name']), cfg['camera'], cfg['eid'],
+    )
     out_dir, out_reason = resolve_variant_dir(
         cfg['video_preds_dir'],
         cfg['output_folder'],
@@ -886,37 +958,40 @@ def main(argv: list[str] | None = None) -> None:
         file_handler.close()
 
 
-def _run(
+def _load_camera_inputs(
     args: argparse.Namespace,
     cfg: dict[str, Any],
-    out_dir: Path,
-    pca_record: dict[str, Any] | None,
-) -> None:
-    """Body of `main` once the log file handler is attached.
+    camera: str,
+) -> dict[str, Any]:
+    """Load the step A json and step B npz of one camera and check them against the config.
 
     Args:
-        args: parsed command-line arguments.
+        args: parsed command-line arguments (`args.config` is the frozen config).
         cfg: validated config from `load_config`.
-        out_dir: `<video_preds_dir>/<camera>_<output_name>/<eid>/<variant_name>`.
-        pca_record: `read_pca_record` of step B, `None` when pca is off.
+        camera: `'left'` or `'right'`.
+
+    Returns:
+        Dict with `camera`, `dynamic_vars_path`, `keypoint_info` (step A json),
+        `no_filter_keypoints`, `visibility`, `latent` (loaded `dynamic_vars.npz`) and `available`
+        (its feature names).
 
     Raises:
         FileNotFoundError: if `dynamic_vars.npz` or the step A json is missing.
-        ValueError: if the config camera or pca flag differs from `dynamic_vars.npz`, the step A
-            json was written with other filter settings than the config, or the selection is
-            invalid.
+        ValueError: if the step B outputs were built from another camera or with another pca
+            flag than the config implies, or the step A json was written with other filter
+            settings than the config.
     """
     eid = cfg['eid']
     video_preds_dir = Path(cfg['video_preds_dir'])
-    dynamic_vars_path = (
-        session_output_dir(video_preds_dir, cfg['output_folder'], eid) / 'dynamic_vars.npz'
-    )
+    output_folder = output_folder_name(camera, str(cfg['output_name']))
+    session_dir = session_output_dir(video_preds_dir, output_folder, eid)
+    dynamic_vars_path = session_dir / 'dynamic_vars.npz'
     if not dynamic_vars_path.is_file():
         raise FileNotFoundError(
             f'{dynamic_vars_path} not found; run '
             'pose2visual.encoding.extract_litpose_dynamic_vars_trials first',
         )
-    json_path = keypoint_names_json_path(video_preds_dir, cfg['camera'], eid)
+    json_path = keypoint_names_json_path(video_preds_dir, camera, eid)
     with json_path.open(encoding='utf-8') as f:
         keypoint_info = json.load(f)
     no_filter_keypoints = load_unfiltered_keypoints(args.config, keypoint_info['keypoints'])
@@ -932,10 +1007,10 @@ def _run(
     )
 
     latent_data_dict = np.load(dynamic_vars_path)
-    camera = str(latent_data_dict['camera'])
-    if camera != cfg['camera']:
+    stored_camera = str(latent_data_dict['camera'])
+    if stored_camera != camera:
         raise ValueError(
-            f'config camera {cfg["camera"]!r} != camera {camera!r} of {dynamic_vars_path}',
+            f'config camera {cfg["camera"]!r} != camera {stored_camera!r} of {dynamic_vars_path}',
         )
     # an npz from before PCA moved to step B was built without pca
     step_b_pca = bool(latent_data_dict['pca']) if 'pca' in latent_data_dict.files else False
@@ -946,33 +1021,203 @@ def _run(
             'rerun extract_litpose_dynamic_vars_trials (step 1) with this config, or use the '
             'output_name of the matching run',
         )
-    available = [str(name) for name in latent_data_dict['keypoint_names']]
+    return {
+        'camera': camera,
+        'dynamic_vars_path': dynamic_vars_path,
+        'keypoint_info': keypoint_info,
+        'no_filter_keypoints': no_filter_keypoints,
+        'visibility': visibility,
+        'latent': latent_data_dict,
+        'available': [str(name) for name in latent_data_dict['keypoint_names']],
+    }
+
+
+def select_camera_features(
+    cfg: dict[str, Any],
+    groups: dict[str, list[str]] | None,
+    available: list[str],
+    skip_session_traces: bool,
+) -> tuple[list[str], list[str]]:
+    """Resolve `base_keypoints` and `additional_keypoints` against one camera's features.
+
+    Args:
+        cfg: validated config from `load_config`.
+        groups: group name -> keypoint name tokens (`load_groups`), `None` when the lists hold
+            explicit keypoint names.
+        available: feature names stored in this camera's `dynamic_vars.npz`.
+        skip_session_traces: drop the one_api traces that do not depend on the camera
+            (`wheel_speed`, `licks`), because another camera already provides them.
+
+    Returns:
+        Tuple `(base, additional)` of feature names of this camera.
+
+    Raises:
+        ValueError: if a group is unknown or has no usable keypoint, or a trace is missing from
+            `available` (see `expand_selection`).
+    """
+    if groups is None:
+        base = list(cfg['base_keypoints'])
+        additional = list(cfg['additional_keypoints'])
+    else:
+        base = expand_selection(cfg['base_keypoints'], groups, cfg['one_api'], available)
+        additional = expand_selection(
+            cfg['additional_keypoints'], groups, cfg['one_api'], available,
+        )
+    if skip_session_traces:
+        base = [name for name in base if not _is_session_trace(name)]
+        additional = [name for name in additional if not _is_session_trace(name)]
+    return base, additional
+
+
+def _is_session_trace(name: str) -> bool:
+    """Whether a feature is a one_api trace that is the same for both cameras.
+
+    Args:
+        name: feature name.
+
+    Returns:
+        `True` for `wheel_speed` and `licks`.
+    """
+    return name in ONE_API_TRACES and not ONE_API_TRACES[name]
+
+
+def column_names(camera: str, names: list[str], both: bool) -> list[str]:
+    """Name the columns of one camera in the model input.
+
+    Args:
+        camera: `'left'` or `'right'`.
+        names: feature names of that camera.
+        both: whether the model uses both cameras; otherwise the names are kept as they are.
+
+    Returns:
+        `<camera>:<name>` for each name of the two-camera model, except the one_api traces that
+        do not depend on the camera, which keep their plain name.
+    """
+    if not both:
+        return list(names)
+    return [name if _is_session_trace(name) else f'{camera}:{name}' for name in names]
+
+
+def _concat_selected(
+    inputs: list[dict[str, Any]],
+    key: str,
+) -> dict[str, np.ndarray]:
+    """Concatenate the selected columns of all cameras along the feature axis.
+
+    Args:
+        inputs: output of `_load_camera_inputs` per camera, each with the feature names to pick
+            under `key`.
+        key: `'base'` or `'additional'`.
+
+    Returns:
+        Split name -> `[K, T, 1, D]` array, the cameras' columns in camera order.
+    """
+    return {
+        split: np.concatenate(
+            [
+                select_keypoints(
+                    item['latent'][f'{split}_z_trials_time'], item['available'], item[key],
+                )
+                for item in inputs
+            ],
+            axis=-1,
+        )
+        for split in _SPLITS
+    }
+
+
+def _check_cameras_aligned(inputs: list[dict[str, Any]]) -> None:
+    """Check that the step B outputs of the cameras cover the same trials.
+
+    Args:
+        inputs: output of `_load_camera_inputs` per camera.
+
+    Raises:
+        ValueError: if the cameras differ in the intervals of any split.
+    """
+    first = inputs[0]
+    for item in inputs[1:]:
+        for split in _SPLITS:
+            key = f'{split}_intervals'
+            if not np.array_equal(first['latent'][key], item['latent'][key]):
+                raise ValueError(
+                    f'{key} of {item["dynamic_vars_path"]} differs from '
+                    f'{first["dynamic_vars_path"]}; rerun step B for both cameras',
+                )
+
+
+def _run(
+    args: argparse.Namespace,
+    cfg: dict[str, Any],
+    out_dir: Path,
+    pca_record: dict[str, Any] | None,
+) -> None:
+    """Body of `main` once the log file handler is attached.
+
+    Args:
+        args: parsed command-line arguments.
+        cfg: validated config from `load_config`.
+        out_dir: `<video_preds_dir>/<camera>_<output_name>/<eid>/<variant_name>`.
+        pca_record: `read_camera_pca_record` of step B, `None` when pca is off.
+
+    Raises:
+        FileNotFoundError: if `dynamic_vars.npz` or the step A json is missing.
+        ValueError: if the config camera or pca flag differs from `dynamic_vars.npz`, the step A
+            json was written with other filter settings than the config, the cameras of a
+            two-camera run cover different trials, or the selection is invalid.
+    """
+    eid = cfg['eid']
+    video_preds_dir = Path(cfg['video_preds_dir'])
+    both = cfg['camera'] == CAMERA_BOTH
+    inputs = [_load_camera_inputs(args, cfg, camera) for camera in cameras_of(cfg['camera'])]
+    _check_cameras_aligned(inputs)
+
     if cfg['anatomical_group'] == ANATOMICAL_GROUP_ALL:
+        groups = None
         base_groups: list[str] = []
         additional_groups: list[str] = []
-        base = cfg['base_keypoints']
-        additional = cfg['additional_keypoints']
     else:
         groups = load_groups(cfg['body_parts_json'], cfg['anatomical_group'])
         base_groups = cfg['base_keypoints']
         additional_groups = cfg['additional_keypoints']
-        base = expand_selection(base_groups, groups, cfg['motion_energy'], available)
-        additional = expand_selection(additional_groups, groups, cfg['motion_energy'], available)
-        logger.info(f'base groups {base_groups} -> keypoints {base}')
-        logger.info(f'additional groups {additional_groups} -> keypoints {additional}')
-    unused = split_keypoints(base, additional, keypoint_info, available)
+    base: list[str] = []
+    additional: list[str] = []
+    unused: list[str] = []
+    for idx, item in enumerate(inputs):
+        # the traces that do not depend on the camera come from the first camera only
+        item['base'], item['additional'] = select_camera_features(
+            cfg, groups, item['available'], skip_session_traces=idx > 0,
+        )
+        camera = item['camera']
+        if groups is not None:
+            logger.info(f'[{camera}] base groups {base_groups} -> keypoints {item["base"]}')
+            logger.info(
+                f'[{camera}] additional groups {additional_groups} -> keypoints '
+                f'{item["additional"]}',
+            )
+        item['unused'] = split_keypoints(
+            item['base'], item['additional'], item['keypoint_info'], item['available'],
+        )
+        base += column_names(camera, item['base'], both)
+        additional += column_names(camera, item['additional'], both)
+        unused += column_names(camera, item['unused'], both)
+
+    def per_camera(key: str, fn: Any) -> Any:
+        """Value of every camera for the params, or the plain value for a single camera."""
+        values = {item['camera']: fn(item[key]) for item in inputs}
+        return values if both else next(iter(values.values()))
 
     params = {
         'eid': eid,
-        'camera': camera,
+        'camera': cfg['camera'],
         'variant_name': cfg['variant_name'],
         'run_signature': run_signature(cfg, args.seed, pca_record),
         'seed': args.seed,
         'config': str(Path(args.config).resolve()),
-        'model_dir': keypoint_info['model_dir'],
+        'model_dir': per_camera('keypoint_info', lambda info: info['model_dir']),
         'video_preds_dir': str(video_preds_dir),
-        'csv_path': keypoint_info['csv_path'],
-        'dynamic_vars_npz': str(dynamic_vars_path),
+        'csv_path': per_camera('keypoint_info', lambda info: info['csv_path']),
+        'dynamic_vars_npz': per_camera('dynamic_vars_path', str),
         'anatomical_group': cfg['anatomical_group'],
         'base_groups': base_groups,
         'additional_groups': additional_groups,
@@ -981,10 +1226,12 @@ def _run(
         'unused_keypoints': unused,
         'likelihood_threshold': cfg['likelihood_threshold'],
         'max_masked_frac': cfg['max_masked_frac'],
-        'no_filter_keypoints': no_filter_keypoints,
-        'visibility': visibility,
-        'motion_energy': cfg['motion_energy'],
-        'skipped_masked_keypoints': keypoint_info['skipped_masked'],
+        'no_filter_keypoints': per_camera('no_filter_keypoints', list),
+        'visibility': per_camera('visibility', lambda value: value),
+        'one_api': cfg['one_api'],
+        'skipped_masked_keypoints': per_camera(
+            'keypoint_info', lambda info: info['skipped_masked'],
+        ),
         'step_order': cfg['step_order'],
     }
     for key, value in params.items():
@@ -998,22 +1245,25 @@ def _run(
     neural_data_dict = np.load(
         Path(args.neural_input_dir) / eid / f'{eid}_aligned.npz', allow_pickle=True,
     )
-    _maybe_assert_latent_intervals_match_neural(latent_data_dict, neural_data_dict)
-    z_all = {split: latent_data_dict[f'{split}_z_trials_time'] for split in _SPLITS}
-    z_base = {split: select_keypoints(z_all[split], available, base) for split in _SPLITS}
-    z_full = {
-        split: select_keypoints(z_all[split], available, base + additional)
-        for split in _SPLITS
-    }
+    for item in inputs:
+        _maybe_assert_latent_intervals_match_neural(item['latent'], neural_data_dict)
+    z_base = _concat_selected(inputs, 'base')
     check_finite(z_base, 'base')
-    check_finite(z_full, 'base_plus_additional')
+    run_full = bool(additional)
+    if run_full:
+        z_additional = _concat_selected(inputs, 'additional')
+        z_full = {
+            split: np.concatenate([z_base[split], z_additional[split]], axis=-1)
+            for split in _SPLITS
+        }
+        check_finite(z_full, 'base_plus_additional')
     params['pca'] = {'enabled': cfg['pca'], 'group_set': None, 'n_components': None}
     if pca_record is not None:
         params['pca'].update(pca_record)
 
     key = base_cache_key(
         base,
-        camera,
+        cfg['camera'],
         args.seed,
         cfg['likelihood_threshold'],
         z_base,
@@ -1025,7 +1275,7 @@ def _run(
         video_preds_dir, cfg['output_folder'], eid, _short_hash(json.dumps(key, sort_keys=True)),
     )
     params['base_dir'] = str(base_directory)
-    logger.info(f'condition base: {len(base)} keypoints')
+    logger.info(f'condition base: {len(base)} features')
     metrics, predictions, base_status = load_or_fit_base(
         base_directory,
         key,
@@ -1039,25 +1289,28 @@ def _run(
     with (out_dir / 'encoding_params.json').open('w', encoding='utf-8') as f:
         json.dump(params, f, indent=2)
 
-    logger.info(f'condition base_plus_additional: {len(base + additional)} keypoints')
-    metrics_full, predictions_full = fit_condition(
-        'base_plus_additional',
-        eid,
-        z_full,
-        neural_data_dict,
-        str(out_dir / 'ray_tune'),
-        args.seed,
-    )
-    metrics.update(metrics_full)
-    predictions.update(predictions_full)
-    metrics.update(compare_conditions(metrics))
-    for model in _MODELS:
-        logger.info(
-            f'{model.upper()}: delta R2 = {metrics[f"delta_{model}_r2"]:.4f} '
-            f'(improved {metrics[f"frac_neurons_improved_{model}_r2"]:.2%} of neurons), '
-            f'delta BPS = {metrics[f"delta_{model}_bps"]:.4f} '
-            f'(improved {metrics[f"frac_neurons_improved_{model}_bps"]:.2%} of neurons)',
+    if run_full:
+        logger.info(f'condition base_plus_additional: {len(base + additional)} features')
+        metrics_full, predictions_full = fit_condition(
+            'base_plus_additional',
+            eid,
+            z_full,
+            neural_data_dict,
+            str(out_dir / 'ray_tune'),
+            args.seed,
         )
+        metrics.update(metrics_full)
+        predictions.update(predictions_full)
+        metrics.update(compare_conditions(metrics))
+        for model in _MODELS:
+            logger.info(
+                f'{model.upper()}: delta R2 = {metrics[f"delta_{model}_r2"]:.4f} '
+                f'(improved {metrics[f"frac_neurons_improved_{model}_r2"]:.2%} of neurons), '
+                f'delta BPS = {metrics[f"delta_{model}_bps"]:.4f} '
+                f'(improved {metrics[f"frac_neurons_improved_{model}_bps"]:.2%} of neurons)',
+            )
+    else:
+        logger.info('no additional keypoints: only the base condition was fitted')
 
     logger.info(f'Summary (held-out test set):\n{format_summary_table(metrics)}')
 
@@ -1073,7 +1326,7 @@ def _run(
         base_groups=np.asarray(base_groups, dtype=str),
         additional_groups=np.asarray(additional_groups, dtype=str),
         base_keypoints=np.asarray(base),
-        additional_keypoints=np.asarray(additional),
+        additional_keypoints=np.asarray(additional, dtype=str),
         unused_keypoints=np.asarray(unused, dtype=str),
         **metrics,
     )

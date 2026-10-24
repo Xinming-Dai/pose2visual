@@ -10,9 +10,11 @@ session:
   eid: 51e53aff-1d5d-4182-a684-aba783d50ae5
   # sessions of step 1 (extract) and of the plot that step 2 makes once all of them are done; a key
   # of neural_sessions in paths.eid_groups_json, null = none. Not a constraint: --eids / EIDS override
-  eid_group: ear_left
-  # camera whose keypoints are used; must match the one used by extract_litpose_dynamic_vars_trials
-  camera: left
+  eid_group: sable
+  # camera whose keypoints are used by step 2 (left | right | both). `both` fits one model on the
+  # features of both cameras, as the SABLE baseline does; step 1 must have run for both cameras
+  # and the results go to <video_preds_dir>/both_<output_name>/
+  camera: both
 
 paths:
   # <model_dir>/video_preds of the lightning pose checkpoint; its location is recorded in the log.
@@ -44,9 +46,9 @@ visibility:
   likelihood_threshold: 0.7
   groups: [tongue]
 
-# optional: binned IBL motion-energy traces that become extra features. Step 1 copies them 
-motion_energy:
-  traces: [whisker]
+# optional: behavior traces from the ONE API
+one_api:
+  behavior_traces: [whisker_motion_energy, wheel_speed, licks]
 
 # optional: take each body part from the model that predicts it best. Step 0 builds one csv per
 # session and camera in paths.video_preds_dir from these models.
@@ -67,16 +69,22 @@ pca:
 anatomical_group:
   # group set of body_parts.json 
   name: nonoverlapping_analysis_groups_separate_tongue
+  # fitted as the `base` condition (RRR and CNN)
   base_keypoints:
     - nose_pad_related
     - forelimb
     - eye_related
     - ear_related
-  additional_keypoints:
     - mouth_related
-    - whisker
     - tongue
+    - whisker_motion_energy
+    - wheel_speed
+    - licks
     
+  # empty = only the base is fitted (variant folder base_only). List groups here to also fit
+  # base + additional and compare the two (the plots in step 2 need this)
+  additional_keypoints: []
+
 # neural-behavior cross-correlation (pose2visual.xcorr). Filtering, imputation, position columns,
 # visibility features and camera come from the sections above.
 xcorr:

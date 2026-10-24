@@ -16,7 +16,13 @@ REPO=/u/xdai3/project3d/pose2visual/pose2visual
 MODEL_DIR=/work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/E6c-LOO-ibl-headmlp256_3seeds/face+cheese+caz+kondo+hmv+c3d+kauf_train
 SEED_DIRS=(vits_dinov3-seed0 vits_dinov3-seed1 vits_dinov3-seed2)
 SESSION_IDS=(
-    "9b528ad0-4599-4a55-9148-96cc1d93fb24" "51e53aff-1d5d-4182-a684-aba783d50ae5" "b22f694e-4a34-4142-ab9d-2556c3487086"
+    "3e6a97d3-3991-49e2-b346-6948cb4580fb"
+    "4b00df29-3769-43be-bb40-128b1cba6d35"
+    "5dcee0eb-b34d-4652-acc3-d10afc6eae68"
+    "72cb5550-43b4-4ef0-add5-e4adfdfb5e02"
+    "781b35fd-e1f0-4d14-b2bb-95b7263082bb"
+    "ecb5520d-1358-434c-95ec-93687ecd1396"
+    "f312aaec-3b6f-44b3-86b4-3a0c119c0438"
 
 )
 

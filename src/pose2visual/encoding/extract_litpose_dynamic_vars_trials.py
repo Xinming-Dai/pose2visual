@@ -29,11 +29,13 @@ has a likelihood above ``visibility.likelihood_threshold`` (computed on the raw 
 one counts as not visible), 0 otherwise. The bin takes the value of the nearest frame, so it is
 exactly 0 or 1 (no interpolation). The columns come after the speed columns in
 ``keypoint_names`` and no PCA touches them.
-Traces of the yaml's ``motion_energy`` section (e.g. ``whisker``) are not computed from the
-keypoints: the binned IBL motion energy of the camera, already on the spikes' grid, is copied from
-``<eid>_aligned.npz`` (``<split>_<camera>_<trace>_motion_energy``) as the column
-``<trace>_motion_energy``, after the visibility columns. No filtering, interpolation or PCA
-applies.
+Traces of the yaml's ``one_api.behavior_traces`` (``whisker_motion_energy``, ``wheel_speed``,
+``licks``; see ``litpose_keypoints.ONE_API_TRACES``) are not computed from the keypoints: the
+behavior traces loaded from the ONE API, already binned onto the spikes' grid, are copied from
+``<eid>_aligned.npz`` as one column per trace named like the trace, after the visibility columns.
+The whisker motion energy is read for the camera of the run
+(``<split>_<camera>_whisker_motion_energy``); ``wheel_speed`` and ``licks`` do not depend on the
+camera, so both cameras' files hold the same column. No filtering, interpolation or PCA applies.
 ``filter.likelihood_threshold``, ``filter.max_masked_frac`` and the PCA settings come from
 ``--config`` (the nested encoding yaml, shared by all steps). ``step_order`` is required there and
 also decides whether the saved PCA is used, so a missing or unknown ``step_order`` fails before
@@ -90,7 +92,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_filter_settings,
     load_frame_times,
     load_keypoint_csv,
-    load_motion_energy_settings,
+    load_one_api_trace_settings,
     load_output_name,
     load_position_columns,
     load_step_order,
@@ -98,8 +100,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_video_preds_dir,
     load_visibility_features,
     merge_info_path,
-    motion_energy_feature_name,
-    motion_energy_npz_key,
+    one_api_trace_npz_key,
     output_folder_name,
     resolve_session_eids,
     sample_nearest_to_intervals,
@@ -269,13 +270,13 @@ def build_dynamic_vars(
     return out, masked_fraction
 
 
-def append_motion_energy(
+def append_one_api_traces(
     z_trials_time: dict[str, np.ndarray],
     neural_data_dict: Any,
     camera: str,
     traces: list[str],
 ) -> dict[str, np.ndarray]:
-    """Append the binned motion-energy traces of a camera as extra feature columns.
+    """Append the binned ONE-API behavior traces as extra feature columns.
 
     The traces are already binned onto the grid of the spikes in `<eid>_aligned.npz`, so they are
     copied as they are: no filtering, interpolation or PCA.
@@ -283,21 +284,22 @@ def append_motion_energy(
     Args:
         z_trials_time: split name -> `[K_split, n_bins, 1, D]` features from `build_dynamic_vars`.
         neural_data_dict: loaded `<eid>_aligned.npz`.
-        camera: `'left'` or `'right'`, the camera whose traces are used.
-        traces: `motion_energy.traces` of the config; one column each, in this order.
+        camera: `'left'` or `'right'`, the camera whose per-camera traces are used.
+        traces: `one_api.behavior_traces` of the config; one column each, in this order.
 
     Returns:
         Split name -> `[K_split, n_bins, 1, D + len(traces)]` float32 array.
 
     Raises:
-        KeyError: if a trace is missing from `neural_data_dict`.
+        KeyError: if a trace is missing from `neural_data_dict` (for example because
+            `align_data` dropped a behavior with too many NaN trials).
         ValueError: if a trace does not have shape `[K_split, n_bins, 1]`.
     """
     out: dict[str, np.ndarray] = {}
     for split, z in z_trials_time.items():
         columns = []
         for trace in traces:
-            key = motion_energy_npz_key(split, camera, trace)
+            key = one_api_trace_npz_key(split, camera, trace)
             if key not in neural_data_dict:
                 raise KeyError(f'{key} not found in the aligned npz')
             values = np.asarray(neural_data_dict[key], dtype=np.float32)
@@ -423,13 +425,13 @@ def extract_session(
         no_filter_keypoints, visibility, position_columns,
     )
     feature_names = [] if visibility is None else list(visibility['features'])
-    motion_energy = None if config_path is None else load_motion_energy_settings(config_path)
-    if motion_energy is not None:
-        z_trials_time = append_motion_energy(
-            z_trials_time, neural_data_dict, camera, motion_energy,
+    one_api_traces = None if config_path is None else load_one_api_trace_settings(config_path)
+    if one_api_traces is not None:
+        z_trials_time = append_one_api_traces(
+            z_trials_time, neural_data_dict, camera, one_api_traces,
         )
-        feature_names += [motion_energy_feature_name(trace) for trace in motion_energy]
-        logger.info(f'appended {camera} motion-energy traces: {motion_energy}')
+        feature_names += one_api_traces
+        logger.info(f'appended {camera} one_api traces: {one_api_traces}')
     visible_fraction = (
         {}
         if visibility is None
@@ -505,10 +507,10 @@ def extract_session(
         'visibility': (
             None if visibility is None else {**visibility, 'visible_fraction': visible_fraction}
         ),
-        'motion_energy': (
-            None if motion_energy is None else {
-                'traces': motion_energy,
-                'npz_keys': [motion_energy_npz_key('train', camera, t) for t in motion_energy],
+        'one_api_traces': (
+            None if one_api_traces is None else {
+                'traces': one_api_traces,
+                'npz_keys': [one_api_trace_npz_key('train', camera, t) for t in one_api_traces],
             }
         ),
         'masked_fraction': masked_fraction,

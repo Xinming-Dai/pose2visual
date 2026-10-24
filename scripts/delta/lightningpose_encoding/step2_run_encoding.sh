@@ -45,6 +45,18 @@ if [ "$STATUS" -ne 0 ]; then
     exit "$STATUS"
 fi
 
+# the plots compare base with base + additional, so a base-only run (empty additional_keypoints)
+# has nothing to plot
+N_ADDITIONAL="$(PYTHONPATH="${REPO}/src:${PYTHONPATH:-}" python -c "
+import sys
+from pose2visual.encoding.litpose_keypoints import load_encoding_yaml
+print(len(load_encoding_yaml(sys.argv[1]).get('additional_keypoints') or []))
+" "$CONFIG" 2>/dev/null)"
+if [ "${N_ADDITIONAL:-1}" -eq 0 ] && [ -z "${SKIP_PLOT:-}" ]; then
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] No additional_keypoints: base-only run, skipping the base vs additional plots"
+    SKIP_PLOT=1
+fi
+
 # SKIP_PLOT=1 turns all plots off. A failed plot is logged but does not fail the finished encoding.
 if [ -z "${SKIP_PLOT:-}" ]; then
     PLOT_DIR="$REPO/scripts/delta/analysis/encoding_plotting"

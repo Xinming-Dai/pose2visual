@@ -24,7 +24,9 @@ Directory layout under ``video_preds_dir`` (``<model_dir>/video_preds``)::
         joined by ``_``, plus a hash suffix when that folder holds a run with other settings)
 
 ``<camera>_<output_name>`` is built by ``output_folder_name`` from the camera and the yaml's
-camera-free ``output.output_name``.
+camera-free ``output.output_name``. Step C with ``session.camera: both`` reads the step B
+outputs of ``left_<output_name>`` and ``right_<output_name>`` and writes its own results to
+``both_<output_name>``.
 """
 
 import json
@@ -43,16 +45,24 @@ from pose2visual.encoding.litpose_step_pipelines import (
 from pose2visual.lightningpose.fit_eks_latent_model import load_groups
 
 CAMERAS = ('left', 'right')
+# `session.camera` value of step C meaning "one model on the features of both cameras"
+CAMERA_BOTH = 'both'
+ENCODING_CAMERAS = (*CAMERAS, CAMERA_BOTH)
 DEFAULT_PCA_GROUP_SET = 'nonoverlapping_analysis_groups'
 DEFAULT_FILTER_GROUP_SET = 'nonoverlapping_analysis_groups'
 DEFAULT_MERGE_GROUP_SET = 'nonoverlapping_analysis_groups'
 DEFAULT_VISIBILITY_GROUP_SET = 'nonoverlapping_analysis_groups'
 # suffix of the binary feature a `visibility.groups` entry becomes: `tongue` -> `tongue_visible`
 VISIBILITY_SUFFIX = '_visible'
-# `motion_energy.traces` entries, each stored in `<eid>_aligned.npz` as
-# `<split>_<camera>_<trace>_motion_energy` (see `ibl_data_utils._WHISKER_MOTION_ENERGY`)
-MOTION_ENERGY_TRACES = ('whisker',)
-MOTION_ENERGY_SUFFIX = '_motion_energy'
+# `one_api.behavior_traces` entries: behavior traces loaded from the ONE API and binned onto the
+# spikes' grid in `<eid>_aligned.npz` (see `ibl_data_utils.DYNAMIC_VARS`). Value: whether the trace
+# is recorded per camera (key `<split>_<camera>_<trace>`) or once per session (`<split>_<trace>`).
+# The feature column of a trace has the trace's name.
+ONE_API_TRACES = {
+    'whisker_motion_energy': True,
+    'wheel_speed': False,
+    'licks': False,
+}
 # `merge.sources[*].groups` value meaning "every keypoint no other source claims"
 MERGE_REST = 'rest'
 # `position.columns` value -> csv columns holding the keypoint position; `ens_post_mean` is
@@ -89,7 +99,7 @@ ENCODING_YAML_SECTIONS = {
         'likelihood_threshold': 'visibility_likelihood_threshold',
         'groups': 'visibility_groups',
     },
-    'motion_energy': {'traces': 'motion_energy_traces'},
+    'one_api': {'behavior_traces': 'one_api_traces'},
     'anatomical_group': {
         'name': 'anatomical_group',
         'base_keypoints': 'base_keypoints',
@@ -280,6 +290,18 @@ def load_frame_times(
     )
 
 
+def cameras_of(camera: str) -> list[str]:
+    """Cameras whose step B outputs a step C run with `session.camera: <camera>` reads.
+
+    Args:
+        camera: `'left'`, `'right'` or `'both'` (see `CAMERA_BOTH`).
+
+    Returns:
+        `[camera]`, or `['left', 'right']` for `'both'`.
+    """
+    return list(CAMERAS) if camera == CAMERA_BOTH else [camera]
+
+
 def output_folder_name(camera: str, output_name: str) -> str:
     """Name of the folder under ``video_preds_dir`` that holds the results of one camera.
 
@@ -287,7 +309,7 @@ def output_folder_name(camera: str, output_name: str) -> str:
     the camera as prefix, so both cameras of a step B job get their own folder.
 
     Args:
-        camera: `'left'` or `'right'`.
+        camera: `'left'` or `'right'`, or `'both'` for the step C results of the two-camera model.
         output_name: camera-free name from the yaml (`output.output_name`).
 
     Returns:
@@ -440,7 +462,7 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
         `pca_group_set` (`pca.group_set`), `merge_group_set` and `merge_sources` (`merge.*`),
         `position_columns` (`position.columns`),
         `visibility_group_set`, `visibility_likelihood_threshold` and `visibility_groups`
-        (`visibility.*`), `motion_energy_traces` (`motion_energy.traces`),
+        (`visibility.*`), `one_api_traces` (`one_api.behavior_traces`),
         `anatomical_group` (`anatomical_group.name`), `base_keypoints`, `additional_keypoints`,
         `xcorr_*` (the `xcorr` section, see `pose2visual.xcorr.settings`)
         and `pca`. `pca` is not a yaml key: it is derived from `step_order` (True when the named
@@ -844,65 +866,58 @@ def load_visibility_features(
     return {'likelihood_threshold': settings['likelihood_threshold'], 'features': features}
 
 
-def motion_energy_feature_name(trace: str) -> str:
-    """Name of the feature column of a `motion_energy.traces` entry.
-
-    Args:
-        trace: motion-energy trace, e.g. `'whisker'`.
-
-    Returns:
-        The feature name, e.g. `'whisker_motion_energy'`. It starts with the trace name, like a
-        visibility feature starts with its group name.
-    """
-    return f'{trace}{MOTION_ENERGY_SUFFIX}'
-
-
-def motion_energy_npz_key(split: str, camera: str, trace: str) -> str:
-    """Key of a binned motion-energy trace in `<eid>_aligned.npz`.
+def one_api_trace_npz_key(split: str, camera: str, trace: str) -> str:
+    """Key of a binned ONE-API behavior trace in `<eid>_aligned.npz`.
 
     Args:
         split: `'train'`, `'val'` or `'test'`.
-        camera: `'left'` or `'right'`.
-        trace: motion-energy trace, e.g. `'whisker'`.
+        camera: `'left'` or `'right'`; only used by per-camera traces (see `ONE_API_TRACES`).
+        trace: trace name, a key of `ONE_API_TRACES`.
 
     Returns:
-        The key, e.g. `'train_left_whisker_motion_energy'`.
+        The key, e.g. `'train_left_whisker_motion_energy'` for a per-camera trace and
+        `'train_wheel_speed'` for a per-session one.
+
+    Raises:
+        ValueError: if the trace is unknown.
     """
-    return f'{split}_{camera}_{motion_energy_feature_name(trace)}'
+    if trace not in ONE_API_TRACES:
+        raise ValueError(f'unknown one_api trace {trace!r}; available: {list(ONE_API_TRACES)}')
+    return f'{split}_{camera}_{trace}' if ONE_API_TRACES[trace] else f'{split}_{trace}'
 
 
-def load_motion_energy_settings(config_path: str | Path) -> list[str] | None:
-    """Read and validate the optional `motion_energy` section of the encoding yaml.
+def load_one_api_trace_settings(config_path: str | Path) -> list[str] | None:
+    """Read and validate the optional `one_api` section of the encoding yaml.
 
-    Each listed trace becomes one feature column `<trace>_motion_energy` (see
-    `motion_energy_feature_name`) copied by step B from the binned trace of the session's camera
-    in `<eid>_aligned.npz`; no filtering, interpolation or PCA applies to it.
+    Each listed trace becomes one feature column named like the trace (`whisker_motion_energy`,
+    `wheel_speed`, `licks`), copied by step B from the trace binned onto the spikes' grid in
+    `<eid>_aligned.npz`; no filtering, interpolation or PCA applies to it. A per-camera trace is
+    read for the camera of the step B run, the others are the same for both cameras.
 
     Args:
         config_path: path of the encoding yaml.
 
     Returns:
-        `None` when the yaml has no `motion_energy` section, otherwise the traces (duplicates
-        dropped).
+        `None` when the yaml has no `one_api` section, otherwise the traces (duplicates dropped).
 
     Raises:
-        ValueError: if the yaml is invalid (see `load_encoding_yaml`), `motion_energy.traces` is
-            not a non-empty list or holds a trace that is not in `MOTION_ENERGY_TRACES`.
+        ValueError: if the yaml is invalid (see `load_encoding_yaml`), `one_api.behavior_traces`
+            is not a non-empty list or holds a trace that is not in `ONE_API_TRACES`.
     """
     cfg = load_encoding_yaml(config_path)
-    if 'motion_energy_traces' not in cfg:
+    if 'one_api_traces' not in cfg:
         return None
-    traces = cfg['motion_energy_traces']
+    traces = cfg['one_api_traces']
     if not isinstance(traces, list) or not traces or not all(isinstance(t, str) for t in traces):
         raise ValueError(
-            f'{config_path}: motion_energy.traces must be a non-empty list of trace names, '
+            f'{config_path}: one_api.behavior_traces must be a non-empty list of trace names, '
             f'got {traces!r}',
         )
-    unknown = sorted(set(traces) - set(MOTION_ENERGY_TRACES))
+    unknown = sorted(set(traces) - set(ONE_API_TRACES))
     if unknown:
         raise ValueError(
-            f'{config_path}: motion_energy.traces {unknown} are unknown; '
-            f'available: {list(MOTION_ENERGY_TRACES)}',
+            f'{config_path}: one_api.behavior_traces {unknown} are unknown; '
+            f'available: {list(ONE_API_TRACES)}',
         )
     return list(dict.fromkeys(traces))
 

@@ -3,7 +3,7 @@
 #SBATCH -p cpu
 #SBATCH -c 1
 #SBATCH --mem 7G
-#SBATCH -t 0-00:10:00
+#SBATCH -t 0-00:59:00
 #SBATCH -J litpose_list_keypoints
 #SBATCH -o /u/xdai3/project3d/pose2visual/pose2visual/scripts/delta/lightningpose_encoding/step0_list_keypoints_%j.log
 #SBATCH --export=ALL
