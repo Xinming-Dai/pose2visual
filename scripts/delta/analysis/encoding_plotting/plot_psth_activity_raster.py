@@ -337,6 +337,7 @@ def plot_psth_comparison(
     save_path: Path | None = None,
     also_save_pdf: bool = False,
     show: bool = True,
+    colors: tuple[str, str] | None = None,
 ) -> plt.Figure:
     """Draw the PSTH row and the activity-raster row.
 
@@ -355,6 +356,8 @@ def plot_psth_comparison(
         save_path: png path; the figure is not saved when `None`.
         also_save_pdf: also save a pdf next to the png.
         show: show the figure, otherwise close it.
+        colors: colors of the two methods; `None` takes those of `methods` from
+            `CONDITION_PSTH_COLORS`.
 
     Returns:
         The figure.
@@ -362,7 +365,8 @@ def plot_psth_comparison(
     Raises:
         IndexError: if a neuron index or the trial selection is out of range.
     """
-    colors = (CONDITION_PSTH_COLORS[methods[0]], CONDITION_PSTH_COLORS[methods[1]])
+    if colors is None:
+        colors = (CONDITION_PSTH_COLORS[methods[0]], CONDITION_PSTH_COLORS[methods[1]])
     start, stop = trials_idx_to_bounds(gt.shape[0], trials_idx)
     gt = gt[start:stop]
     pred1, pred2 = preds[0][start:stop], preds[1][start:stop]

@@ -110,6 +110,46 @@ def load_wanted_settings(
     return wanted
 
 
+def signature_differences(signature: dict[str, Any], wanted: dict[str, Any]) -> list[str]:
+    """List the settings in which a finished run differs from the wanted run.
+
+    Keypoint lists (group names in group mode) are compared as sets of names, together with the
+    anatomical group; a signature without one is an `all` run. The pca group set only matters
+    when pca is on, and the seed only when `wanted['seed']` is set.
+
+    Args:
+        signature: `run_signature` stored in `encoding_params.json`.
+        wanted: output of `load_wanted_settings`.
+
+    Returns:
+        One short text per differing setting (empty when the run is the wanted one).
+    """
+    differences = []
+    for key in ('base_keypoints', 'additional_keypoints'):
+        if sorted(signature.get(key, [])) != sorted(wanted[key]):
+            differences.append(f'{key} differ')
+    if signature.get('camera') != wanted['camera']:
+        differences.append(f'camera: run {signature.get("camera")!r}, yaml {wanted["camera"]!r}')
+    if signature.get('pca') != wanted['pca']:
+        differences.append(
+            f'pca: run {signature.get("pca")}, yaml {wanted["pca"]} '
+            f'(the yaml\'s step_order {wanted.get("step_order")!r} decides it)',
+        )
+    run_group = signature.get('anatomical_group', _ANATOMICAL_GROUP_ALL)
+    if run_group != wanted['anatomical_group']:
+        differences.append(
+            f'anatomical_group: run {run_group!r}, yaml {wanted["anatomical_group"]!r}',
+        )
+    if wanted['pca'] and signature.get('pca_group_set') != wanted['pca_group_set']:
+        differences.append(
+            f'pca_group_set: run {signature.get("pca_group_set")!r}, '
+            f'yaml {wanted["pca_group_set"]!r}',
+        )
+    if wanted['seed'] is not None and signature.get('seed') != wanted['seed']:
+        differences.append(f'seed: run {signature.get("seed")}, wanted {wanted["seed"]}')
+    return differences
+
+
 def signature_matches(signature: dict[str, Any], wanted: dict[str, Any]) -> bool:
     """Whether the `run_signature` of a finished run is the wanted run.
 
@@ -124,16 +164,7 @@ def signature_matches(signature: dict[str, Any], wanted: dict[str, Any]) -> bool
     Returns:
         `True` if camera, keypoints, anatomical group, pca settings (and seed) agree.
     """
-    for key in ('base_keypoints', 'additional_keypoints'):
-        if sorted(signature.get(key, [])) != sorted(wanted[key]):
-            return False
-    if signature.get('camera') != wanted['camera'] or signature.get('pca') != wanted['pca']:
-        return False
-    if signature.get('anatomical_group', _ANATOMICAL_GROUP_ALL) != wanted['anatomical_group']:
-        return False
-    if wanted['pca'] and signature.get('pca_group_set') != wanted['pca_group_set']:
-        return False
-    return wanted['seed'] is None or signature.get('seed') == wanted['seed']
+    return not signature_differences(signature, wanted)
 
 
 def find_variant_dir(session_dir: Path, wanted: dict[str, Any]) -> Path:
@@ -147,11 +178,13 @@ def find_variant_dir(session_dir: Path, wanted: dict[str, Any]) -> Path:
         The variant folder holding `encoding_result.npz`.
 
     Raises:
-        FileNotFoundError: if no variant matches, or the matching one has no
-            `encoding_result.npz` yet (the run is unfinished or failed).
+        FileNotFoundError: if no variant matches (the message says how each existing variant
+            differs from the yaml), or the matching one has no `encoding_result.npz` yet (the run
+            is unfinished or failed).
         ValueError: if more than one variant matches.
     """
     matches = []
+    mismatched = []
     for params_path in sorted(session_dir.glob('*/encoding_params.json')):
         try:
             with params_path.open(encoding='utf-8') as f:
@@ -159,10 +192,24 @@ def find_variant_dir(session_dir: Path, wanted: dict[str, Any]) -> Path:
         except (OSError, ValueError):
             continue
         # results from before run_signature existed cannot be identified
-        if isinstance(signature, dict) and signature_matches(signature, wanted):
+        if not isinstance(signature, dict):
+            continue
+        differences = signature_differences(signature, wanted)
+        if differences:
+            mismatched.append(f'{params_path.parent.name}: {"; ".join(differences)}')
+        else:
             matches.append(params_path.parent)
     if not matches:
-        raise FileNotFoundError(f'{session_dir}: no variant matches the wanted settings')
+        found = (
+            f'; existing variants differ from the yaml in: {" | ".join(mismatched)}'
+            if mismatched else (
+                '; the folder holds no variant with a run_signature' if session_dir.is_dir()
+                else '; the folder does not exist, so the session was not run'
+            )
+        )
+        raise FileNotFoundError(
+            f'{session_dir}: no variant matches the wanted settings{found}',
+        )
     if len(matches) > 1:
         raise ValueError(
             f'{session_dir}: {len(matches)} variants match the wanted settings: '

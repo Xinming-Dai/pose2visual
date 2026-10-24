@@ -24,31 +24,42 @@ pipeline averaged its own number. The stored R^2 is reported as it is.
 The figures follow the SABLE ``encoding_barplot``: ``bps_bars.png`` is one panel with a pair of
 bars per method (RRR dark, CNN lightened) holding the mean per-neuron BPS pooled over the
 sessions, with the standard error over the pooled neurons; ``bps_scatter.png`` is one panel with
-the per-neuron BPS of "Dense keypoints" on x and of every other method on y (one encoder,
+the per-neuron BPS of every other method on x and of "Dense keypoints" on y (one encoder,
 ``--scatter-encoder``).
 
-A session that lacks the litpose run or the result of any selected method is skipped with a
-warning, so every method is pooled over the same sessions. Every result file is about 230 MB, so
-run this on a compute node. Loading them needs the numpy version they were saved with (the
-``beast`` conda env).
+A session that lacks the litpose run or the ``keypoints`` result is skipped with a warning. A
+method without results for the compared sessions is dropped with a warning, so every method is
+pooled over the same sessions: with only ``keypoints`` in the results folder, just the Sparse vs
+Dense keypoints figures are made. Every result file is about 230 MB, so run this on a compute
+node. Loading them needs the numpy version they were saved with (the ``beast`` conda env).
 
 Usage::
 
     PYTHONPATH=src python scripts/delta/lightningpose_encoding/compare_with_sable_baseline.py \\
       --config configs/encoding/litpose_encoding.yaml --no-show
 
-Without ``--eids`` the sessions are the ``sable`` group of ``paths.eid_groups_json``. Outputs
+The sessions are ``--eids``, else the group ``--eid-group`` of ``paths.eid_groups_json``, else the
+``session.eid_group`` of ``--config`` (the ``sable`` group when the yaml has none). Outputs
 ``comparison.json``, ``comparison.csv`` (one row per session, method and encoder),
 ``comparison_pooled.csv`` (one row per method and encoder), ``bps_bars.png`` and
-``bps_scatter.png`` in ``--output-dir`` (default: the ``plots/compare_with_sable_baseline`` folder
-of the run).
+``bps_scatter.png`` in ``--output-dir`` (default: the ``plots/compare_with_sable_baseline_<group>``
+folder of the run, so another session group does not overwrite it). The same two figures that
+hold only "Sparse keypoints" (the ``keypoints`` method) and "Dense keypoints" are saved as
+``bps_bars_keypoints_vs_dense_keypoints.png`` and
+``bps_scatter_keypoints_vs_dense_keypoints.png``, plus one PSTH / raster figure per session,
+``psth_activity_raster_keypoints_vs_dense_keypoints.<eid>.png`` (the figure
+``step2_run_encoding.sh`` makes for base vs base + additional, with "Sparse keypoints" and "Dense
+keypoints" in their place; ``--psth-encoder`` picks the encoder). All three are skipped when
+``keypoints`` is not in ``--methods``.
 """
 
 import argparse
 import csv
+import importlib.util
 import json
 import logging
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import matplotlib.colors as mcolors
@@ -59,6 +70,7 @@ import numpy as np
 from pose2visual.encoding.litpose_keypoints import (
     load_encoding_yaml,
     resolve_group_eids,
+    resolve_session_eids,
     session_output_dir,
 )
 from pose2visual.encoding.litpose_results import (
@@ -81,7 +93,7 @@ DEFAULT_EID_GROUP = 'sable'
 # DEFAULT_METHODS / DEFAULT_METHOD_LABELS / ENCODING_BASE_COLORS in the SABLE `plot_helpers.py`
 METHODS = {
     'random_baseline': ('Random', '#616161'),
-    'keypoints': ('Keypoints', '#F8766D'),
+    'keypoints': ('Sparse keypoints', '#F8766D'),
     'pca': ('PCA', '#7FCDBB'),
     'resnet': ('ResNet AE', '#4DAF4A'),
     'beast': ('BEAST', '#9E9E9E'),
@@ -91,6 +103,21 @@ METHODS = {
 LITPOSE = 'litpose'
 LITPOSE_LABEL = 'Dense keypoints'
 LITPOSE_COLOR = '#4E79A7'
+# method of the extra figures that compare only it with "Dense keypoints"
+PAIRWISE_METHOD = 'keypoints'
+# colors of those figures: a grey a little darker than the light grey of the PSTH figure of
+# `step2_run_encoding.sh` (0.75) for "Sparse keypoints", and the orange of that figure for "Dense
+# keypoints". The all-methods figures keep `METHODS` / `LITPOSE_COLOR`, where this grey would be
+# close to BEAST and the orange would be the one of SABLE.
+PAIRWISE_COLORS = {PAIRWISE_METHOD: '#999999', LITPOSE: '#F28E2B'}
+# the PSTH / raster plot that `step2_run_encoding.sh` makes, reused for the pairwise PSTH figures
+PSTH_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / 'analysis' / 'encoding_plotting' / 'plot_psth_activity_raster.py'
+)
+# up to this many bar groups the bar legend names every method and encoder (the bar colors tell the
+# methods apart); with more it only says which shade is RRR and which is CNN
+MAX_GROUPS_FOR_FULL_LEGEND = 2
 # same floor as the encoders use before taking the log of the predicted rates
 BPS_RATE_THRESHOLD = 1e-3
 
@@ -117,7 +144,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--eids',
         nargs='+',
         default=None,
-        help=f'sessions to compare (default: the {DEFAULT_EID_GROUP!r} group of the config)',
+        help='sessions to compare (default: the sessions of --eid-group)',
+    )
+    parser.add_argument(
+        '--eid-group',
+        type=str,
+        default=None,
+        help='named group of paths.eid_groups_json to compare (default: session.eid_group of the '
+        f'config, else {DEFAULT_EID_GROUP!r})',
     )
     parser.add_argument(
         '--results-dir',
@@ -146,6 +180,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help='encoder shown in the scatter plot (default: %(default)s)',
     )
     parser.add_argument(
+        '--psth-encoder',
+        choices=MODELS,
+        default='cnn',
+        help='encoder shown in the Sparse vs Dense keypoints PSTH plots (default: %(default)s)',
+    )
+    parser.add_argument(
         '--output-dir',
         type=Path,
         default=None,
@@ -167,15 +207,18 @@ def method_label(name: str) -> str:
     return LITPOSE_LABEL if name == LITPOSE else METHODS[name][0]
 
 
-def method_color(name: str) -> str:
+def method_color(name: str, colors: dict[str, str] | None = None) -> str:
     """Base color of a method in the figures.
 
     Args:
         name: key of `METHODS`, or `LITPOSE`.
+        colors: colors that replace the default ones, name -> hex color.
 
     Returns:
         Hex color, the one used for the RRR bar.
     """
+    if colors and name in colors:
+        return colors[name]
     return LITPOSE_COLOR if name == LITPOSE else METHODS[name][1]
 
 
@@ -353,6 +396,7 @@ def compare_session(
     methods: list[str],
     variant_path: Path,
     condition: str,
+    keep_encoder: str | None = None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Score the litpose run and every method of one session, for both encoders.
 
@@ -362,6 +406,9 @@ def compare_session(
         methods: keys of `METHODS` to compare.
         variant_path: finished litpose variant folder of the session.
         condition: litpose condition to compare.
+        keep_encoder: `'rrr'`, `'cnn'` or `None`. For this encoder the test spikes and predicted
+            rates (float32) of the litpose run and of `PAIRWISE_METHOD` are kept in the entries
+            as `gt` and `pred`, for the PSTH plots (`plot_pairwise_psth`).
 
     Returns:
         Name (`LITPOSE` or a method) -> encoder -> dict with `bps` (per neuron), `mean_bps`,
@@ -379,6 +426,9 @@ def compare_session(
     out: dict[str, dict[str, dict[str, Any]]] = {
         LITPOSE: {model: _score(eid, LITPOSE, model, litpose[model]) for model in MODELS},
     }
+    if keep_encoder is not None:
+        out[LITPOSE][keep_encoder]['gt'] = litpose[keep_encoder]['gt'].astype(np.float32)
+        out[LITPOSE][keep_encoder]['pred'] = litpose[keep_encoder]['pred'].astype(np.float32)
     for method in methods:
         loaded = load_method_results(files[method], eid)
         out[method] = {}
@@ -391,6 +441,8 @@ def compare_session(
             finite = delta[np.isfinite(delta)]
             entry['delta_mean_bps'] = out[LITPOSE][model]['mean_bps'] - entry['mean_bps']
             entry['frac_improved'] = float(np.mean(finite > 0)) if finite.size else float('nan')
+            if method == PAIRWISE_METHOD and model == keep_encoder:
+                entry['pred'] = loaded[model]['pred'].astype(np.float32)
             out[method][model] = entry
         # drop the 230 MB of this method before the next file is read
         del loaded
@@ -525,14 +577,20 @@ def plot_bars(
     methods: list[str],
     save_path: Path,
     show: bool,
+    colors: dict[str, str] | None = None,
 ) -> plt.Figure:
     """One panel with a pair of bars (RRR dark, CNN lightened) per method and "Dense keypoints".
+
+    The legend names every bar (for example `Sparse keypoints (RRR)`) when only one method is
+    compared with "Dense keypoints", and otherwise only says which shade is RRR and which is CNN,
+    because the methods are named on the x axis.
 
     Args:
         results: eid -> output of `compare_session`.
         methods: keys of `METHODS` in plot order; "Dense keypoints" comes last.
         save_path: png path.
         show: show the figure, otherwise close it.
+        colors: colors that replace the default ones, name -> hex color (see `method_color`).
 
     Returns:
         The figure.
@@ -540,17 +598,20 @@ def plot_bars(
     names = [*methods, LITPOSE]
     positions = np.arange(len(names))
     width = 0.38
-    fig, ax = plt.subplots(figsize=(max(4.0, 1.2 * len(names) + 1.5), 4.0))
+    # the full legend sits beside the axes, so the figure gets the width for it
+    legend_width = 2.5 if len(names) <= MAX_GROUPS_FOR_FULL_LEGEND else 0.0
+    fig, ax = plt.subplots(figsize=(max(4.0, 1.2 * len(names) + 1.5) + legend_width, 4.0))
     for idx_model, model in enumerate(MODELS):
         offset = (idx_model - (len(MODELS) - 1) / 2) * width
         stats = [pooled_stats(results, name, model) for name in names]
-        colors = [
-            method_color(name) if model == 'rrr' else lightened_hex(method_color(name))
+        bar_colors = [
+            method_color(name, colors) if model == 'rrr'
+            else lightened_hex(method_color(name, colors))
             for name in names
         ]
         means = np.array([entry['mean'] for entry in stats])
         errors = np.array([entry['se'] for entry in stats])
-        ax.bar(positions + offset, means, width, yerr=errors, color=colors, capsize=2)
+        ax.bar(positions + offset, means, width, yerr=errors, color=bar_colors, capsize=2)
         for position, mean, error in zip(positions + offset, means, errors):
             ax.text(
                 position, mean + error, f'{mean:.3f}',
@@ -560,13 +621,28 @@ def plot_bars(
     ax.set_xticklabels([method_label(name) for name in names], rotation=30, ha='right')
     ax.set_ylabel('mean test BPS')
     ax.set_title(f'Test BPS pooled over {len(results)} session(s)')
-    ax.legend(
-        handles=[
-            mpatches.Patch(color='#595959', label='RRR'),
-            mpatches.Patch(color=lightened_hex('#595959'), label='CNN'),
-        ],
-        frameon=False,
-    )
+    if len(names) <= MAX_GROUPS_FOR_FULL_LEGEND:
+        # one entry per bar, in the color of the bar, beside the axes so it never covers a bar
+        handles = [
+            mpatches.Patch(
+                color=(
+                    method_color(name, colors) if model == 'rrr'
+                    else lightened_hex(method_color(name, colors))
+                ),
+                label=f'{method_label(name)} ({model.upper()})',
+            )
+            for name in names
+            for model in MODELS
+        ]
+        ax.legend(handles=handles, frameon=False, loc='upper left', bbox_to_anchor=(1.02, 1.0))
+    else:
+        ax.legend(
+            handles=[
+                mpatches.Patch(color='#595959', label='RRR (dark)'),
+                mpatches.Patch(color=lightened_hex('#595959'), label='CNN (light)'),
+            ],
+            frameon=False,
+        )
     _finish_figure(fig, save_path, show)
     return fig
 
@@ -577,12 +653,13 @@ def plot_scatter(
     encoder: str,
     save_path: Path,
     show: bool,
+    colors: dict[str, str] | None = None,
 ) -> plt.Figure:
-    """One panel scattering every method's per-neuron BPS against "Dense keypoints".
+    """One panel scattering "Dense keypoints" per-neuron BPS (y) against every method's (x).
 
     Neurons of all sessions are pooled; a neuron with a NaN BPS in either method is left out of
-    that method's points. Points above the diagonal are neurons where the method beats "Dense
-    keypoints".
+    that method's points. Points above the diagonal are neurons where "Dense keypoints" beats the
+    method.
 
     Args:
         results: eid -> output of `compare_session`.
@@ -590,15 +667,16 @@ def plot_scatter(
         encoder: `'rrr'` or `'cnn'`, the encoder shown.
         save_path: png path.
         show: show the figure, otherwise close it.
+        colors: colors that replace the default ones, name -> hex color (see `method_color`).
 
     Returns:
         The figure.
     """
-    x_all = np.concatenate([session[LITPOSE][encoder]['bps'] for session in results.values()])
+    y_all = np.concatenate([session[LITPOSE][encoder]['bps'] for session in results.values()])
     fig, ax = plt.subplots(figsize=(5.0, 5.0))
     high = 0.0
     for method in methods:
-        y_all = np.concatenate([session[method][encoder]['bps'] for session in results.values()])
+        x_all = np.concatenate([session[method][encoder]['bps'] for session in results.values()])
         keep = np.isfinite(x_all) & np.isfinite(y_all)
         if not keep.any():
             continue
@@ -607,73 +685,271 @@ def plot_scatter(
             y_all[keep],
             s=5,
             alpha=0.25,
-            color=method_color(method),
+            color=method_color(method, colors),
             edgecolors='none',
             rasterized=True,
-            label=f'{method_label(method)} ({np.mean(y_all[keep]):.3f})',
+            label=f'{method_label(method)} ({np.mean(x_all[keep]):.3f})',
         )
         high = max(high, float(np.max(y_all[keep])), float(np.max(x_all[keep])))
     ax.plot([0, high], [0, high], linestyle='--', color='0.55', linewidth=1.0, zorder=0)
-    ax.set_xlabel(
-        f'{LITPOSE_LABEL} BPS ({encoder.upper()}, mean {np.nanmean(x_all):.3f})',
+    x_name = method_label(methods[0]) if len(methods) == 1 else 'method'
+    ax.set_xlabel(f'{x_name} BPS ({encoder.upper()})')
+    ax.set_ylabel(
+        f'{LITPOSE_LABEL} BPS ({encoder.upper()}, mean {np.nanmean(y_all):.3f})',
     )
-    ax.set_ylabel(f'method BPS ({encoder.upper()})')
     ax.set_title(f'Per-neuron test BPS, {len(results)} session(s)')
     ax.legend(frameon=False, fontsize='small', markerscale=3, title='method (mean BPS)')
     _finish_figure(fig, save_path, show)
     return fig
 
 
-def select_eids(args: argparse.Namespace) -> list[str]:
-    """Sessions to compare: `--eids`, else the default group of the config's eid groups file.
+def plot_pairwise(
+    results: dict[str, dict[str, dict[str, dict[str, Any]]]],
+    methods: list[str],
+    encoder: str,
+    output_dir: Path,
+    show: bool,
+) -> list[Path]:
+    """Save the bar and scatter plot that compare only `Sparse keypoints` with "Dense keypoints".
+
+    Args:
+        results: eid -> output of `compare_session`.
+        methods: the methods that were compared; nothing is drawn without `PAIRWISE_METHOD`.
+        encoder: `'rrr'` or `'cnn'`, the encoder of the scatter plot.
+        output_dir: folder to write into.
+        show: show the figures, otherwise close them.
+
+    Returns:
+        The saved png paths, empty when `PAIRWISE_METHOD` is not among `methods`.
+    """
+    if PAIRWISE_METHOD not in methods:
+        logger.warning(
+            f'{PAIRWISE_METHOD!r} is not among the methods: no Sparse vs Dense keypoints plots',
+        )
+        return []
+    bars_path = output_dir / 'bps_bars_keypoints_vs_dense_keypoints.png'
+    scatter_path = output_dir / 'bps_scatter_keypoints_vs_dense_keypoints.png'
+    plot_bars(results, [PAIRWISE_METHOD], bars_path, show=show, colors=PAIRWISE_COLORS)
+    plot_scatter(
+        results, [PAIRWISE_METHOD], encoder, scatter_path, show=show, colors=PAIRWISE_COLORS,
+    )
+    return [bars_path, scatter_path]
+
+
+def load_psth_module() -> ModuleType:
+    """Import the PSTH / raster plot script of `step2_run_encoding.sh` by its path.
+
+    The script is not part of a package, so it cannot be imported by name.
+
+    Returns:
+        The loaded `plot_psth_activity_raster` module.
+    """
+    spec = importlib.util.spec_from_file_location('plot_psth_activity_raster', PSTH_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def plot_pairwise_psth(
+    results: dict[str, dict[str, dict[str, dict[str, Any]]]],
+    methods: list[str],
+    encoder: str,
+    output_dir: Path,
+    show: bool,
+) -> list[Path]:
+    """Save, per session, the PSTH / raster figure of `Sparse keypoints` vs "Dense keypoints".
+
+    It is the figure `plot_psth_activity_raster.py` makes for base vs base + additional, with the
+    "Sparse keypoints" predictions in place of the base (grey, a little darker than there) and
+    "Dense keypoints" in place of the alternative (orange, as there); the colors are
+    `PAIRWISE_COLORS`. It shows the trial-averaged firing rate of the ground truth and both
+    predictions for the neurons with the highest "Dense keypoints" BPS, and the activity raster of
+    the first of them.
+
+    Args:
+        results: eid -> output of `compare_session`, made with `keep_encoder=encoder`.
+        methods: the methods that were compared; nothing is drawn without `PAIRWISE_METHOD`.
+        encoder: `'rrr'` or `'cnn'`, the encoder shown.
+        output_dir: folder to write into.
+        show: show the figures, otherwise close them.
+
+    Returns:
+        The saved png paths, one per session; empty when `PAIRWISE_METHOD` is not in `methods`.
+
+    Raises:
+        ValueError: if `results` was made without `keep_encoder=encoder`, or a session has no
+            neuron with a finite "Dense keypoints" BPS.
+    """
+    if PAIRWISE_METHOD not in methods:
+        logger.warning(
+            f'{PAIRWISE_METHOD!r} is not among the methods: no Sparse vs Dense PSTH plots',
+        )
+        return []
+    psth = load_psth_module()
+    saved = []
+    for eid, session in results.items():
+        dense = session[LITPOSE][encoder]
+        keypoints = session[PAIRWISE_METHOD][encoder]
+        if 'pred' not in dense or 'pred' not in keypoints:
+            raise ValueError(
+                f'{eid}: the predictions of the {encoder} encoder were not kept; run '
+                f'compare_session with keep_encoder={encoder!r}',
+            )
+        neuron_indices = psth.top_neurons(dense['bps'], psth.DEFAULT_N_NEURONS)
+        if not neuron_indices:
+            raise ValueError(f'{eid}: no neuron has a finite {LITPOSE_LABEL} BPS')
+        # the eid is set off by periods from the rest of the name
+        save_path = output_dir / f'psth_activity_raster_keypoints_vs_dense_keypoints.{eid}.png'
+        psth.plot_psth_comparison(
+            dense['gt'],
+            (keypoints['pred'], dense['pred']),
+            (keypoints['bps'], dense['bps']),
+            # names only select default colors, which `colors` below replaces
+            ('base', 'base_plus_additional'),
+            neuron_indices,
+            (method_label(PAIRWISE_METHOD), LITPOSE_LABEL),
+            save_path=save_path,
+            show=show,
+            colors=(PAIRWISE_COLORS[PAIRWISE_METHOD], PAIRWISE_COLORS[LITPOSE]),
+        )
+        logger.info(f'{eid}: PSTH neurons {neuron_indices} -> {save_path}')
+        saved.append(save_path)
+    return saved
+
+
+def select_eids(args: argparse.Namespace) -> tuple[list[str], str | None]:
+    """Sessions to compare: `--eids`, else `--eid-group`, else the config's `session.eid_group`.
+
+    Without any of them the `DEFAULT_EID_GROUP` of the config's eid groups file is used.
 
     Args:
         args: parsed command-line arguments.
 
     Returns:
-        The session ids.
+        Tuple `(eids, group)`; `group` is the name of the group the sessions came from, `None`
+        for explicit `--eids`.
 
     Raises:
-        ValueError: if no `--eids` are given and the config has no `paths.eid_groups_json`.
+        ValueError: if both `--eids` and `--eid-group` are given, a group is unknown, or no
+            sessions are given and the config has no `paths.eid_groups_json`.
     """
-    if args.eids:
-        return list(dict.fromkeys(args.eids))
-    eid_groups_json = load_encoding_yaml(args.config).get('eid_groups_json')
+    eids = resolve_session_eids(args.config, args.eids, args.eid_group, None)
+    config = load_encoding_yaml(args.config)
+    if eids is not None:
+        group = None if args.eids else args.eid_group or config.get('eid_group')
+        return eids, group
+    eid_groups_json = config.get('eid_groups_json')
     if eid_groups_json is None:
         raise ValueError(f'{args.config}: no paths.eid_groups_json; pass --eids')
-    return resolve_group_eids(eid_groups_json, DEFAULT_EID_GROUP)
+    return resolve_group_eids(eid_groups_json, DEFAULT_EID_GROUP), DEFAULT_EID_GROUP
+
+
+def select_sessions_and_methods(
+    eids: list[str],
+    results_dir: Path,
+    methods: list[str],
+) -> tuple[list[str], list[str]]:
+    """Pick the sessions and methods that can be compared with the litpose run.
+
+    A method counts as available for a session when its result file exists. `PAIRWISE_METHOD`
+    (`Sparse keypoints`) decides the sessions: they are the ones that have its result. Without it
+    among `methods`, the sessions are those that have the result of every method. A method that is
+    missing for any of these sessions is dropped (with a warning), so every method kept is pooled
+    over the same sessions; a results folder with only `keypoints` therefore still gives the
+    Sparse vs Dense keypoints comparison.
+
+    Args:
+        eids: sessions that have a finished litpose run.
+        results_dir: folder holding `<method>/<eid>/encoding_results*.npy`.
+        methods: keys of `METHODS` requested, in plot order.
+
+    Returns:
+        Tuple `(sessions, kept_methods)`, both in their input order.
+
+    Raises:
+        RuntimeError: if no session is left.
+        ValueError: if a method has several result files for one session.
+    """
+    have: dict[str, set[str]] = {}
+    for method in methods:
+        have[method] = set()
+        for eid in eids:
+            try:
+                find_method_file(results_dir, method, eid)
+            except FileNotFoundError:
+                continue
+            have[method].add(eid)
+    anchors = [PAIRWISE_METHOD] if PAIRWISE_METHOD in methods else methods
+    available = set(eids)
+    for method in anchors:
+        available &= have[method]
+    sessions = [eid for eid in eids if eid in available]
+    if not sessions:
+        raise RuntimeError(
+            'no session has both a finished litpose run and the result of '
+            f'{" and ".join(method_label(method) for method in anchors)}',
+        )
+    for eid in eids:
+        if eid not in available:
+            logger.warning(f'{eid} skipped: no result of {anchors} in {results_dir}')
+    kept = [method for method in methods if have[method] >= set(sessions)]
+    for method in methods:
+        if method not in kept:
+            missing = [eid for eid in sessions if eid not in have[method]]
+            logger.warning(
+                f'{method_label(method)} dropped: no result for {len(missing)} of '
+                f'{len(sessions)} sessions in {results_dir / method}',
+            )
+    return sessions, kept
 
 
 def main(argv: list[str] | None = None) -> None:
     """Compare the litpose encoding with the SABLE methods and write the tables and figures.
 
+    Methods without results for the compared sessions are dropped with a warning. When only
+    `keypoints` is left, just the Sparse vs Dense keypoints figures are drawn, because the
+    all-methods ones would show the same two bars.
+
     Args:
         argv: argument list; `None` uses `sys.argv`.
 
     Raises:
-        RuntimeError: if no session has both a finished litpose run and the result of every method.
+        RuntimeError: if no session has both a finished litpose run and the result of
+            `Sparse keypoints` (of every method when `keypoints` is not requested).
         ValueError: if a session was scored on a different test set by a method.
     """
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     args = parse_args(argv)
-    methods = list(dict.fromkeys(args.methods))
     wanted = load_wanted_settings(args.config)
-    results: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
-    for eid in select_eids(args):
+    variants: dict[str, Path] = {}
+    all_eids, group = select_eids(args)
+    logger.info(f'sessions of {group or "--eids"}: {all_eids}')
+    for eid in all_eids:
         session_dir = session_output_dir(
             wanted['video_preds_dir'], wanted['output_folder'], eid,
         )
         try:
-            variant_path = find_variant_dir(session_dir, wanted)
+            variants[eid] = find_variant_dir(session_dir, wanted)
+        except FileNotFoundError as exc:
+            logger.warning(f'{eid} skipped: {exc}')
+    sessions, methods = select_sessions_and_methods(
+        list(variants), args.results_dir, list(dict.fromkeys(args.methods)),
+    )
+    results: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
+    for eid in sessions:
+        try:
             results[eid] = compare_session(
-                eid, args.results_dir, methods, variant_path, args.condition,
+                eid, args.results_dir, methods, variants[eid], args.condition,
+                keep_encoder=args.psth_encoder,
             )
         except (FileNotFoundError, KeyError) as exc:
             logger.warning(f'{eid} skipped: {exc}')
     if not results:
-        raise RuntimeError(
-            'no session has both a finished litpose run and the result of every method',
-        )
+        raise RuntimeError('no session could be compared; see the warnings above')
+    logger.info(
+        f'comparing {len(results)} session(s) and the methods '
+        f'{[method_label(method) for method in methods]}',
+    )
 
     names = [LITPOSE, *methods]
     pooled = pooled_rows(results, names)
@@ -682,19 +958,30 @@ def main(argv: list[str] | None = None) -> None:
             f'{row["label"]} {row["model"].upper()}: mean BPS {row["mean"]:.4f} +- '
             f'{row["se"]:.4f} ({row["n_neurons"]} neurons, {row["n_sessions"]} sessions)',
         )
+    # one folder per session group, so a run on another group does not overwrite the figures
+    folder_name = 'compare_with_sable_baseline' + (f'_{group}' if group else '')
     output_dir = args.output_dir or (
-        Path(wanted['video_preds_dir'])
-        / wanted['output_folder']
-        / 'plots'
-        / 'compare_with_sable_baseline'
+        Path(wanted['video_preds_dir']) / wanted['output_folder'] / 'plots' / folder_name
     )
     write_tables(summary_rows(results, names), pooled, output_dir)
     if args.no_show:
         plt.switch_backend('Agg')
-    plot_bars(results, methods, output_dir / 'bps_bars.png', show=not args.no_show)
-    plot_scatter(
-        results, methods, args.scatter_encoder, output_dir / 'bps_scatter.png',
-        show=not args.no_show,
+    if methods == [PAIRWISE_METHOD]:
+        logger.info(
+            f'only {method_label(PAIRWISE_METHOD)} has results: drawing just the Sparse vs Dense '
+            'keypoints figures',
+        )
+    else:
+        plot_bars(results, methods, output_dir / 'bps_bars.png', show=not args.no_show)
+        plot_scatter(
+            results, methods, args.scatter_encoder, output_dir / 'bps_scatter.png',
+            show=not args.no_show,
+        )
+    plot_pairwise(
+        results, methods, args.scatter_encoder, output_dir, show=not args.no_show,
+    )
+    plot_pairwise_psth(
+        results, methods, args.psth_encoder, output_dir, show=not args.no_show,
     )
     logger.info(f'wrote the comparison to {output_dir}')
 
