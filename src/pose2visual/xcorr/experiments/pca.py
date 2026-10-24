@@ -1,9 +1,10 @@
 """Experiment B: PCA of the face group; left/right paw keypoints pass through unchanged.
 
 Question: can the many near-correlated face keypoints (eye, pupil, mouth, upperlip, lowerlip,
-tongue, nose, pad, ear -- both sides pooled together) be summarized by a couple of principal
+nose, pad, ear -- both sides pooled together) be summarized by a couple of principal
 components, and do those components already carry the neuron relationship the baseline sees in
-the individual keypoints?
+the individual keypoints? The tongue is not included: its keypoints are replaced by the binary
+``tongue_visible`` feature (yaml ``visibility`` section), so no tongue position enters the fit.
 
 Starting from the keypoint coordinates (not from the derived speeds), the face keypoints of a
 camera are stacked into one ``[n_frames, 2 * n_face_keypoints]`` matrix and projected onto their
@@ -178,6 +179,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--plots-subdir', type=str, default=None,
         help='figure folder inside experiment_B_pca (default: New York time); the neuron order is '
         'appended, e.g. <name>_rastermap.',
+    )
+    parser.add_argument(
+        '--no-depth-plot', action='store_true',
+        help='do not also draw the figures in probe-depth order into <plots-subdir>_depth.',
     )
     parser.add_argument(
         '--no-plot', action='store_true',
@@ -402,7 +407,7 @@ def explanation_text(report: dict[str, Any]) -> str:
     lines = [
         f'# Experiment B: PCA ({report["eid"]})',
         '',
-        '**Face** (eye, pupil, mouth, upperlip, lowerlip, tongue, nose, pad, ear; both sides '
+        '**Face** (eye, pupil, mouth, upperlip, lowerlip, nose, pad, ear; both sides '
         'pooled into one fit): PCA on x/y positions. The component scores are new behaviors '
         '(`face_pcK_position`); the positions reprojected onto the same components give a '
         "denoised speed per keypoint, kept under the keypoint's own name. **Left/right paw** "
@@ -449,6 +454,7 @@ def run_session(
     plots_subdir: str | None = None,
     skip_plot: bool = False,
     n_jobs: int = 1,
+    depth_plot: bool = True,
 ) -> dict[str, Path | None]:
     """Run Experiment B on one session.
 
@@ -467,10 +473,12 @@ def run_session(
         skip_plot: compute and save only, draw no figures; redraw them later with
             `pose2visual.xcorr.experiments.replot_pca`.
         n_jobs: cameras processed in parallel for the original xcorr.
+        depth_plot: also draw the figures in probe-depth order into `<plots_subdir>_depth`
+            (skipped when the first order is already depth, or when `skip_plot` is `True`).
 
     Returns:
         Dict of the written paths: `speed_arrays`, `position_arrays`, `summary`, `groups`,
-        `groups_md` and `plots` (`None` when `skip_plot` is `True`).
+        `groups_md`, `plots` and `plots_depth` (each `None` when not drawn).
 
     Raises:
         FileNotFoundError: if step 0 is missing.
@@ -587,20 +595,32 @@ def run_session(
     groups_md_path.write_text(explanation_text(report), encoding='utf-8')
 
     plots_dir = None
+    plots_dir_depth = None
     if not skip_plot:
-        idx_order, order_label = resolve_order(
-            config_path, eid, 'saved', base['neuron_ids'], base['neuron_depths'],
-        )
-        plots_dir = out_dir / order_subdir(plots_subdir, order_label)
-        plot_results(
-            plots_dir, eid, lags_sec, cams, names, groups_out, valid, r_original,
-            r_speed_pca_masked, idx_order, order_label, vmax, position_names,
-            r_position_pca, valid_position, pca_applied, summary, camera_report,
-        )
+        plots_stem = plots_subdir or timestamp_subdir()
+        orders = ['saved', 'depth'] if depth_plot else ['saved']
+        drawn: set[str] = set()
+        for order in orders:
+            idx_order, order_label = resolve_order(
+                config_path, eid, order, base['neuron_ids'], base['neuron_depths'],
+            )
+            if order_label in drawn:
+                continue  # the saved order already was depth
+            drawn.add(order_label)
+            this_dir = out_dir / order_subdir(plots_stem, order_label)
+            plot_results(
+                this_dir, eid, lags_sec, cams, names, groups_out, valid, r_original,
+                r_speed_pca_masked, idx_order, order_label, vmax, position_names,
+                r_position_pca, valid_position, pca_applied, summary, camera_report,
+            )
+            if order == 'saved':
+                plots_dir = this_dir
+            else:
+                plots_dir_depth = this_dir
     return {
         'speed_arrays': speed_arrays_path, 'position_arrays': position_arrays_path,
         'summary': summary_path, 'groups': groups_path, 'groups_md': groups_md_path,
-        'plots': plots_dir,
+        'plots': plots_dir, 'plots_depth': plots_dir_depth,
     }
 
 
@@ -770,7 +790,7 @@ def main(argv: list[str] | None = None) -> None:
                 paths = run_session(
                     config, eid, args.video_timestamps_dir, args.cameras, args.exclude,
                     args.n_components, args.min_valid_fraction, args.vmax, plots_subdir,
-                    args.no_plot, args.n_jobs,
+                    args.no_plot, args.n_jobs, not args.no_depth_plot,
                 )
                 logger.info(f'wrote {[str(p) for p in paths.values()]}')
             except Exception as error:  # noqa: BLE001 - one session must not stop the others

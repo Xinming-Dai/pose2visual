@@ -8,11 +8,12 @@ used for their figures. They ask whether the similar xcorr patterns of ear, eye,
 keypoints come from shared motion:
 
 * ``pca`` (Experiment B, ``experiment_B_pca/``): PCA of the face group (eye, pupil, mouth,
-  upperlip, lowerlip, tongue, nose, pad, ear; both sides pooled into one fit); the top component
+  upperlip, lowerlip, nose, pad, ear; both sides pooled into one fit); the top component
   scores become new behaviors ("PCA on positions") and the face positions reprojected onto those
   same components give a denoised per-keypoint speed ("PCA on speed"). ``left_paw`` / ``right_paw``
   (``wrist``, ``d1``-``d4`` by side) and any keypoint matching neither keep their original speed
-  unchanged.
+  unchanged. The tongue is not part of the fit: it is the binary ``tongue_visible`` feature, not
+  keypoint positions.
 * ``relative_motion`` (Experiment C, ``experiment_C_relative_motion/``): subtract the centroid of
   each anatomical group with two or more keypoints from the keypoint coordinates, recompute the
   speed and the xcorrs, and compare with the original speed. Groups with a single keypoint

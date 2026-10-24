@@ -232,6 +232,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         'neuron order is appended, e.g. <name>_rastermap.',
     )
     parser.add_argument(
+        '--no-depth-plot', action='store_true',
+        help='do not also draw the figures in probe-depth order into <plots-subdir>_depth.',
+    )
+    parser.add_argument(
         '--no-plot', action='store_true',
         help='compute and save the arrays/csv/json only, draw no figures; redraw them later '
         'with pose2visual.xcorr.experiments.replot_relative_motion.',
@@ -779,6 +783,7 @@ def run_session(
     plots_subdir: str | None = None,
     skip_plot: bool = False,
     n_jobs: int = 1,
+    depth_plot: bool = True,
 ) -> dict[str, Path | None]:
     """Run Experiment C on one session.
 
@@ -798,6 +803,8 @@ def run_session(
         skip_plot: compute and save only, draw no figures; redraw them later with
             `pose2visual.xcorr.experiments.replot_relative_motion`.
         n_jobs: cameras processed in parallel for the original xcorr.
+        depth_plot: also draw the figures in probe-depth order into `<plots_subdir>_depth`
+            (skipped when the first order is already depth, or when `skip_plot` is `True`).
 
     Returns:
         Dict of the written paths: `arrays`, `summary`, `groups`, `groups_md` and `plots`
@@ -932,19 +939,31 @@ def run_session(
         pickle.dump(centroids, f)
 
     plots_dir = None
+    plots_dir_depth = None
     if not skip_plot:
-        idx_order, order_label = resolve_order(
-            config_path, eid, 'saved', base['neuron_ids'], base['neuron_depths'],
-        )
-        plots_dir = out_dir / order_subdir(plots_subdir, order_label)
-        plot_results(
-            plots_dir, eid, lags_sec, cams, names, groups, valid, r_original, r_relative,
-            idx_order, order_label, vmax, corrected, no_centroid, summary, group_rows,
-            centroids,
-        )
+        plots_stem = plots_subdir or timestamp_subdir()
+        orders = ['saved', 'depth'] if depth_plot else ['saved']
+        drawn: set[str] = set()
+        for order in orders:
+            idx_order, order_label = resolve_order(
+                config_path, eid, order, base['neuron_ids'], base['neuron_depths'],
+            )
+            if order_label in drawn:
+                continue  # the saved order already was depth
+            drawn.add(order_label)
+            this_dir = out_dir / order_subdir(plots_stem, order_label)
+            plot_results(
+                this_dir, eid, lags_sec, cams, names, groups, valid, r_original, r_relative,
+                idx_order, order_label, vmax, corrected, no_centroid, summary, group_rows,
+                centroids,
+            )
+            if order == 'saved':
+                plots_dir = this_dir
+            else:
+                plots_dir_depth = this_dir
     return {
         'arrays': arrays_path, 'summary': summary_path, 'groups': groups_path,
-        'groups_md': groups_md_path, 'plots': plots_dir,
+        'groups_md': groups_md_path, 'plots': plots_dir, 'plots_depth': plots_dir_depth,
     }
 
 
@@ -1120,7 +1139,7 @@ def main(argv: list[str] | None = None) -> None:
                 paths = run_session(
                     config, eid, args.video_timestamps_dir, args.cameras, args.exclude,
                     args.no_centroid_groups, args.min_valid_fraction, args.vmax, plots_subdir,
-                    args.no_plot, args.n_jobs,
+                    args.no_plot, args.n_jobs, not args.no_depth_plot,
                 )
                 logger.info(f'wrote {[str(p) for p in paths.values()]}')
             except Exception as error:  # noqa: BLE001 - one session must not stop the others

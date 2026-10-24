@@ -3,7 +3,7 @@
 #SBATCH -p cpu
 #SBATCH -c 2
 #SBATCH --mem 12G
-#SBATCH -t 0-04:00:00
+#SBATCH -t 0-00:59:00
 #SBATCH -J xcorr_compute
 #SBATCH -o /u/xdai3/project3d/pose2visual/pose2visual/scripts/delta/lightningpose_xcorr/step1_compute_xcorr_%j.log
 #SBATCH --export=ALL
@@ -19,9 +19,9 @@ conda activate beast
 cd "$REPO"
 
 # Step 1: the xcorr computations for one session (needs step0_extract_neural.sh and
-# lightningpose_encoding/step0_list_keypoints.sh for every camera). B and C draw no figures --
-# run step2_plot_xcorr.sh afterwards; A draws its heatmap (with PETH strips). session.camera
-# is not read.
+# lightningpose_encoding/step0_list_keypoints.sh for every camera). A, B and C draw their figures
+# in both neuron orders (the heatmap of A carries PETH strips), so step2_plot_xcorr.sh is only
+# needed to redraw them (another colour scale, cameras, ...). session.camera is not read.
 #
 # --exp selects what runs (default all; a comma list such as B,C is allowed). Each experiment
 # writes its own subfolder of <video_preds_dir>/xcorr/<eid>/ (step-0 inputs stay in that folder):
@@ -30,9 +30,10 @@ cd "$REPO"
 #      the reward / movement-onset strips -> experiment_A_baseline/<time>_<order>/ (e.g.
 #      <time>_rastermap), plus the same heatmap with neurons in depth order ->
 #      experiment_A_baseline/<time>_depth/
-#   B  PCA of the face group (pose2visual.xcorr.experiments.pca --no-plot) -> experiment_B_pca/
-#   C  relative motion (pose2visual.xcorr.experiments.relative_motion --no-plot)
-#      -> experiment_C_relative_motion/
+#   B  PCA of the face group (pose2visual.xcorr.experiments.pca) -> experiment_B_pca/<time>_<order>/
+#      and the same figures in depth order -> experiment_B_pca/<time>_depth/
+#   C  relative motion (pose2visual.xcorr.experiments.relative_motion)
+#      -> experiment_C_relative_motion/<time>_<order>/ and <time>_depth/
 # A, B and C are independent: B and C recompute the original speed xcorrs they compare against
 # (same code and settings as A), so they need only step 0 and can run as parallel jobs:
 #   for exp in A B C; do sbatch scripts/delta/lightningpose_xcorr/step1_compute_xcorr.sh --exp $exp <eid>; done
@@ -50,8 +51,8 @@ cd "$REPO"
 #                       finger keypoints d1_tip_left ... d4_tip_right); EXCLUDE= keeps everything
 #   ORDER               A: neuron order of the heatmap: rastermap (needs
 #                       `pip install rastermap`), depth or none
-#   SKIP_DEPTH_ORDER    A: set to 1 to skip the extra depth-order heatmap (<time>_depth/); it is
-#                       never drawn twice when ORDER=depth
+#   SKIP_DEPTH_ORDER    A / B / C: set to 1 to skip the extra depth-order figures (<time>_depth/);
+#                       they are never drawn twice when the first order is already depth
 #   N_PERMUTATIONS      A: circular-shift permutations of the significance test (default: the
 #                       yaml's xcorr.n_permutations = 0 = no test; e.g. 1000 adds p / q values)
 #   N_COMPONENTS        B: number of principal components to keep for the face group (default 2)
@@ -106,7 +107,8 @@ if [ -n "$RUN_B" ]; then
         ${EXCLUDE_LIST[@]:+--exclude "${EXCLUDE_LIST[@]}"} \
         --n-jobs "${SLURM_CPUS_PER_TASK:-2}" \
         ${N_COMPONENTS:+--n-components "$N_COMPONENTS"} \
-        ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"}
+        ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"} \
+        ${SKIP_DEPTH_ORDER:+--no-depth-plot}
     STATUS_B=$?
     if [ "$STATUS_B" -ne 0 ]; then
         echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiment B (pca) failed (exit $STATUS_B); rerun it with --exp B." >&2
@@ -125,7 +127,8 @@ if [ -n "$RUN_C" ]; then
         ${EXCLUDE_LIST[@]:+--exclude "${EXCLUDE_LIST[@]}"} \
         --n-jobs "${SLURM_CPUS_PER_TASK:-2}" \
         --no-centroid-groups "${NO_CENTROID_LIST[@]}" \
-        ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"}
+        ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"} \
+        ${SKIP_DEPTH_ORDER:+--no-depth-plot}
     STATUS_C=$?
     if [ "$STATUS_C" -ne 0 ]; then
         echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiment C (relative motion) failed (exit $STATUS_C); rerun it with --exp C." >&2

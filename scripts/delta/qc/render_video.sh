@@ -18,9 +18,9 @@ cd "$REPO"
 CONFIG="${CONFIG:-configs/encoding/litpose_encoding.yaml}"
 EKS_DIR=/work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/mm_ibl_ear/20261013_173251_n_20261014_141544
 SESSION_IDS=(
-    "9b528ad0-4599-4a55-9148-96cc1d93fb24"
-    # "51e53aff-1d5d-4182-a684-aba783d50ae5"
-    # "b22f694e-4a34-4142-ab9d-2556c3487086"
+    # "4b00df29-3769-43be-bb40-128b1cba6d35"
+    "72cb5550-43b4-4ef0-add5-e4adfdfb5e02"
+    # "781b35fd-e1f0-4d14-b2bb-95b7263082bb"
 )
 
 echo "[$(date +'%Y-%m-%d %H:%M:%S')] qc video for sessions: ${SESSION_IDS[*]}"
