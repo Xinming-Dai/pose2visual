@@ -50,6 +50,7 @@ from pose2visual.encoding.litpose_keypoints import (
     pca_config_json_path,
     pca_dir_path,
     pca_positions_csv_path,
+    run_parallel,
     write_keypoint_csv,
 )
 from pose2visual.encoding.litpose_pca import load_pca_n_components, reproject_keypoints
@@ -279,6 +280,7 @@ def save_pca_sessions(
     items: list[tuple[str, str, dict[str, Any]]],
     video_preds_dir: str | Path,
     video_timestamps_dir: str | Path,
+    n_jobs: int = 1,
 ) -> None:
     """Save the PCA of every session and camera, as set by the yaml's `step_order`.
 
@@ -291,10 +293,11 @@ def save_pca_sessions(
             `keypoint_info` the step A json content.
         video_preds_dir: directory holding the Lightning Pose prediction csvs.
         video_timestamps_dir: directory containing `_ibl_{left,right}Camera.times.<eid>.npy`.
+        n_jobs: number of session/camera csvs processed in parallel processes.
 
     Raises:
         ValueError: if the yaml or the `PCA_n_components` of its `paths.body_parts_json` are
-            invalid.
+            invalid, or `n_jobs` is below 1.
         RuntimeError: after all runs, if any session/camera failed; the message lists them.
     """
     pca = resolve_pca(config_path)
@@ -304,16 +307,24 @@ def save_pca_sessions(
     out_dir = pca_dir_path(video_preds_dir, pca['group_set'])
     logger.info(f'PCA of group set {pca["group_set"]} -> {out_dir}')
     failures: list[str] = []
-    for camera, eid, keypoint_info in items:
-        logger.info(f'[{eid} {camera}] PCA')
-        try:
-            save_pca_session(
-                config_path, camera, eid, keypoint_info, pca, video_preds_dir,
-                video_timestamps_dir,
-            )
-        except Exception as exc:  # keep going; failures are reported below
-            logger.exception(f'[{eid} {camera}] PCA failed')
-            failures.append(f'{eid}/{camera}: {type(exc).__name__}: {exc}')
+    jobs = [
+        {
+            'config_path': config_path,
+            'camera': camera,
+            'eid': eid,
+            'keypoint_info': keypoint_info,
+            'pca': pca,
+            'video_preds_dir': video_preds_dir,
+            'video_timestamps_dir': video_timestamps_dir,
+        }
+        for camera, eid, keypoint_info in items
+    ]
+    for (camera, eid, _), (_, error) in zip(
+        items, run_parallel(save_pca_session, jobs, n_jobs), strict=True,
+    ):
+        if error is not None:  # keep going; failures are reported below
+            logger.error(f'[{eid} {camera}] PCA failed', exc_info=error)
+            failures.append(f'{eid}/{camera}: {type(error).__name__}: {error}')
     logger.info(f'PCA saved for {len(items) - len(failures)}/{len(items)} session/camera csvs')
     if failures:
         raise RuntimeError(f'{len(failures)} of {len(items)} PCAs failed:\n' + '\n'.join(failures))

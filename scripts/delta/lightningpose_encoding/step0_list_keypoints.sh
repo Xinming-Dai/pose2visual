@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH -A bfsr-delta-cpu
 #SBATCH -p cpu
-#SBATCH -c 1
-#SBATCH --mem 7G
-#SBATCH -t 0-00:59:00
+#SBATCH -c 3
+#SBATCH --mem 20G
+#SBATCH -t 0-00:20:00
 #SBATCH -J litpose_list_keypoints
 #SBATCH -o /u/xdai3/project3d/pose2visual/pose2visual/scripts/delta/lightningpose_encoding/step0_list_keypoints_%j.log
 #SBATCH --export=ALL
@@ -11,6 +11,8 @@
 exec 2>&1
 source ~/.bashrc
 conda activate beast
+
+export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 
 REPO="/u/xdai3/project3d/pose2visual/pose2visual"
 cd "$REPO"
@@ -37,6 +39,8 @@ elif [ -n "${EIDS:-}" ]; then
     SESSION_ARGS+=(--eids "${EID_LIST[@]}")
 fi
 
+N_JOBS="${N_JOBS:-${SLURM_CPUS_PER_TASK:-1}}"
+
 OVERRIDE_ARGS=()
 if [ -n "${VIDEO_PREDS_DIR:-}" ]; then
     OVERRIDE_ARGS+=(--video-preds-dir "$VIDEO_PREDS_DIR")
@@ -59,6 +63,7 @@ echo "pca group set (from CONFIG): $(grep -E '^ +group_set:' "$CONFIG" || echo '
 PYTHONPATH="${REPO}/src:${PYTHONPATH:-}" python -m pose2visual.encoding.list_litpose_keypoints \
     --config "$CONFIG" \
     --video-timestamps-dir "/work/hdd/bfsr/xdai3/IBL-2view/timestamps" \
+    --n-jobs "$N_JOBS" \
     "${SESSION_ARGS[@]}" \
     "${OVERRIDE_ARGS[@]}"
 STATUS=$?

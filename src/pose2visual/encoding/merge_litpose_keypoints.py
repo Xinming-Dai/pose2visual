@@ -47,6 +47,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_video_preds_dir,
     merge_info_path,
     resolve_session_eids,
+    run_parallel,
     write_keypoint_csv,
 )
 from pose2visual.lightningpose.fit_eks_latent_model import load_groups
@@ -102,6 +103,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--force',
         action='store_true',
         help='rebuild merged csvs even when an up-to-date one exists',
+    )
+    parser.add_argument(
+        '--n-jobs',
+        type=int,
+        default=1,
+        help='session/camera csvs merged in parallel processes (default: 1)',
     )
     return parser.parse_args(argv)
 
@@ -292,11 +299,50 @@ def merged_csv_is_current(
     return all(path.is_file() and path.stat().st_mtime <= out_mtime for path in source_paths)
 
 
+def _merge_job(
+    eid: str,
+    camera: str,
+    source_dirs: list[str],
+    groups_per_source: list[list[str] | str],
+    groups: dict[str, list[str]],
+    output_dir: str | Path,
+    settings: dict[str, Any],
+    previous_info: dict[str, Any],
+    force: bool,
+) -> list[list[str]] | None:
+    """Merge one session and camera unless its merged csv is up to date.
+
+    Runs in a worker process of `merge_sessions`; it does not touch `merge_info.json`, which the
+    parent writes once.
+
+    Args:
+        eid: session id.
+        camera: `'left'` or `'right'`.
+        source_dirs: `video_preds` directories of the models, one per source.
+        groups_per_source: for each source, a list of group names or `'rest'`.
+        groups: group name -> tokens, as from `load_groups`.
+        output_dir: directory the merged csv is written to.
+        settings: output of `load_merge_settings`.
+        previous_info: content of the previous `merge_info.json` (empty if none).
+        force: rebuild even if an up-to-date merged csv exists.
+
+    Returns:
+        The keypoints each source contributed, or `None` if the csv was up to date and skipped.
+    """
+    if not force and merged_csv_is_current(
+        eid, camera, source_dirs, output_dir, settings, previous_info,
+    ):
+        logger.info(f'{camera} {eid}: merged csv is up to date, skipping')
+        return None
+    return merge_session(eid, camera, source_dirs, groups_per_source, groups, output_dir)
+
+
 def merge_sessions(
     config_path: str | Path,
     eids: list[str],
     cameras: list[str],
     force: bool = False,
+    n_jobs: int = 1,
 ) -> None:
     """Merge the prediction csvs of every session and camera, as set by the yaml's `merge`.
 
@@ -308,10 +354,11 @@ def merge_sessions(
         eids: session ids to merge.
         cameras: cameras to merge, each `'left'` or `'right'`.
         force: rebuild every merged csv even if an up-to-date one exists.
+        n_jobs: number of session/camera csvs merged in parallel processes.
 
     Raises:
         ValueError: if the yaml has no `merge.sources` (see `load_merge_settings`), its group set
-            is missing from `paths.body_parts_json`, or a group is unknown.
+            is missing from `paths.body_parts_json`, a group is unknown, or `n_jobs` is below 1.
         RuntimeError: after all runs, if any session/camera failed; the message lists them.
     """
     settings = load_merge_settings(config_path)
@@ -330,21 +377,31 @@ def merge_sessions(
     sessions: dict[str, list[list[str]]] = {}
     failures: list[str] = []
     n_skipped = 0
-    for eid in eids:
-        for camera in cameras:
-            if not force and merged_csv_is_current(
-                eid, camera, source_dirs, output_dir, settings, previous_info,
-            ):
-                logger.info(f'{camera} {eid}: merged csv is up to date, skipping')
-                n_skipped += 1
-                continue
-            try:
-                sessions[f'{camera}_{eid}'] = merge_session(
-                    eid, camera, source_dirs, groups_per_source, groups, output_dir,
-                )
-            except Exception as exc:  # keep going; failures are reported below
-                logger.exception(f'[{eid} {camera}] failed')
-                failures.append(f'{eid}/{camera}: {type(exc).__name__}: {exc}')
+    keys = [(eid, camera) for eid in eids for camera in cameras]
+    jobs = [
+        {
+            'eid': eid,
+            'camera': camera,
+            'source_dirs': source_dirs,
+            'groups_per_source': groups_per_source,
+            'groups': groups,
+            'output_dir': output_dir,
+            'settings': settings,
+            'previous_info': previous_info,
+            'force': force,
+        }
+        for eid, camera in keys
+    ]
+    for (eid, camera), (selected, error) in zip(
+        keys, run_parallel(_merge_job, jobs, n_jobs), strict=True,
+    ):
+        if error is not None:  # keep going; failures are reported below
+            logger.error(f'[{eid} {camera}] failed', exc_info=error)
+            failures.append(f'{eid}/{camera}: {type(error).__name__}: {error}')
+        elif selected is None:
+            n_skipped += 1
+        else:
+            sessions[f'{camera}_{eid}'] = selected
     if sessions:
         logger.info(f'wrote {write_merge_info(output_dir, settings, sessions)}')
     n_total = len(eids) * len(cameras)
@@ -379,7 +436,9 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError(
             f'no sessions: pass --eids or --eid-group, or set session.eid_group in {args.config}',
         )
-    merge_sessions(args.config, eids, list(dict.fromkeys(args.cameras)), args.force)
+    merge_sessions(
+        args.config, eids, list(dict.fromkeys(args.cameras)), args.force, args.n_jobs,
+    )
 
 
 if __name__ == '__main__':

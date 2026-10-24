@@ -31,6 +31,8 @@ outputs of ``left_<output_name>`` and ``right_<output_name>`` and writes its own
 
 import json
 import re
+from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -1634,3 +1636,46 @@ def visibility_features_from_df(
         )
         for feature, members in visibility['features'].items()
     }
+
+
+def run_parallel(
+    func: Callable[..., Any],
+    jobs: list[dict[str, Any]],
+    n_jobs: int = 1,
+) -> list[tuple[Any, Exception | None]]:
+    """Call `func(**job)` for every job, in parallel processes when `n_jobs > 1`.
+
+    A failing job does not stop the others: its exception is returned instead of raised, so the
+    caller can log it and report all failures at the end. A worker killed by the OS (e.g. out of
+    memory) breaks the pool and is reported as an exception on every job not yet finished.
+
+    Args:
+        func: module-level function (it is pickled for the workers).
+        jobs: keyword arguments of each call; they must be picklable when `n_jobs > 1`.
+        n_jobs: number of worker processes; 1 runs inline.
+
+    Returns:
+        `(result, exception)` per job, in the order of `jobs`; exactly one of the two is `None`.
+
+    Raises:
+        ValueError: if `n_jobs` is below 1.
+    """
+    if n_jobs < 1:
+        raise ValueError(f'n_jobs must be at least 1, got {n_jobs}')
+    outcomes: list[tuple[Any, Exception | None]] = []
+    workers = min(n_jobs, len(jobs))
+    if workers <= 1:
+        for job in jobs:
+            try:
+                outcomes.append((func(**job), None))
+            except Exception as exc:  # reported by the caller
+                outcomes.append((None, exc))
+        return outcomes
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(func, **job) for job in jobs]
+        for future in futures:
+            try:
+                outcomes.append((future.result(), None))
+            except Exception as exc:  # reported by the caller
+                outcomes.append((None, exc))
+    return outcomes

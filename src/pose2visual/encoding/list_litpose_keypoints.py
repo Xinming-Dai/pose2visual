@@ -53,7 +53,10 @@ Usage::
       --config configs/encoding/litpose_encoding.yaml \\
       [--video-preds-dir <model_dir>/video_preds] [--likelihood-threshold 0.9] \\
       [--max-masked-frac 0.3] [--eids <eid1> <eid2> | --eid-group sable] [--cameras left right] \\
-      [--video-timestamps-dir <dir>]
+      [--video-timestamps-dir <dir>] [--n-jobs 8]
+
+``--n-jobs`` runs the merge, the listing and the PCA of the session/camera csvs in that many
+parallel processes (each holds one csv in memory); the default 1 runs everything inline.
 """
 
 import argparse
@@ -77,6 +80,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_video_preds_dir,
     load_visibility_features,
     resolve_session_eids,
+    run_parallel,
     validate_filter_settings,
     visibility_features_from_df,
 )
@@ -167,6 +171,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--force-merge',
         action='store_true',
         help='rebuild the merged csvs even when up-to-date ones exist (merge section only)',
+    )
+    parser.add_argument(
+        '--n-jobs',
+        type=int,
+        default=1,
+        help='session/camera csvs merged, listed and PCA-processed in parallel processes '
+        '(default: 1, inline); each process holds one csv in memory',
     )
     return parser.parse_args(argv)
 
@@ -283,6 +294,47 @@ def build_keypoint_info(
     }
 
 
+def _list_job(
+    camera: str,
+    eid: str,
+    csv_path: Path,
+    video_preds_dir: Path,
+    likelihood_threshold: float,
+    max_masked_frac: float,
+    config_path: str,
+) -> dict:
+    """Summarize one prediction csv and write its keypoint-names json.
+
+    Runs in a worker process of `main`.
+
+    Args:
+        camera: `'left'` or `'right'`.
+        eid: session id.
+        csv_path: path of the csv.
+        video_preds_dir: directory the `encoding/keypoint_names` folder is written under.
+        likelihood_threshold: frames below this likelihood count as masked.
+        max_masked_frac: keypoints with a larger masked fraction are not usable.
+        config_path: encoding yaml (see `build_keypoint_info`).
+
+    Returns:
+        The dict written to the json (see `build_keypoint_info`).
+    """
+    info = build_keypoint_info(
+        csv_path, camera, eid, likelihood_threshold, max_masked_frac, config_path,
+    )
+    json_path = keypoint_names_json_path(video_preds_dir, camera, eid)
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    with json_path.open('w', encoding='utf-8') as f:
+        json.dump(info, f, indent=2)
+    logger.info(
+        f'{camera} {eid}: {len(info["usable"])}/{len(info["keypoints"])} usable keypoints, '
+        f'unusable: {info["unusable"]}, without confidence filtering: '
+        f'{info["no_filter_keypoints"]}, visible fraction: {info["visible_fraction"]} '
+        f'-> {json_path}',
+    )
+    return info
+
+
 def main(argv: list[str] | None = None) -> None:
     """Write one keypoint-names json per selected prediction csv in a `video_preds` directory.
 
@@ -356,6 +408,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         merge_sessions(
             args.config, selected_eids, list(dict.fromkeys(args.cameras)), args.force_merge,
+            args.n_jobs,
         )
 
     csvs = list_keypoint_csvs(video_preds_dir)
@@ -375,24 +428,31 @@ def main(argv: list[str] | None = None) -> None:
             )
         csvs = [item for item in csvs if item[1] in selected_eids]
         logger.info(f'selected {len(selected_eids)} session(s), {len(csvs)} csvs')
+    jobs = [
+        {
+            'camera': camera,
+            'eid': eid,
+            'csv_path': csv_path,
+            'video_preds_dir': video_preds_dir,
+            'likelihood_threshold': likelihood_threshold,
+            'max_masked_frac': max_masked_frac,
+            'config_path': args.config,
+        }
+        for camera, eid, csv_path in csvs
+    ]
     infos: list[tuple[str, str, dict]] = []
-    for camera, eid, csv_path in csvs:
-        info = build_keypoint_info(
-            csv_path, camera, eid, likelihood_threshold, max_masked_frac, args.config,
-        )
+    for (camera, eid, _), (info, error) in zip(
+        csvs, run_parallel(_list_job, jobs, args.n_jobs), strict=True,
+    ):
+        if error is not None:
+            # a bad csv or config is fatal, as in the serial version: raise the first error
+            logger.error(f'[{eid} {camera}] listing failed')
+            raise error
         infos.append((camera, eid, info))
-        json_path = keypoint_names_json_path(video_preds_dir, camera, eid)
-        json_path.parent.mkdir(parents=True, exist_ok=True)
-        with json_path.open('w', encoding='utf-8') as f:
-            json.dump(info, f, indent=2)
-        logger.info(
-            f'{camera} {eid}: {len(info["usable"])}/{len(info["keypoints"])} usable keypoints, '
-            f'unusable: {info["unusable"]}, without confidence filtering: '
-            f'{info["no_filter_keypoints"]}, visible fraction: {info["visible_fraction"]} '
-            f'-> {json_path}',
-        )
     if args.video_timestamps_dir is not None:
-        save_pca_sessions(args.config, infos, video_preds_dir, args.video_timestamps_dir)
+        save_pca_sessions(
+            args.config, infos, video_preds_dir, args.video_timestamps_dir, args.n_jobs,
+        )
 
 
 if __name__ == '__main__':
