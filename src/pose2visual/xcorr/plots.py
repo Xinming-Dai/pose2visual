@@ -33,6 +33,19 @@ def timestamp_subdir() -> str:
     return datetime.now(RUN_TIMEZONE).strftime('%Y%m%d_%H%M%S')
 
 
+def order_subdir(plots_subdir: str | None, order_label: str) -> str:
+    """Name of a figure folder: the run name plus the neuron order of the figures inside.
+
+    Args:
+        plots_subdir: run name (e.g. a `timestamp_subdir()`); `None` makes a new timestamp.
+        order_label: neuron order of the figures (`'rastermap'`, `'depth'` or `'none'`).
+
+    Returns:
+        The folder name, e.g. `'20261021_153012_rastermap'`.
+    """
+    return f'{plots_subdir or timestamp_subdir()}_{order_label}'
+
+
 def select_examples(
     table: pd.DataFrame,
     n_examples: int,

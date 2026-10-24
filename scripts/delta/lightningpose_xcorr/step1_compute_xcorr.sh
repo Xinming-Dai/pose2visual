@@ -27,8 +27,9 @@ cd "$REPO"
 # writes its own subfolder of <video_preds_dir>/xcorr/<eid>/ (step-0 inputs stay in that folder):
 #   A  PETHs (pose2visual.xcorr.peth, optional, soft failure), then the baseline
 #      neural-behavior cross-correlation (pose2visual.xcorr.run_xcorr), whose heatmap carries
-#      the reward / movement-onset strips -> experiment_A_baseline/<time>/, plus the same
-#      heatmap with neurons in depth order -> experiment_A_baseline/<time>_depth/
+#      the reward / movement-onset strips -> experiment_A_baseline/<time>_<order>/ (e.g.
+#      <time>_rastermap), plus the same heatmap with neurons in depth order ->
+#      experiment_A_baseline/<time>_depth/
 #   B  PCA of the face group (pose2visual.xcorr.experiments.pca --no-plot) -> experiment_B_pca/
 #   C  relative motion (pose2visual.xcorr.experiments.relative_motion --no-plot)
 #      -> experiment_C_relative_motion/
@@ -105,8 +106,7 @@ if [ -n "$RUN_B" ]; then
         ${EXCLUDE_LIST[@]:+--exclude "${EXCLUDE_LIST[@]}"} \
         --n-jobs "${SLURM_CPUS_PER_TASK:-2}" \
         ${N_COMPONENTS:+--n-components "$N_COMPONENTS"} \
-        ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"} \
-        --no-plot
+        ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"}
     STATUS_B=$?
     if [ "$STATUS_B" -ne 0 ]; then
         echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiment B (pca) failed (exit $STATUS_B); rerun it with --exp B." >&2
@@ -125,8 +125,7 @@ if [ -n "$RUN_C" ]; then
         ${EXCLUDE_LIST[@]:+--exclude "${EXCLUDE_LIST[@]}"} \
         --n-jobs "${SLURM_CPUS_PER_TASK:-2}" \
         --no-centroid-groups "${NO_CENTROID_LIST[@]}" \
-        ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"} \
-        --no-plot
+        ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"}
     STATUS_C=$?
     if [ "$STATUS_C" -ne 0 ]; then
         echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiment C (relative motion) failed (exit $STATUS_C); rerun it with --exp C." >&2

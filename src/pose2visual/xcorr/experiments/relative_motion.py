@@ -106,7 +106,7 @@ from pose2visual.xcorr.experiments.common import (
     write_figure_guide,
 )
 from pose2visual.xcorr.experiments.masked_crosscorr import masked_cross_correlation
-from pose2visual.xcorr.plots import timestamp_subdir
+from pose2visual.xcorr.plots import order_subdir, timestamp_subdir
 from pose2visual.xcorr.run_xcorr import OTHER_GROUP, behavior_groups
 from pose2visual.xcorr.settings import EXPERIMENT_RELMOTION, freeze_config, resolve_eids
 
@@ -228,7 +228,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='figure folder inside experiment_C_relative_motion (default: New York time).',
+        help='figure folder inside experiment_C_relative_motion (default: New York time); the '
+        'neuron order is appended, e.g. <name>_rastermap.',
     )
     parser.add_argument(
         '--no-plot', action='store_true',
@@ -792,7 +793,8 @@ def run_session(
         min_valid_fraction: smallest fraction of defined bins of a corrected keypoint.
         vmax: shared half-range of the colour scale; `None` applies the baseline's rule to the
             original xcorrs.
-        plots_subdir: figure folder name; `None` = New York time of the run.
+        plots_subdir: run name of the figure folder, to which the neuron order is
+            appended; `None` = New York time of the run.
         skip_plot: compute and save only, draw no figures; redraw them later with
             `pose2visual.xcorr.experiments.replot_relative_motion`.
         n_jobs: cameras processed in parallel for the original xcorr.
@@ -931,10 +933,10 @@ def run_session(
 
     plots_dir = None
     if not skip_plot:
-        plots_dir = out_dir / (plots_subdir or timestamp_subdir())
         idx_order, order_label = resolve_order(
             config_path, eid, 'saved', base['neuron_ids'], base['neuron_depths'],
         )
+        plots_dir = out_dir / order_subdir(plots_subdir, order_label)
         plot_results(
             plots_dir, eid, lags_sec, cams, names, groups, valid, r_original, r_relative,
             idx_order, order_label, vmax, corrected, no_centroid, summary, group_rows,

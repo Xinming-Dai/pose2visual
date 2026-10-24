@@ -26,7 +26,8 @@ This is Experiment A (baseline). Writes under
 * ``xcorr_arrays.<eid>.npz`` — correlations ``r [C, N, B, L]`` (NaN where a camera lacks a
   behavior), lags, names, cameras, neuron order, p values and the null 95th percentile.
 * ``xcorr_params.json`` and ``xcorr_config.yaml`` — settings and alignment diagnostics.
-* ``<YYYYmmdd_HHMMSS>/`` (New York time of the run; ``--plots-subdir`` names it instead) —
+* ``<YYYYmmdd_HHMMSS>_<order>/`` (New York time of the run, ``--plots-subdir`` names it instead;
+  ``<order>`` is the neuron order, e.g. ``rastermap``) —
   ``heatmap.all.<eid>.{png,pdf}``: every behavior on one figure,
   rows = cameras (Figure 20), each row labelled with its own camera's keypoint names; and
   ``example_curves.<eid>.{png,pdf}`` (only with ``--n-examples N``, off by default).
@@ -75,7 +76,7 @@ from pose2visual.xcorr.permutation import (
     permutation_pvalues,
 )
 from pose2visual.xcorr.peth import load_peth
-from pose2visual.xcorr.plots import DEFAULT_N_EXAMPLES, timestamp_subdir, write_plots
+from pose2visual.xcorr.plots import DEFAULT_N_EXAMPLES, order_subdir, timestamp_subdir, write_plots
 from pose2visual.xcorr.settings import (
     baseline_dir,
     freeze_config,
@@ -149,8 +150,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='folder of the figures inside experiment_A_baseline (default: a new folder named by '
-        'the New York time of the run, YYYYmmdd_HHMMSS, so no earlier figure is overwritten).',
+        help='run name of the figure folder inside experiment_A_baseline; the neuron order is '
+        'appended, e.g. <name>_rastermap (default name: the New York time of the run, '
+        'YYYYmmdd_HHMMSS, so no earlier figure is overwritten).',
     )
     parser.add_argument(
         '--no-depth-plot', action='store_true',
@@ -321,8 +323,9 @@ def run_session(
         exclude: glob patterns of keypoints / features to leave out (e.g. `['d*']`).
         n_jobs: cameras processed in parallel.
         vmax: half-range of the heatmap colour scale; `None` takes it from the data.
-        plots_subdir: folder of the figures inside `experiment_A_baseline`; `None` makes a new
-            folder named by the current New York time (`plots.timestamp_subdir`).
+        plots_subdir: run name of the figure folder inside `experiment_A_baseline`, to which the
+            neuron order is appended (`plots.order_subdir`); `None` makes a new name from the
+            current New York time (`plots.timestamp_subdir`).
         show_peth: draw the PETH strips when `peth.<eid>.npz` exists (see `peth`).
         peth_vmax: half-range of the PETH colour scale.
         depth_plot: also draw the figures in probe-depth order into `<plots_subdir>_depth`
@@ -478,7 +481,8 @@ def run_session(
                 'no PETH strips: run pose2visual.xcorr.extract_trial_events and '
                 'pose2visual.xcorr.peth to add them',
             )
-    plots_subdir = plots_subdir or timestamp_subdir()
+    plots_stem = plots_subdir or timestamp_subdir()
+    plots_subdir = order_subdir(plots_stem, order)
     plots = write_plots(
         out_dir / plots_subdir, eid, r_all, lags_sec, names, groups, cameras,
         arrays['valid'], idx_order, table, order, vmax, n_examples, arrays.get('null_p95'),
@@ -488,7 +492,7 @@ def run_session(
     depth_subdir = None
     heatmap_depth = None
     if depth_plot and order != 'depth':
-        depth_subdir = f'{plots_subdir}_depth'
+        depth_subdir = order_subdir(plots_stem, 'depth')
         idx_depth = neuron_order('depth', neural, neuron_info['depth'].to_numpy())
         depth_plots = write_plots(
             out_dir / depth_subdir, eid, r_all, lags_sec, names, groups, cameras,

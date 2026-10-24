@@ -37,7 +37,7 @@ import pandas as pd
 
 from pose2visual.xcorr.behavior import excluded_names
 from pose2visual.xcorr.peth import load_peth
-from pose2visual.xcorr.plots import DEFAULT_N_EXAMPLES, timestamp_subdir, write_plots
+from pose2visual.xcorr.plots import DEFAULT_N_EXAMPLES, order_subdir, timestamp_subdir, write_plots
 from pose2visual.xcorr.settings import (
     baseline_dir,
     freeze_config,
@@ -100,8 +100,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='folder of the figures inside experiment_A_baseline (default: a new folder named by '
-        'the New York time of the run, YYYYmmdd_HHMMSS, so no earlier figure is overwritten).',
+        help='run name of the figure folder inside experiment_A_baseline; the neuron order is '
+        'appended, e.g. <name>_rastermap (default name: the New York time of the run, '
+        'YYYYmmdd_HHMMSS, so no earlier figure is overwritten).',
     )
     return parser.parse_args(argv)
 
@@ -246,8 +247,9 @@ def replot_session(
         exclude: glob patterns of behaviors to hide.
         vmax: half-range of the colour scale; `None` takes it from the data.
         n_examples: number of example curves; 0 (default) draws none.
-        plots_subdir: folder of the figures inside `experiment_A_baseline`; `None` makes a new
-            folder named by the current New York time (`plots.timestamp_subdir`).
+        plots_subdir: run name of the figure folder inside `experiment_A_baseline`, to which the
+            neuron order is appended (`plots.order_subdir`); `None` makes a new name from the
+            current New York time (`plots.timestamp_subdir`).
         show_peth: draw the PETH strips when `peth.<eid>.npz` exists in `experiment_A_baseline`.
         peth_vmax: half-range of the PETH colour scale.
 
@@ -262,7 +264,6 @@ def replot_session(
         raise ValueError(f'unknown order {order!r}; use one of {list(REPLOT_ORDERS)}')
     settings = load_xcorr_settings(config_path)
     out_dir = baseline_dir(config_path, eid, settings['output_name'])
-    plots_subdir = plots_subdir or timestamp_subdir()
     full = load_results(out_dir, eid)
     n_neurons = full['r'].shape[1]
     if order == 'saved':
@@ -275,6 +276,7 @@ def replot_session(
     if results['null_p95'] is None:
         logger.info('this run did not save the null threshold: example curves have no dashed line')
     label = full['order_label'] if order == 'saved' else order
+    plots_subdir = order_subdir(plots_subdir, label)
     peth = None
     if show_peth and full['neuron_ids'] is not None:
         peth = load_peth(out_dir, eid, full['neuron_ids'])

@@ -23,11 +23,12 @@ cd "$REPO"
 # recomputed, so this is fast. --exp A|B|C|all (default all; a comma list such as B,C is allowed)
 # selects which ones are redrawn, e.g. sbatch step2_plot_xcorr.sh --exp B <eid>. Each plot type is drawn once in $ORDER (default: saved, i.e. the
 # compute step's own order, usually rastermap) and, unless SKIP_DEPTH_ORDER is set, a second time
-# with neurons in depth order (ascending position along the probe), into its own "<subdir>_depth"
-# folder, so the figures of one plotting run are easy to find together:
-# <video_preds_dir>/xcorr/<eid>/experiment_A_baseline/<PLOTS_SUBDIR>[_depth]/,
-# .../experiment_B_pca/<PLOTS_SUBDIR>[_depth]/ and
-# .../experiment_C_relative_motion/<PLOTS_SUBDIR>[_depth]/.
+# with neurons in depth order (ascending position along the probe). Each figure folder is named
+# "<PLOTS_SUBDIR>_<order>" (e.g. 20261021_153012_rastermap and 20261021_153012_depth), so the
+# figures of one plotting run are easy to find together and the order is readable from the name:
+# <video_preds_dir>/xcorr/<eid>/experiment_A_baseline/<PLOTS_SUBDIR>_<order>/,
+# .../experiment_B_pca/<PLOTS_SUBDIR>_<order>/ and
+# .../experiment_C_relative_motion/<PLOTS_SUBDIR>_<order>/.
 # In the saved order, B and C are drawn in A's neuron order when A has run on the same neurons
 # (else in depth order). Each of the three plot types, in each order, is independent: a missing or failed one is logged
 # and does not stop the others, and does not fail the job.
@@ -41,8 +42,9 @@ cd "$REPO"
 #   SKIP_DEPTH_ORDER set to 1 to skip the extra depth-order pass (e.g. when ORDER=depth already)
 #   VMAX             fixed colour scale +-VMAX shared by all three (Figure 20 uses 0.6); default:
 #                    each run's own rule, from its data
-#   PLOTS_SUBDIR     figure folder inside each session/experiment folder (default: New York
-#                    time); the depth-order pass uses "${PLOTS_SUBDIR}_depth"
+#   PLOTS_SUBDIR     run name of the figure folders inside each session/experiment folder
+#                    (default: New York time); the neuron order is appended ("_rastermap",
+#                    "_depth", "_none")
 #   N_EXAMPLES       baseline example curves (default: 0 = none)
 #   NO_PETH          set to 1 to leave the baseline's reward / movement-onset event strips out
 #   PETH_VMAX        baseline PETH colour scale +-PETH_VMAX (default 2 = a tripling of the rate)
@@ -105,7 +107,7 @@ replot_one_order "$ORDER" "$PLOTS_SUBDIR"
 if [ -n "${SKIP_DEPTH_ORDER:-}" ] || [ "$ORDER" = "depth" ]; then
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] Depth-order pass skipped (SKIP_DEPTH_ORDER set or ORDER already depth)."
 else
-    replot_one_order "depth" "${PLOTS_SUBDIR}_depth"
+    replot_one_order "depth" "$PLOTS_SUBDIR"
 fi
 
 conda deactivate

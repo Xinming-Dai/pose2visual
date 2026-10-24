@@ -25,7 +25,7 @@ import pandas as pd
 
 from pose2visual.xcorr.experiments.common import experiment_dir, resolve_order
 from pose2visual.xcorr.experiments.relative_motion import plot_results
-from pose2visual.xcorr.plots import timestamp_subdir
+from pose2visual.xcorr.plots import order_subdir, timestamp_subdir
 from pose2visual.xcorr.replot import REPLOT_ORDERS
 from pose2visual.xcorr.settings import (
     EXPERIMENT_RELMOTION,
@@ -70,7 +70,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='figure folder inside experiment_C_relative_motion (default: New York time).',
+        help='figure folder inside experiment_C_relative_motion (default: New York time); the '
+        'neuron order is appended, e.g. <name>_rastermap.',
     )
     return parser.parse_args(argv)
 
@@ -177,8 +178,9 @@ def replot_session(
         cameras: cameras to draw; `None` = all of the run.
         order: neuron order of the heatmaps, one of `REPLOT_ORDERS`.
         vmax: half-range of the colour scale; `None` takes it from the data.
-        plots_subdir: folder of the figures inside `experiment_C_relative_motion`; `None` makes
-            a new folder named by the current New York time.
+        plots_subdir: run name of the figure folder inside `experiment_C_relative_motion`, to
+            which the neuron order is appended; `None` makes a new name from the current New York
+            time.
 
     Returns:
         The written figure files, png and pdf of each figure.
@@ -194,7 +196,7 @@ def replot_session(
     idx_order, order_label = resolve_order(
         config_path, eid, order, results['neuron_ids'], results['neuron_depths'],
     )
-    plots_dir = out_dir / (plots_subdir or timestamp_subdir())
+    plots_dir = out_dir / order_subdir(plots_subdir, order_label)
     return plot_results(
         plots_dir, eid, results['lags_sec'], results['cameras'], results['names'],
         results['groups'], results['valid'], results['r_original'], results['r_relative'],

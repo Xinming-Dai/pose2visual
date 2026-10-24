@@ -70,7 +70,7 @@ from pose2visual.xcorr.experiments.relative_motion import (
     load_camera_positions,
     screen_traces,
 )
-from pose2visual.xcorr.plots import timestamp_subdir
+from pose2visual.xcorr.plots import order_subdir, timestamp_subdir
 from pose2visual.xcorr.settings import EXPERIMENT_PCA, freeze_config, resolve_eids
 
 logger = logging.getLogger(__name__)
@@ -176,7 +176,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='figure folder inside experiment_B_pca (default: New York time).',
+        help='figure folder inside experiment_B_pca (default: New York time); the neuron order is '
+        'appended, e.g. <name>_rastermap.',
     )
     parser.add_argument(
         '--no-plot', action='store_true',
@@ -461,7 +462,8 @@ def run_session(
         min_valid_fraction: smallest fraction of defined bins of a denoised face keypoint.
         vmax: shared half-range of the colour scale; `None` applies the baseline's rule to the
             original xcorrs.
-        plots_subdir: figure folder name; `None` = New York time of the run.
+        plots_subdir: run name of the figure folder, to which the neuron order is
+            appended; `None` = New York time of the run.
         skip_plot: compute and save only, draw no figures; redraw them later with
             `pose2visual.xcorr.experiments.replot_pca`.
         n_jobs: cameras processed in parallel for the original xcorr.
@@ -586,10 +588,10 @@ def run_session(
 
     plots_dir = None
     if not skip_plot:
-        plots_dir = out_dir / (plots_subdir or timestamp_subdir())
         idx_order, order_label = resolve_order(
             config_path, eid, 'saved', base['neuron_ids'], base['neuron_depths'],
         )
+        plots_dir = out_dir / order_subdir(plots_subdir, order_label)
         plot_results(
             plots_dir, eid, lags_sec, cams, names, groups_out, valid, r_original,
             r_speed_pca_masked, idx_order, order_label, vmax, position_names,
