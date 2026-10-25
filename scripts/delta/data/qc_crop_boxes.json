@@ -109,6 +109,90 @@
           "right": [92, 143, 312, 239]
         }
       }
+    },
+    "4b00df29-3769-43be-bb40-128b1cba6d35": {
+      "nonoverlapping_analysis_groups": {
+        "eye_related": {
+          "left": [69, 41, 110, 80],
+          "right": [199, 42, 244, 86]
+        },
+        "mouth_related": {
+          "left": [29, 91, 104, 151],
+          "right": [221, 82, 299, 137]
+        },
+        "nose_pad_related": {
+          "left": [7, 43, 89, 141],
+          "right": [238, 44, 307, 123]
+        },
+        "ear_related": {
+          "left": [122, 36, 192, 112],
+          "right": [88, 49, 173, 101]
+        },
+        "digits": {
+          "left": [2, 137, 230, 287],
+          "right": [61, 123, 305, 247]
+        },
+        "forelimb": {
+          "left": [6, 128, 252, 287],
+          "right": [61, 135, 317, 235]
+        }
+      }
+    },
+    "72cb5550-43b4-4ef0-add5-e4adfdfb5e02": {
+      "nonoverlapping_analysis_groups": {
+        "eye_related": {
+          "left": [75, 36, 129, 81],
+          "right": [184, 31, 229, 71]
+        },
+        "mouth_related": {
+          "left": [36, 90, 111, 168],
+          "right": [193, 81, 287, 140]
+        },
+        "nose_pad_related": {
+          "left": [17, 55, 105, 154],
+          "right": [206, 59, 295, 130]
+        },
+        "ear_related": {
+          "left": [115, 32, 217, 110],
+          "right": [65, 21, 166, 109]
+        },
+        "digits": {
+          "left": [2, 133, 253, 275],
+          "right": [37, 111, 311, 243]
+        },
+        "forelimb": {
+          "left": [12, 162, 235, 302],
+          "right": [78, 135, 301, 238]
+        }
+      }
+    },
+    "781b35fd-e1f0-4d14-b2bb-95b7263082bb": {
+      "nonoverlapping_analysis_groups": {
+        "eye_related": {
+          "left": [59, 5, 110, 49],
+          "right": [163, 7, 209, 57]
+        },
+        "mouth_related": {
+          "left": [5, 33, 99, 136],
+          "right": [204, 47, 290, 122]
+        },
+        "nose_pad_related": {
+          "left": [3, 27, 97, 151],
+          "right": [200, 21, 294, 114]
+        },
+        "ear_related": {
+          "left": [116, 8, 223, 98],
+          "right": [49, 18, 154, 99]
+        },
+        "digits": {
+          "left": [2, 142, 249, 304],
+          "right": [46, 129, 303, 247]
+        },
+        "forelimb": {
+          "left": [7, 156, 250, 282],
+          "right": [41, 96, 317, 227]
+        }
+      }
     }
   }
 }
