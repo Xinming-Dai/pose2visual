@@ -39,12 +39,11 @@ movement and are left out; no permutation test is run (the masked estimator woul
 per-shift normalization); the spec's backward difference ``|dp| / dt`` is replaced by the
 baseline's central difference so that the only change is the centroid subtraction.
 
-Alongside the per-keypoint heatmaps (``heatmap.{original_speed,relative_speed,difference}``), a
-group-mean version of each (``heatmap.group_mean.*``) averages the xcorr of every anatomical
-group's members (``group_mean_labels``, ``group_mean_arrays``). A ``--no-centroid-groups`` member
-is, by the same reasoning that keeps its centroid from being subtracted, pooled per body side
-instead of across sides, so ``wrist_left`` and ``wrist_right`` each get their own group-mean strip
-(``forelimb.left`` / ``forelimb.right``) rather than being averaged together.
+Figures (png only; see ``HEATMAP_GUIDE`` and the other ``*_GUIDE`` entries, written to
+``figures.<eid>.md``): ``heatmap.original_speed`` and ``heatmap.relative_speed`` (same neurons,
+keypoints, lags and colour scale), ``scatter.peak_abs_r`` (peak |r| before against after the
+centroid subtraction, coloured by anatomical group), ``bar.variance``, ``centroid_trajectories``
+and ``groups_table``.
 
 The original speed cross-correlations it is compared against are recomputed here with the
 baseline's own code (``common.compute_original``), so this does not wait for Experiment A; only the
@@ -125,46 +124,28 @@ MIN_RELIABLE_KEYPOINTS = 2
 # (the baseline stores its binned traces in float32)
 SELF_CHECK_RTOL = 1e-4
 SELF_CHECK_ATOL = 1e-3
-DIFFERENCE_COLORBAR = 'relative minus original correlation'
 # (stem, meaning) rows of the figure guide (`common.write_figure_guide`)
 HEATMAP_GUIDE = (
-    ('heatmap.original_speed', "baseline xcorr of each keypoint's absolute speed"),
+    (
+        'heatmap.original_speed',
+        "baseline xcorr of each keypoint's absolute speed (same colour scale, neuron order, "
+        'keypoints and lags as `heatmap.relative_speed`)',
+    ),
     (
         'heatmap.relative_speed',
         "xcorr of each keypoint's speed after its group centroid (the shared translation of the "
         "group's keypoints) is subtracted at every frame; uncorrected keypoints keep the "
-        'original xcorr',
-    ),
-    (
-        'heatmap.difference',
-        '`relative_speed - original_speed` per keypoint, neuron and lag: strongly negative = '
-        'that correlation came from the shared (head/face) translation; uncorrected columns are '
-        'exactly 0',
-    ),
-)
-GROUP_MEAN_GUIDE = (
-    (
-        'heatmap.group_mean.original_speed',
-        '`heatmap.original_speed` with one column per anatomical group: the mean xcorr over the '
-        "group's keypoints (per camera, neuron and lag)",
-    ),
-    (
-        'heatmap.group_mean.relative_speed',
-        "`heatmap.relative_speed` averaged the same way over each group's keypoints",
-    ),
-    (
-        'heatmap.group_mean.difference',
-        "`heatmap.difference` averaged over each group's keypoints (= `group_mean.relative_speed "
-        "- group_mean.original_speed`). A `--no-centroid-groups` group is split by side "
-        '(`forelimb.left`, `forelimb.right`) instead of averaged across sides; a keypoint with no '
-        'anatomical group keeps its own column',
+        'original xcorr. Compare with `heatmap.original_speed` strip by strip: a correlation '
+        'that fades here came from the shared (head/face) translation',
     ),
 )
 SCATTER_GUIDE = (
     'scatter.peak_abs_r',
-    'one dot per neuron-keypoint pair: peak \\|r\\| over lags of the original speed (x) against '
-    'the relative speed (y); grey = not corrected (on the diagonal by construction); below the '
-    'diagonal = removing the centroid lost correlation',
+    'one panel per camera (row) and corrected anatomical group (column), same axes in every '
+    'panel and the same group colours in every camera and session; one dot per neuron-keypoint '
+    'pair: peak \\|r\\| over lags of the original speed (x) against the relative speed (y); below '
+    'the dashed diagonal = the group lost correlation when its centroid was removed, above = '
+    'gained; uncorrected keypoints (on the diagonal by construction) are not drawn',
 )
 VARIANCE_GUIDE = (
     'bar.variance',
@@ -301,84 +282,6 @@ def plan_groups(
             corrected, reason = True, f'{len(members)} keypoints: centroid subtracted'
         plan.append({'group': group, 'members': members, 'corrected': corrected, 'reason': reason})
     return plan
-
-
-# separator of a side-split group-mean label, e.g. 'forelimb.left'; a '.' (not '_') so a label
-# never ends in exactly '_left' / '_right' and figures.align_behaviors's mirroring never merges
-# the two sides back together
-GROUP_MEAN_SIDE_SEP = '.'
-
-
-def group_mean_labels(
-    names: list[str],
-    groups: list[str],
-    no_centroid_groups: list[str],
-) -> list[str]:
-    """Pooling label of each behavior for the group-mean xcorr plot.
-
-    `OTHER_GROUP` behaviors are never pooled with anything else (label = the keypoint's own name),
-    the same reasoning `plan_groups` uses for unrelated keypoints. A group in `no_centroid_groups`
-    is, by the same reasoning that keeps it from being centroid-corrected, not one body part: if a
-    member's name ends in `_left` or `_right` its label splits off that side
-    (`group + GROUP_MEAN_SIDE_SEP + side`); a member with no side suffix still pools under the
-    group name. Every other group pools by its group name.
-
-    Args:
-        names: the `B` behavior names.
-        groups: body-part group of each behavior (`B` entries, `run_xcorr.behavior_groups` order).
-        no_centroid_groups: groups whose members are not treated as one rigid body
-            (`run_session`'s resolved `no_centroid_groups`).
-
-    Returns:
-        One pooling label per behavior, in `names` order.
-    """
-    labels = []
-    for name, group in zip(names, groups):
-        if group == OTHER_GROUP:
-            labels.append(name)
-        elif group in no_centroid_groups:
-            side = next((s for s in ('left', 'right') if name.endswith(f'_{s}')), None)
-            labels.append(f'{group}{GROUP_MEAN_SIDE_SEP}{side}' if side else group)
-        else:
-            labels.append(group)
-    return labels
-
-
-def group_mean_arrays(
-    arrays: list[np.ndarray],
-    valid: np.ndarray,
-    labels: list[str],
-) -> tuple[list[str], list[np.ndarray], np.ndarray]:
-    """Mean of one or more `[C, N, B, L]` arrays over the behaviors sharing each pooling label.
-
-    Args:
-        arrays: correlation arrays, all `[C, N, B, L]` (e.g. original, relative and difference),
-            `NaN` wherever `valid` is `False`.
-        valid: boolean `[C, B]`, whether camera `c` has behavior `b`.
-        labels: pooling label of each of the `B` behaviors (`group_mean_labels`).
-
-    Returns:
-        `(unique_labels, means, valid_group)`: `unique_labels` in order of first appearance in
-        `labels`; `means`, one `[C, N, len(unique_labels), L]` array per entry of `arrays`
-        (`nanmean` over the members of each label, `NaN` where a label has no valid member in a
-        camera); `valid_group`, boolean `[C, len(unique_labels)]`, True where at least one member
-        is valid.
-    """
-    unique_labels = list(dict.fromkeys(labels))
-    n_cam, n_neuron, _, n_lag = arrays[0].shape
-    valid_group = np.zeros((n_cam, len(unique_labels)), dtype=bool)
-    means = [np.full((n_cam, n_neuron, len(unique_labels), n_lag), np.nan) for _ in arrays]
-    for idx_g, label in enumerate(unique_labels):
-        idx_b = [i for i, name_label in enumerate(labels) if name_label == label]
-        valid_group[:, idx_g] = valid[:, idx_b].any(axis=1)
-        for idx_c in np.flatnonzero(valid_group[:, idx_g]):
-            cols = [i for i in idx_b if valid[idx_c, i]]
-            with warnings.catch_warnings():
-                # a member can still be all-NaN at some neuron/lag (e.g. a short valid stretch)
-                warnings.simplefilter('ignore', RuntimeWarning)
-                for mean, array in zip(means, arrays):
-                    mean[idx_c, :, idx_g, :] = np.nanmean(array[idx_c, :, cols, :], axis=0)
-    return unique_labels, means, valid_group
 
 
 def relative_group_motion(
@@ -960,8 +863,7 @@ def run_session(
             this_dir = plots_root / order_subdir(plots_stem, order_label)
             plot_results(
                 this_dir, eid, lags_sec, cams, names, groups, valid, r_original, r_relative,
-                idx_order, order_label, vmax, corrected, no_centroid, summary, group_rows,
-                centroids,
+                idx_order, order_label, vmax, corrected, summary, group_rows, centroids,
             )
             if order == 'saved':
                 plots_dir = this_dir
@@ -987,7 +889,6 @@ def plot_results(
     order_label: str,
     vmax: float | None,
     corrected: np.ndarray,
-    no_centroid: list[str],
     summary: pd.DataFrame,
     group_rows: list[dict[str, Any]],
     centroids: list[dict[str, Any]],
@@ -1013,7 +914,6 @@ def plot_results(
         order_label: name of the neuron order, for the y-axis label.
         vmax: shared half-range of the colour scale; `None` applies the baseline's rule.
         corrected: boolean `[C, B]`, whether the centroid was subtracted for that behavior.
-        no_centroid: groups that keep their original speed (`run_session`'s `no_centroid`).
         summary: per-keypoint statistics table (`run_session`'s `summary`).
         group_rows: one dict per camera/group entry, for the group-decision table
             (`run_session`'s `group_rows`, or the concatenation of a saved
@@ -1022,77 +922,39 @@ def plot_results(
             (`run_session`'s `centroids`); empty skips the trajectory figure.
 
     Returns:
-        The written figure files, png and pdf of each figure, then the figure guide
-        `figures.<eid>.md` (`common.write_figure_guide`).
+        The written png files, then the figure guide `figures.<eid>.md`
+        (`common.write_figure_guide`).
     """
     # lazy: matplotlib is only needed to draw
     from pose2visual.xcorr.experiments import diagnostics
     from pose2visual.xcorr.figures import heatmap_vmax, plot_xcorr_overview, save_figure
 
     paths: list[Path] = []
-    guide = [*HEATMAP_GUIDE, *GROUP_MEAN_GUIDE, SCATTER_GUIDE, VARIANCE_GUIDE]
+    guide = [*HEATMAP_GUIDE, SCATTER_GUIDE, VARIANCE_GUIDE]
     with warnings.catch_warnings():
         # keypoints a camera does not have are all NaN
         warnings.simplefilter('ignore', RuntimeWarning)
         peak_original = np.nanmax(np.abs(r_original), axis=3)
         peak_relative = np.nanmax(np.abs(r_relative), axis=3)
+    # one colour scale for both heatmaps, so they are comparable without a difference figure
     scale = vmax if vmax is not None else heatmap_vmax(r_original)
     ylabel = f'neurons ({order_label} order)'
-    difference = r_relative - r_original
-    difference_scale = heatmap_vmax(difference)
     panels = [
+        ('original_speed', r_original, 'original speed (absolute)'),
         (
-            'original_speed', r_original, scale, 'original speed (absolute)',
-            BASELINE_COLORBAR_LABEL,
-        ),
-        (
-            'relative_speed', r_relative, scale,
-            'relative speed (group centroid removed where corrected)', BASELINE_COLORBAR_LABEL,
-        ),
-        (
-            'difference', difference, difference_scale,
-            'relative minus original speed xcorr', DIFFERENCE_COLORBAR,
+            'relative_speed', r_relative,
+            'relative speed (group centroid removed where corrected)',
         ),
     ]
-    for stem, data, panel_scale, label, colorbar in panels:
+    for stem, data, label in panels:
         fig = plot_xcorr_overview(
-            data[:, idx_order], lags_sec, names, cams, groups, valid, eid, panel_scale,
-            ylabel=ylabel,
+            data[:, idx_order], lags_sec, names, cams, groups, valid, eid, scale, ylabel=ylabel,
         )
         relabel_overview(
-            fig, f'{eid}: {label}; colour scale +-{panel_scale:.2f}; each strip: neurons x lag, '
-            'number = max |value|', colorbar,
+            fig, f'{eid}: {label}; colour scale +-{scale:.2f}; each strip: neurons x lag, '
+            'number = max |value|', BASELINE_COLORBAR_LABEL,
         )
-        paths += save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}')
-    mean_labels = group_mean_labels(names, groups, no_centroid)
-    group_names, (r_original_mean, r_relative_mean, difference_mean), valid_mean = (
-        group_mean_arrays([r_original, r_relative, difference], valid, mean_labels)
-    )
-    group_panels = [
-        (
-            'original_speed', r_original_mean, scale,
-            'original speed (absolute), group mean', BASELINE_COLORBAR_LABEL,
-        ),
-        (
-            'relative_speed', r_relative_mean, scale,
-            'relative speed (group centroid removed where corrected), group mean',
-            BASELINE_COLORBAR_LABEL,
-        ),
-        (
-            'difference', difference_mean, difference_scale,
-            'relative minus original speed xcorr, group mean', DIFFERENCE_COLORBAR,
-        ),
-    ]
-    for stem, data, panel_scale, label, colorbar in group_panels:
-        fig = plot_xcorr_overview(
-            data[:, idx_order], lags_sec, group_names, cams, group_names, valid_mean, eid,
-            panel_scale, ylabel=ylabel,
-        )
-        relabel_overview(
-            fig, f'{eid}: {label}; colour scale +-{panel_scale:.2f}; each strip: neurons x lag, '
-            'number = max |value|', colorbar,
-        )
-        paths += save_figure(fig, plots_dir / f'heatmap.group_mean.{stem}.{eid}')
+        paths += save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}', pdf=False)
     scatter_panels = []
     for idx_c, camera in enumerate(cams):
         idx_b = np.flatnonzero(valid[idx_c])
@@ -1103,23 +965,24 @@ def plot_results(
         })
     paths += save_figure(
         diagnostics.plot_peak_scatter(scatter_panels), plots_dir / f'scatter.peak_abs_r.{eid}',
+        pdf=False,
     )
     paths += save_figure(
-        diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}',
+        diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}', pdf=False,
     )
     if centroids:
         paths += save_figure(
             diagnostics.plot_centroid_trajectories(centroids),
-            plots_dir / f'centroid_trajectories.{eid}',
+            plots_dir / f'centroid_trajectories.{eid}', pdf=False,
         )
         guide.append(CENTROID_GUIDE)
     paths += save_figure(
-        diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}',
+        diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}', pdf=False,
     )
     guide.append(GROUPS_TABLE_GUIDE)
     paths.append(write_figure_guide(
-        plots_dir, eid, 'Experiment C: relative motion', order_label, scale, difference_scale,
-        'relative_speed', guide,
+        plots_dir, eid, 'Experiment C: relative motion', order_label, scale, 'relative_speed',
+        guide,
     ))
     return paths
 

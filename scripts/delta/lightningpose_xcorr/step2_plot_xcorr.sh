@@ -18,40 +18,23 @@ source ~/.bashrc
 conda activate beast
 cd "$REPO"
 
-# Step 2: redraws the figures of a finished step1_compute_xcorr.sh run -- Experiment A
-# (baseline), B (pca) and C (relative motion) -- from their saved arrays/csv/json. Nothing is
-# recomputed, so this is fast. --exp A|B|C|all (default all; a comma list such as B,C is allowed)
-# selects which ones are redrawn, e.g. sbatch step2_plot_xcorr.sh --exp B <eid>. Each plot type is drawn once in $ORDER (default: saved, i.e. the
-# compute step's own order, usually rastermap) and, unless SKIP_DEPTH_ORDER is set, a second time
-# with neurons in depth order (ascending position along the probe). Each figure folder is named
-# "<PLOTS_SUBDIR>_<order>" (e.g. 20261021_153012_rastermap and 20261021_153012_depth), so the
-# figures of one plotting run are easy to find together and the order is readable from the name:
-# <video_preds_dir>/xcorr/<eid>/plot_video/experiment_A_baseline/<PLOTS_SUBDIR>_<order>/,
-# .../plot_video/experiment_B_pca/<PLOTS_SUBDIR>_<order>/ and
-# .../plot_video/experiment_C_relative_motion/<PLOTS_SUBDIR>_<order>/ (plot_video/ is the folder to
-# download and share). The arrays are read from the newest results/<experiment>/<time>/ (runs from
-# before this layout, files directly in <eid>/<experiment>/, are still found). Experiment B's
-# decomposition (heatmaps / video of the PCA, <time>_decomposition/) is not redrawn here: rerun it
-# with step3_render_pca_reconstruction.sh.
-# In the saved order, B and C are drawn in A's neuron order when A has run on the same neurons
-# (else in depth order). Each of the three plot types, in each order, is independent: a missing or failed one is logged
-# and does not stop the others, and does not fail the job.
-# Override from the environment, e.g.:
-#   sbatch --export=ALL,EID=...,VMAX=0.6,PLOTS_SUBDIR=plots_vmax06 scripts/delta/lightningpose_xcorr/step2_plot_xcorr.sh --exp A
-#   EXP              same as --exp (the command-line flag wins)
-#   CAMERAS          cameras (rows) to draw, space separated (default: all of the run)
-#   EXCLUDE          glob patterns of baseline behaviors to hide, space separated (default: none;
-#                    Experiments B / C do not support --exclude at replot time)
-#   ORDER            baseline neuron order of the first pass: saved (default), depth or none
-#   SKIP_DEPTH_ORDER set to 1 to skip the extra depth-order pass (e.g. when ORDER=depth already)
-#   VMAX             fixed colour scale +-VMAX shared by all three (Figure 20 uses 0.6); default:
-#                    each run's own rule, from its data
-#   PLOTS_SUBDIR     run name of the figure folders inside each session/experiment folder
-#                    (default: New York time); the neuron order is appended ("_rastermap",
-#                    "_depth", "_none")
-#   N_EXAMPLES       baseline example curves (default: 0 = none)
-#   NO_PETH          set to 1 to leave the baseline's reward / movement-onset event strips out
-#   PETH_VMAX        baseline PETH colour scale +-PETH_VMAX (default 2 = a tripling of the rate)
+# Step 2: redraw the figures of a finished step 1 run from its saved results (no recomputation).
+#   sbatch scripts/delta/lightningpose_xcorr/step2_plot_xcorr.sh [--exp A|B|C|all] <eid>
+# Draws once in $ORDER and, unless SKIP_DEPTH_ORDER is set, once in depth order. B also redraws
+# heatmap.pca_decomposition and its decomposition.<eid>.md; the video comes from step3 only.
+#
+# Overrides (e.g. sbatch --export=ALL,EID=...,VMAX=0.6,PLOTS_SUBDIR=vmax06 ...):
+#   EXP              same as --exp (the flag wins)
+#   CAMERAS          cameras to draw, space separated (default: all of the run)
+#   EXCLUDE          A: glob patterns of keypoints to hide
+#   ORDER            neuron order: saved (default, A's order), depth or none
+#   SKIP_DEPTH_ORDER set to 1 to skip the depth-order pass
+#   VMAX             fixed colour scale +-VMAX (default: from the data)
+#   PLOTS_SUBDIR     run name of the figure folders (default: New York time)
+#   N_EXAMPLES       A: number of example curves (default 0)
+#   NO_PETH          A: set to 1 to leave out the reward / movement-onset strips
+#   PETH_VMAX        A: PETH colour scale +-PETH_VMAX (default 2)
+#   CONFIG, EID
 CONFIG="${CONFIG:-$REPO/configs/encoding/litpose_encoding.yaml}"
 ORDER="${ORDER:-saved}"
 PETH_VMAX="${PETH_VMAX:-2}"

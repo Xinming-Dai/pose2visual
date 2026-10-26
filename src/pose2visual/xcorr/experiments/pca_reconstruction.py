@@ -13,9 +13,9 @@ split as::
 
 Outputs per camera:
 
-* a three-panel heatmap of ``X_centered``, ``X_rank`` and ``X_residual`` over one representative
-  window, and one over the whole recording (columns binned) with the window marked; identical rows
-  (the column order of ``X``) and one colour scale per figure;
+* ``heatmap.pca_decomposition``: a three-panel heatmap of ``X_centered``, ``X_rank`` and
+  ``X_residual`` over the whole recording (columns binned) with the video window outlined;
+  identical rows (the column order of ``X``), time axis and one colour scale in the three panels;
 * a synchronized video (``pose2visual.qc.video.pca_panels``) of the window: the tracked keypoints,
   ``mean + X_rank`` and ``mean + X_residual``, all on the video frame in the same fixed image
   coordinates;
@@ -30,7 +30,7 @@ recomputes only the decomposition (another window, rank or crop) without any neu
 needs only the keypoint json of ``list_litpose_keypoints`` and the camera timestamps.
 
 Files: ``<session>/results/experiment_B_pca/<run>/pca_decomposition.<eid>[.<camera>].{npz,json}``
-and ``<session>/plot_video/experiment_B_pca/<run>_decomposition/`` (heatmaps, videos, the md).
+and ``<session>/plot_video/experiment_B_pca/<run>_decomposition/`` (the heatmap, videos, the md).
 
 Usage::
 
@@ -85,7 +85,7 @@ class DecompositionOptions:
         start_sec: window start in session seconds; `None` picks it on the left camera.
         duration_sec: window length in seconds.
         margin_sec: seconds skipped at both ends when the window is picked.
-        vmax: half-range in pixels of the window heatmap's colour scale; `None` = from the data.
+        vmax: half-range in pixels of the heatmap's colour scale; `None` = from the data.
         heatmap: draw the heatmaps.
         video: render the videos.
         video_root: folder with the `<left|right>Camera.video` folders; `None` = the default root.
@@ -123,8 +123,8 @@ def add_window_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         '--window-vmax', type=float, default=None,
-        help='half-range in pixels of the window heatmap colour scale shared by its three '
-        f'panels; default: the {HEATMAP_PERCENTILE:g}th percentile of |X_centered|.',
+        help='half-range in pixels of the heatmap colour scale shared by its three panels; '
+        f'default: the {HEATMAP_PERCENTILE:g}th percentile of |X_centered| (binned).',
     )
     parser.add_argument(
         '--video-root', type=str, default=None,
@@ -432,6 +432,51 @@ def plot_decomposition_heatmaps(
     return fig
 
 
+def draw_decomposition_heatmap(
+    plots_dir: Path,
+    eid: str,
+    camera: str,
+    keypoints: list[str],
+    bin_times: np.ndarray,
+    x_centered: np.ndarray,
+    x_rank: np.ndarray,
+    x_residual: np.ndarray,
+    explained_variance: float,
+    rank: int,
+    vmax: float,
+    mark: tuple[float, float],
+) -> Path:
+    """Draw and save `heatmap.pca_decomposition.<eid>.<camera>.png` (whole recording, png only).
+
+    Shared by `write_decomposition` and `replot_pca.replot_decomposition`.
+
+    Args:
+        plots_dir: output folder (must exist).
+        eid: session id.
+        camera: camera name.
+        keypoints: keypoint names, in column order.
+        bin_times: time of each binned column `[B]`.
+        x_centered: `[B, K, 2]`, pixels.
+        x_rank: `[B, K, 2]`.
+        x_residual: `[B, K, 2]`.
+        explained_variance: fraction of the variance kept by the rank-k part.
+        rank: number of components kept.
+        vmax: half-range of the colour scale in pixels.
+        mark: `(start, end)` seconds of the video window, outlined in every panel.
+
+    Returns:
+        The written png.
+    """
+    # lazy: matplotlib is only needed to draw
+    from pose2visual.xcorr.figures import save_figure
+
+    fig = plot_decomposition_heatmaps(
+        eid, camera, keypoints, bin_times, x_centered, x_rank, x_residual, explained_variance,
+        rank, vmax, mark=mark, note=f'; whole recording, {len(bin_times)} time bins averaged',
+    )
+    return save_figure(fig, plots_dir / f'heatmap.pca_decomposition.{eid}.{camera}', pdf=False)[0]
+
+
 def build_video_path(
     out_dir: Path,
     eid: str,
@@ -460,7 +505,7 @@ def decomposition_text(report: dict[str, Any]) -> str:
 
     Args:
         report: the report built by `write_decomposition`: `eid`, `start_sec`, `duration_sec`,
-            `likelihood_threshold`, `n_components`, `vmax_window`, `vmax_full` (camera -> value)
+            `likelihood_threshold`, `n_components`, `vmax` (camera -> value)
             and `cameras` (camera -> `keypoints`, `explained_variance_ratio`,
             `explained_by_keypoint`, `start_frame`, `n_frames`, `n_overview_bins`).
 
@@ -469,8 +514,7 @@ def decomposition_text(report: dict[str, Any]) -> str:
     """
     rank = report['n_components']
     end_sec = report['start_sec'] + report['duration_sec']
-    scale_window = ', '.join(f'{c} +-{v:.1f} px' for c, v in report['vmax_window'].items())
-    scale_full = ', '.join(f'{c} +-{v:.1f} px' for c, v in report['vmax_full'].items())
+    scale = ', '.join(f'{c} +-{v:.1f} px' for c, v in report['vmax'].items())
     n_bins = max(info['n_overview_bins'] for info in report['cameras'].values())
     lines = [
         f'# PCA decomposition of the face ({report["eid"]})',
@@ -528,11 +572,12 @@ def decomposition_text(report: dict[str, Any]) -> str:
         lines.append(f'- {camera}: best {best}; least {worst}')
     lines += [
         '',
-        '## Reading the heatmaps (`heatmap.pca_decomposition.*`)',
+        '## Reading the heatmap (`heatmap.pca_decomposition.<eid>.<camera>`)',
         '',
         '- Each **row** is the x or y coordinate of one face keypoint; the rows and their order '
         'are the same in all three panels.',
-        '- Each **column** is one video frame (the x axis is session time in seconds).',
+        '- Each **column** is one time bin of the whole recording (the x axis is session time '
+        'in seconds); the video window is outlined in black.',
         '- **Red**: the coordinate is above its average position (larger value); **blue**: below '
         'it; **near-white**: close to it. In image coordinates a larger `y` is *lower* in the '
         'picture and a larger `x` is further right, so red in a `y` row means the point is lower '
@@ -550,12 +595,9 @@ def decomposition_text(report: dict[str, Any]) -> str:
         f'`X_rank{rank}` is one coordinated movement of the whole face, and rows that switch '
         'colour together or in opposite directions are parts moving together or against each '
         'other.',
-        '- `heatmap.pca_decomposition.<eid>.<camera>`: the window above, one column per frame '
-        f'(colour scale from the window: {scale_window}). '
-        '`heatmap.pca_decomposition.full.<eid>.<camera>`: the whole recording, first to last '
-        'frame; the window is outlined in black. To fit the screen each column averages '
-        f'neighbouring frames (up to {n_bins} columns), which shows slow changes and hides fast '
-        f'oscillations; use the window figure for those (colour scale {scale_full}).',
+        '- To fit the screen each column averages neighbouring frames (up to '
+        f'{n_bins} columns), which shows slow changes and hides fast oscillations; the video '
+        f'shows the window frame by frame (colour scale {scale}).',
         '',
         '## The video (`video.pca_decomposition.*`)',
         '',
@@ -608,16 +650,15 @@ def write_decomposition(
         options: window, colour scale and output choices.
 
     Returns:
-        Dict with `start_sec`, `arrays` (camera -> npz), `report` (json), `md`, `heatmaps` and
-        `heatmaps_full` (camera -> png) and `videos` (camera -> mp4), the last three only for what
-        was made.
+        Dict with `start_sec`, `arrays` (camera -> npz), `report` (json), `md`, `heatmaps`
+        (camera -> png) and `videos` (camera -> mp4), the last two only for what was made.
 
     Raises:
         ValueError: if the window does not fit a recording.
         FileNotFoundError: if a video cannot be found.
     """
     # lazy: matplotlib is only needed to draw
-    from pose2visual.xcorr.figures import heatmap_vmax, save_figure
+    from pose2visual.xcorr.figures import heatmap_vmax
 
     plots_dir.mkdir(parents=True, exist_ok=True)
     order = sorted(cameras, key=lambda camera: camera != REFERENCE_CAMERA)
@@ -633,12 +674,11 @@ def write_decomposition(
     duration = options.duration_sec
     threshold, _ = load_filter_settings(config_path)
     result: dict[str, Any] = {
-        'start_sec': start_sec, 'arrays': {}, 'heatmaps': {}, 'heatmaps_full': {}, 'videos': {},
+        'start_sec': start_sec, 'arrays': {}, 'heatmaps': {}, 'videos': {},
     }
     report: dict[str, Any] = {
         'eid': eid, 'start_sec': start_sec, 'duration_sec': duration,
-        'likelihood_threshold': threshold, 'n_components': 0, 'vmax_window': {},
-        'vmax_full': {}, 'cameras': {},
+        'likelihood_threshold': threshold, 'n_components': 0, 'vmax': {}, 'cameras': {},
     }
     for camera in order:
         data = cameras[camera]
@@ -675,31 +715,18 @@ def write_decomposition(
             'explained_by_keypoint': {k: float(v) for k, v in zip(keypoints, per_keypoint)},
             'start_frame': idx_start, 'n_frames': n_frames, 'n_overview_bins': len(bin_times),
         }
-        report['vmax_window'][camera] = (
+        report['vmax'][camera] = (
             options.vmax if options.vmax is not None else heatmap_vmax(
-                parts['centered'][window], HEATMAP_PERCENTILE, HEATMAP_STEP,
+                full_c, HEATMAP_PERCENTILE, HEATMAP_STEP,
             )
         )
-        report['vmax_full'][camera] = heatmap_vmax(full_c, HEATMAP_PERCENTILE, HEATMAP_STEP)
 
         if options.heatmap:
-            fig = plot_decomposition_heatmaps(
-                eid, camera, keypoints, times[window], parts['centered'][window],
-                parts['rank'][window], parts['residual'][window], explained, rank,
-                report['vmax_window'][camera],
+            result['heatmaps'][camera] = draw_decomposition_heatmap(
+                plots_dir, eid, camera, keypoints, bin_times, full_c, full_r, full_x, explained,
+                rank, report['vmax'][camera],
+                (float(times[idx_start]), float(times[idx_start + n_frames - 1])),
             )
-            result['heatmaps'][camera] = save_figure(
-                fig, plots_dir / f'heatmap.pca_decomposition.{eid}.{camera}',
-            )[0]
-            mark = (float(times[idx_start]), float(times[idx_start + n_frames - 1]))
-            fig = plot_decomposition_heatmaps(
-                eid, camera, keypoints, bin_times, full_c, full_r, full_x, explained, rank,
-                report['vmax_full'][camera], mark=mark,
-                note=f'; whole recording, {len(bin_times)} time bins averaged',
-            )
-            result['heatmaps_full'][camera] = save_figure(
-                fig, plots_dir / f'heatmap.pca_decomposition.full.{eid}.{camera}',
-            )[0]
         if options.video:
             # lazy: cv2 is only needed to render
             from pose2visual.qc.video.pca_panels import PcaVideoJob, render_pca_video

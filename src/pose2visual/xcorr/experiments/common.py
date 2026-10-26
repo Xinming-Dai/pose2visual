@@ -248,7 +248,6 @@ def write_figure_guide(
     title: str,
     order_label: str,
     scale: float,
-    difference_scale: float,
     corrected_stem: str,
     figures: list[tuple[str, str]],
 ) -> Path:
@@ -260,7 +259,6 @@ def write_figure_guide(
         title: experiment title, e.g. `'Experiment B: PCA'`.
         order_label: name of the neuron order the heatmaps are drawn in.
         scale: shared half-range of the original and corrected heatmaps.
-        difference_scale: half-range of the difference heatmaps.
         corrected_stem: stem of the corrected heatmap, e.g. `'pca_speed'`.
         figures: `(stem, meaning)` of each figure drawn, in drawing order; `stem` excludes the
             eid and the suffix.
@@ -271,24 +269,22 @@ def write_figure_guide(
     lines = [
         f'# {title}: figures ({eid})',
         '',
-        f'Every figure is saved as `<stem>.{eid}.png` and `<stem>.{eid}.pdf`; the parts of a stem '
-        'are separated by `.`, so `heatmap.group_mean.difference` is a `heatmap` of variant '
-        '`group_mean.difference`.',
+        f'Every figure is saved as `<stem>.{eid}.png` (png only); the parts of a stem are '
+        'separated by `.`, so `heatmap.original_speed` is a `heatmap` of variant '
+        '`original_speed`.',
         '',
         '## Reading a `heatmap.*` figure',
         '',
-        '- One row per camera; one narrow strip per column (a keypoint, or a group for '
-        '`group_mean`), neurons on y and lag on x. Columns of one body-part group sit together '
-        'under one group label; a left- and a right-camera keypoint of the same body part share '
-        'a column.',
-        f'- Neurons are drawn in **{order_label}** order (the same order in every strip).',
+        '- One row per camera; one narrow strip per keypoint, neurons on y and lag on x. Columns '
+        'of one body-part group sit together under one group label; a left- and a right-camera '
+        'keypoint of the same body part share a column.',
+        f'- Neurons are drawn in **{order_label}** order (the same order in every strip, and in '
+        f'`heatmap.original_speed` and `heatmap.{corrected_stem}`).',
         '- The number on a strip is the max |value| of that strip.',
-        f'- `heatmap.original_speed` and `heatmap.{corrected_stem}` (and their `group_mean` '
-        f'versions) share the colour scale +-{scale:.2f}, so they can be compared by eye; the '
-        f'`difference` heatmaps have their own scale +-{difference_scale:.2f}.',
-        '- Values are neuron-behavior cross-correlations (Pearson r at each lag); `difference` '
-        f'is `{corrected_stem} - original_speed`, so it is exactly 0 for a column that was not '
-        'corrected.',
+        f'- `heatmap.original_speed` and `heatmap.{corrected_stem}` have the same neurons, '
+        f'keypoints, lags and colour scale (+-{scale:.2f}), so they can be compared by eye; a '
+        'column that was not corrected is identical in both.',
+        '- Values are neuron-behavior cross-correlations (Pearson r at each lag).',
         '',
         '## Figures',
         '',

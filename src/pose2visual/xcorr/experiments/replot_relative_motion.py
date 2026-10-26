@@ -186,7 +186,7 @@ def replot_session(
             `None` makes a new name from the current New York time.
 
     Returns:
-        The written figure files, png and pdf of each figure.
+        The written png files and the figure guide.
 
     Raises:
         FileNotFoundError: if the session has no saved Experiment C results.
@@ -212,8 +212,8 @@ def replot_session(
     return plot_results(
         plots_dir, eid, results['lags_sec'], results['cameras'], results['names'],
         results['groups'], results['valid'], results['r_original'], results['r_relative'],
-        idx_order, order_label, vmax, results['corrected'], results['no_centroid'],
-        results['summary'], results['group_rows'], results['centroids'],
+        idx_order, order_label, vmax, results['corrected'], results['summary'],
+        results['group_rows'], results['centroids'],
     )
 
 

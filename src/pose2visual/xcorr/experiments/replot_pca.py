@@ -22,7 +22,14 @@ import numpy as np
 import pandas as pd
 
 from pose2visual.xcorr.experiments.common import resolve_order
-from pose2visual.xcorr.experiments.pca import plot_results
+from pose2visual.xcorr.experiments.pca import anatomical_groups, plot_results
+from pose2visual.xcorr.experiments.pca_reconstruction import (
+    DECOMPOSITION_SUFFIX,
+    HEATMAP_PERCENTILE,
+    HEATMAP_STEP,
+    decomposition_text,
+    draw_decomposition_heatmap,
+)
 from pose2visual.xcorr.plots import order_subdir, timestamp_subdir
 from pose2visual.xcorr.replot import REPLOT_ORDERS
 from pose2visual.xcorr.settings import (
@@ -177,7 +184,7 @@ def replot_session(
             the neuron order is appended; `None` makes a new name from the current New York time.
 
     Returns:
-        The written figure files, png and pdf of each figure.
+        The written png files and the figure guide.
 
     Raises:
         FileNotFoundError: if the session has no saved Experiment B results.
@@ -204,7 +211,82 @@ def replot_session(
         idx_order, order_label, vmax, results['position_names'],
         results['r_position'], results['valid_position'], results['pca_applied'],
         results['summary'], results['camera_report'],
+        anatomical_groups(config_path, results['names']),
     )
+
+
+def replot_decomposition(
+    config_path: str | Path,
+    eid: str,
+    cameras: list[str] | None = None,
+    plots_subdir: str | None = None,
+) -> list[Path]:
+    """Redraw the PCA decomposition heatmap of one finished Experiment B run (png only).
+
+    Reads the `pca_decomposition.<eid>.<camera>.npz` files the run saved; the colour scale is the
+    run's own (its `pca_decomposition.<eid>.json`, else the data's percentile). The video is not
+    redrawn (`pca_reconstruction`).
+
+    Args:
+        config_path: path of the encoding yaml (locates the session folder).
+        eid: session id.
+        cameras: cameras to draw; `None` = all that were saved.
+        plots_subdir: run name; the figures go to `<plots_subdir>_decomposition`; `None` makes a
+            new name from the current New York time.
+
+    Returns:
+        The written png files and `decomposition.<eid>.md` (how to read them); empty (with a
+        warning) if the run saved no decomposition.
+
+    Raises:
+        FileNotFoundError: if the session has no saved Experiment B results.
+    """
+    # lazy: matplotlib is only needed to draw
+    from pose2visual.xcorr.figures import heatmap_vmax
+
+    settings = load_xcorr_settings(config_path)
+    session_dir = xcorr_dir(config_path, eid, settings['output_name'])
+    out_dir = latest_results_dir(session_dir, EXPERIMENT_PCA, f'pca_speed_arrays.{eid}.npz')
+    report_path = out_dir / f'pca_decomposition.{eid}.json'
+    report = json.loads(report_path.read_text(encoding='utf-8')) if report_path.is_file() else {}
+    saved = {
+        path.name.split('.')[-2]: path for path in out_dir.glob(f'pca_decomposition.{eid}.*.npz')
+    }
+    if not saved:
+        logger.warning(f'{out_dir} has no saved PCA decomposition; its heatmap is skipped')
+        return []
+    wanted = [c for c in saved if cameras is None or c in cameras]
+    if not wanted:
+        logger.warning(f'no saved PCA decomposition for cameras {cameras}; skipped')
+        return []
+    plots_dir = plot_video_dir(session_dir, EXPERIMENT_PCA) / (
+        f'{plots_subdir or timestamp_subdir()}_{DECOMPOSITION_SUFFIX}'
+    )
+    plots_dir.mkdir(parents=True, exist_ok=True)
+    paths = []
+    vmax_used: dict[str, float] = {}
+    for camera in wanted:
+        data = np.load(saved[camera])
+        ratio = data['explained_variance_ratio']
+        # runs from before the window heatmap was dropped saved this as `vmax_full`
+        vmax = report.get('vmax', report.get('vmax_full', {})).get(camera)
+        if vmax is None:
+            vmax = heatmap_vmax(data['full_centered'], HEATMAP_PERCENTILE, HEATMAP_STEP)
+        vmax_used[camera] = float(vmax)
+        paths.append(draw_decomposition_heatmap(
+            plots_dir, eid, camera, [str(k) for k in data['keypoints']], data['full_times'],
+            data['full_centered'], data['full_rank'], data['full_residual'], float(np.sum(ratio)),
+            len(ratio), float(vmax), (float(data['times'][0]), float(data['times'][-1])),
+        ))
+    if report:
+        report = {
+            **report, 'vmax': vmax_used,
+            'cameras': {c: info for c, info in report['cameras'].items() if c in wanted},
+        }
+        md_path = plots_dir / f'decomposition.{eid}.md'
+        md_path.write_text(decomposition_text(report), encoding='utf-8')
+        paths.append(md_path)
+    return paths
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -228,6 +310,7 @@ def main(argv: list[str] | None = None) -> None:
                 paths = replot_session(
                     config, eid, args.cameras, args.order, args.vmax, plots_subdir,
                 )
+                paths += replot_decomposition(config, eid, args.cameras, plots_subdir)
                 logger.info(f'wrote {[str(p) for p in paths]}')
             except Exception as error:  # noqa: BLE001 - one session must not stop the others
                 logger.error(f'{eid} failed: {error}')

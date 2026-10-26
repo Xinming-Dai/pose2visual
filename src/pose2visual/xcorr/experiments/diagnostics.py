@@ -8,6 +8,7 @@ trajectories and the table of corrected and skipped groups. Like ``figures``, th
 ``matplotlib.figure.Figure`` objects directly (no pyplot backend) and the caller saves them.
 """
 
+import zlib
 from typing import Any
 
 import numpy as np
@@ -18,24 +19,38 @@ TEXT_COLOR = '0.15'
 ORIGINAL_COLOR = '0.35'
 PRIMARY_COLOR = '#0072B2'
 RESIDUAL_COLOR = '#D55E00'
-# Okabe-Ito, colour-blind safe; groups beyond the eighth reuse colours
+# Okabe-Ito, colour-blind safe
 GROUP_PALETTE = (
     '#0072B2', '#D55E00', '#009E73', '#CC79A7', '#E69F00', '#56B4E9', '#F0E442', '#000000',
 )
+# one fixed colour per anatomical group (`body_parts.json`), so a group looks the same in every
+# camera, session and experiment
+GROUP_COLORS = {
+    'eye_related': '#0072B2',
+    'ear_related': '#D55E00',
+    'mouth_related': '#009E73',
+    'nose_pad_related': '#CC79A7',
+    'forelimb': '#E69F00',
+    'tongue': '#56B4E9',
+    'digits': '#000000',
+}
+UNCORRECTED_COLOR = '0.8'
 EXCERPT_SEC = 20.0
 
 
-def group_colors(groups: list[str]) -> dict[str, str]:
-    """Assign one colour to every group, in order of first appearance.
+def group_color(group: str) -> str:
+    """Colour of an anatomical group, the same in every figure.
 
     Args:
-        groups: group names, possibly repeated.
+        group: group name.
 
     Returns:
-        Group name -> colour.
+        The fixed colour of a known group; any other name gets a palette colour chosen by a stable
+        hash of the name (not by the order the groups appear in).
     """
-    unique = list(dict.fromkeys(groups))
-    return {g: GROUP_PALETTE[idx % len(GROUP_PALETTE)] for idx, g in enumerate(unique)}
+    if group in GROUP_COLORS:
+        return GROUP_COLORS[group]
+    return GROUP_PALETTE[zlib.crc32(group.encode()) % len(GROUP_PALETTE)]
 
 
 def plot_pca_explained_variance(entries: list[dict[str, Any]]) -> Figure:
@@ -112,39 +127,61 @@ def plot_peak_scatter(panels: list[dict[str, Any]]) -> Figure:
 
     Args:
         panels: one dict per camera with `camera`, `original` and `relative` (``[N, B]`` peak
-            absolute correlations over lags), `groups` (``B`` names) and `corrected` (bool
-            ``[B]``). Keypoints without a correction (e.g. a centroid subtraction or a PCA
-            denoising) lie on the diagonal by construction and are drawn in grey.
+            absolute correlations over lags), `groups` (``B`` anatomical group names) and
+            `corrected` (bool ``[B]``). Keypoints without a correction (e.g. a centroid
+            subtraction or a PCA denoising) lie on the diagonal by construction and are not drawn.
 
     Returns:
-        The figure: one panel per camera with the identity line.
+        One figure with a row per camera and a column per anatomical group that has a corrected
+        keypoint in any camera (`GROUP_COLORS` order first). Every panel has the identity line
+        and the same square axes, and its points are coloured with `group_color`; a camera
+        without that group leaves its cell empty.
     """
-    fig = Figure(figsize=(5.6 * len(panels), 5.4), layout='constrained')
-    axes = fig.subplots(1, len(panels), squeeze=False)[0]
-    for ax, panel in zip(axes, panels):
-        colors = group_colors(list(panel['groups']))
-        top = 0.0
-        for idx_b, group in enumerate(panel['groups']):
-            corrected = bool(panel['corrected'][idx_b])
-            x, y = panel['original'][:, idx_b], panel['relative'][:, idx_b]
-            top = max(top, float(np.nanmax(x)), float(np.nanmax(y)))
+    present = {
+        group for panel in panels
+        for group, flag in zip(panel['groups'], panel['corrected']) if flag
+    }
+    known = [group for group in GROUP_COLORS if group in present]
+    groups = known + sorted(present - set(known))
+    n_rows, n_cols = len(panels), max(1, len(groups))
+    fig = Figure(figsize=(3.1 * n_cols + 0.6, 3.2 * n_rows + 0.4), layout='constrained')
+    axes = fig.subplots(n_rows, n_cols, sharex=True, sharey=True, squeeze=False)
+    top = 0.0
+    for panel in panels:
+        for idx_b, flag in enumerate(panel['corrected']):
+            if flag:
+                top = max(
+                    top, float(np.nanmax(panel['original'][:, idx_b])),
+                    float(np.nanmax(panel['relative'][:, idx_b])),
+                )
+    top = top or 1.0
+    for idx_r, panel in enumerate(panels):
+        for idx_c, ax in enumerate(axes[idx_r]):
+            group = groups[idx_c] if idx_c < len(groups) else None
+            idx_b = [
+                i for i, (g, flag) in enumerate(zip(panel['groups'], panel['corrected']))
+                if flag and g == group
+            ]
+            if not idx_b:
+                ax.axis('off')
+                continue
             ax.scatter(
-                x, y, s=5, alpha=0.5 if corrected else 0.2, linewidths=0,
-                color=colors[group] if corrected else '0.6',
+                panel['original'][:, idx_b].ravel(), panel['relative'][:, idx_b].ravel(), s=5,
+                alpha=0.6, linewidths=0, color=group_color(group),
             )
-        ax.plot([0, top], [0, top], color='k', lw=0.6, ls='--')
-        ax.set_xlim(0, top * 1.03)
-        ax.set_ylim(0, top * 1.03)
-        ax.set_aspect('equal')
-        ax.set_xlabel('peak |r|, original speed', fontsize=8)
-        ax.set_ylabel('peak |r|, corrected speed', fontsize=8)
-        ax.set_title(f'{panel["camera"]} camera', fontsize=9, color=TEXT_COLOR)
-        ax.tick_params(labelsize=7)
-        handles = [
-            ax.scatter([], [], s=12, color=color, label=group) for group, color in colors.items()
-        ]
-        handles.append(ax.scatter([], [], s=12, color='0.6', label='not corrected'))
-        ax.legend(handles=handles, fontsize=6, frameon=False, loc='lower right')
+            ax.plot([0, top], [0, top], color='k', lw=0.6, ls='--')
+            ax.set_xlim(0, top * 1.03)
+            ax.set_ylim(0, top * 1.03)
+            ax.set_aspect('equal')
+            ax.set_title(
+                f'{panel["camera"]} camera: {group} ({len(idx_b)} keypoints)', fontsize=8,
+                color=TEXT_COLOR,
+            )
+            ax.tick_params(labelsize=7)
+            if idx_r == n_rows - 1 or not axes[idx_r + 1, idx_c].axison:
+                ax.set_xlabel('peak |r|, original speed', fontsize=7)
+            if idx_c == 0 or not axes[idx_r, idx_c - 1].axison:
+                ax.set_ylabel('peak |r|, corrected speed', fontsize=7)
     return fig
 
 

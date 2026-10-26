@@ -27,9 +27,8 @@ keeps only ``wrist_left`` / ``wrist_right`` once the digits are excluded, as thi
 normally do), so its baseline speed is kept unchanged. Keypoints matching neither a face nor a paw
 token are likewise left unchanged and reported as ``unassigned``.
 
-The same fit is also shown for itself (``pca_reconstruction``): for one representative window and
-the whole recording, a heatmap of the centered positions, their rank-k part and the residual, and
-a synchronized video, written to ``plot_video/experiment_B_pca/<run>_decomposition/`` with an md
+The same fit is also shown for itself (``pca_reconstruction``): a heatmap of the whole recording
+(centered positions, their rank-k part and the residual) and a synchronized video of one window, written to ``plot_video/experiment_B_pca/<run>_decomposition/`` with an md
 that explains them (``--no-decomposition`` skips it).
 
 The original speed cross-correlations it is compared against are recomputed here with the
@@ -82,9 +81,11 @@ from pose2visual.xcorr.experiments.relative_motion import (
     MIN_RELIABLE_KEYPOINTS,
     bin_with_gaps,
     load_camera_positions,
+    resolve_body_groups,
     screen_traces,
 )
 from pose2visual.xcorr.plots import order_subdir, timestamp_subdir
+from pose2visual.xcorr.run_xcorr import behavior_groups
 from pose2visual.xcorr.settings import (
     EXPERIMENT_PCA,
     freeze_config,
@@ -97,12 +98,12 @@ logger = logging.getLogger(__name__)
 PAW_TOKENS = frozenset({'wrist', 'd1', 'd2', 'd3', 'd4'})
 UNASSIGNED_GROUP = 'unassigned'
 DEFAULT_N_COMPONENTS = 2
-DIFFERENCE_COLORBAR = 'pca minus original correlation'
 # (stem, meaning) rows of the figure guide (`common.write_figure_guide`)
 HEATMAP_GUIDE = (
     (
         'heatmap.original_speed',
-        "baseline xcorr of each keypoint's absolute speed (the same quantity as Experiment A)",
+        "baseline xcorr of each keypoint's absolute speed (the same quantity as Experiment A; "
+        'same colour scale, neuron order, keypoints and lags as `heatmap.pca_speed`)',
     ),
     (
         'heatmap.pca_speed',
@@ -110,11 +111,6 @@ HEATMAP_GUIDE = (
         'principal components (denoised, back in pixels), its speed recomputed and '
         "cross-correlated under the keypoint's own name; paw and unassigned keypoints keep the "
         'original xcorr',
-    ),
-    (
-        'heatmap.difference',
-        '`pca_speed - original_speed` per keypoint, neuron and lag: positive = the denoised speed '
-        'correlates more positively than the raw speed; non-face columns are exactly 0',
     ),
 )
 POSITION_PCA_GUIDE = (
@@ -125,9 +121,11 @@ POSITION_PCA_GUIDE = (
 )
 SCATTER_GUIDE = (
     'scatter.peak_abs_r',
-    'one dot per neuron-keypoint pair: peak \\|r\\| over lags of the original speed (x) against '
-    'the PCA speed (y); grey = PCA not applied (on the diagonal by construction); below the '
-    'diagonal = the denoising lost correlation',
+    'one panel per camera (row) and corrected anatomical group (column), same axes in every '
+    'panel and the same group colours in every camera and session; one dot per neuron-keypoint '
+    'pair: peak \\|r\\| over lags of the original speed (x) against the PCA speed (y); below '
+    'the dashed diagonal = the denoising lost correlation, above = gained; uncorrected keypoints '
+    '(on the diagonal by construction) are not drawn',
 )
 VARIANCE_GUIDE = (
     'bar.variance',
@@ -273,6 +271,24 @@ def assign_face_paw_groups(
         else:
             unassigned.append(name)
     return groups, unassigned
+
+
+def anatomical_groups(config_path: str | Path, names: list[str]) -> list[str]:
+    """Anatomical group of each keypoint, the groups Experiment C and the baseline use.
+
+    The heatmap strips of this experiment are grouped as face / paw (`assign_face_paw_groups`);
+    the scatter is coloured by these finer groups (eye_related, ear_related, ...) instead.
+
+    Args:
+        config_path: path of the encoding yaml.
+        names: keypoint names.
+
+    Returns:
+        One group name per entry of `names` (`'other'` for a keypoint in no group).
+    """
+    by_group = behavior_groups(names, resolve_body_groups(config_path))
+    group_of = {names[idx]: group for group, idx_group in by_group.items() for idx in idx_group}
+    return [group_of[name] for name in names]
 
 
 def camera_pca(
@@ -621,6 +637,7 @@ def run_session(
     r_original = np.where(valid[:, None, :, None], r_original_all, np.nan)
     r_speed_pca_masked = np.where(valid[:, None, :, None], r_speed_pca, np.nan)
     summary = pd.DataFrame(stat_rows)
+    scatter_groups = anatomical_groups(config_path, names)
 
     speed_arrays_path = out_dir / f'pca_speed_arrays.{eid}.npz'
     np.savez_compressed(
@@ -661,6 +678,7 @@ def run_session(
                 this_dir, eid, lags_sec, cams, names, groups_out, valid, r_original,
                 r_speed_pca_masked, idx_order, order_label, vmax, position_names,
                 r_position_pca, valid_position, pca_applied, summary, camera_report,
+                scatter_groups,
             )
             if order == 'saved':
                 plots_dir = this_dir
@@ -705,6 +723,7 @@ def plot_results(
     pca_applied: np.ndarray,
     summary: pd.DataFrame,
     camera_report: dict[str, Any],
+    scatter_groups: list[str],
 ) -> list[Path]:
     """Draw every Experiment B figure from already-computed (or reloaded) arrays.
 
@@ -733,10 +752,12 @@ def plot_results(
         summary: per-keypoint statistics table (`run_session`'s `summary`).
         camera_report: camera -> `plan`/`explained_variance_ratio`/`n_components` (`run_session`'s
             `camera_report`, or the `cameras` entry of a saved `pca_groups.<eid>.json`).
+        scatter_groups: anatomical group of each behavior (`names` order) that colours
+            `scatter.peak_abs_r` (`anatomical_groups`).
 
     Returns:
-        The written figure files, png and pdf of each figure, then the figure guide
-        `figures.<eid>.md` (`common.write_figure_guide`).
+        The written png files, then the figure guide `figures.<eid>.md`
+        (`common.write_figure_guide`).
     """
     # lazy: matplotlib is only needed to draw
     from pose2visual.xcorr.experiments import diagnostics
@@ -746,31 +767,23 @@ def plot_results(
     guide = list(HEATMAP_GUIDE)
     scale = vmax if vmax is not None else heatmap_vmax(r_original)
     ylabel = f'neurons ({order_label} order)'
-    difference = r_speed_pca_masked - r_original
-    difference_scale = heatmap_vmax(difference)
     panels = [
+        ('original_speed', r_original, 'original speed (absolute)'),
         (
-            'original_speed', r_original, scale, 'original speed (absolute)',
-            BASELINE_COLORBAR_LABEL,
-        ),
-        (
-            'pca_speed', r_speed_pca_masked, scale,
+            'pca_speed', r_speed_pca_masked,
             'denoised speed (face group reprojected onto its top components)',
-            BASELINE_COLORBAR_LABEL,
         ),
-        ('difference', difference, difference_scale, 'pca minus original speed xcorr',
-         DIFFERENCE_COLORBAR),
     ]
-    for stem, data, panel_scale, label, colorbar in panels:
+    for stem, data, label in panels:
         fig = plot_xcorr_overview(
-            data[:, idx_order], lags_sec, names, cams, groups_out, valid, eid, panel_scale,
+            data[:, idx_order], lags_sec, names, cams, groups_out, valid, eid, scale,
             ylabel=ylabel,
         )
         relabel_overview(
-            fig, f'{eid}: {label}; colour scale +-{panel_scale:.2f}; each strip: neurons x lag, '
-            'number = max |value|', colorbar,
+            fig, f'{eid}: {label}; colour scale +-{scale:.2f}; each strip: neurons x lag, '
+            'number = max |value|', BASELINE_COLORBAR_LABEL,
         )
-        paths += save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}')
+        paths += save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}', pdf=False)
     if valid_position.any():
         pos_scale = heatmap_vmax(r_position_pca)
         pos_groups = ['face_position'] * len(position_names)
@@ -782,7 +795,7 @@ def plot_results(
             fig, f'{eid}: PCA on positions (face group component scores); colour scale '
             f'+-{pos_scale:.2f}', BASELINE_COLORBAR_LABEL,
         )
-        paths += save_figure(fig, plots_dir / f'heatmap.position_pca.{eid}')
+        paths += save_figure(fig, plots_dir / f'heatmap.position_pca.{eid}', pdf=False)
         guide.append(POSITION_PCA_GUIDE)
     with warnings.catch_warnings():
         # a camera without a keypoint is all NaN
@@ -795,15 +808,17 @@ def plot_results(
         scatter_panels.append({
             'camera': camera, 'original': peak_original[idx_c][:, idx_b],
             'relative': peak_pca[idx_c][:, idx_b],
-            'groups': [groups_out[i] for i in idx_b], 'corrected': pca_applied[idx_c, idx_b],
+            'groups': [scatter_groups[i] for i in idx_b], 'corrected': pca_applied[idx_c, idx_b],
         })
     paths += save_figure(
         diagnostics.plot_peak_scatter(scatter_panels), plots_dir / f'scatter.peak_abs_r.{eid}',
+        pdf=False,
     )
     guide.append(SCATTER_GUIDE)
     if not summary.empty:
         paths += save_figure(
             diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}',
+            pdf=False,
         )
         guide.append(VARIANCE_GUIDE)
     group_rows = [
@@ -811,7 +826,7 @@ def plot_results(
         for camera, info in camera_report.items() for entry in info['plan']
     ]
     paths += save_figure(
-        diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}',
+        diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}', pdf=False,
     )
     guide.append(GROUPS_TABLE_GUIDE)
     variance_entries = [
@@ -821,12 +836,11 @@ def plot_results(
     if variance_entries:
         paths += save_figure(
             diagnostics.plot_pca_explained_variance(variance_entries),
-            plots_dir / f'bar.explained_variance.{eid}',
+            plots_dir / f'bar.explained_variance.{eid}', pdf=False,
         )
         guide.append(EXPLAINED_VARIANCE_GUIDE)
     paths.append(write_figure_guide(
-        plots_dir, eid, 'Experiment B: PCA', order_label, scale, difference_scale, 'pca_speed',
-        guide,
+        plots_dir, eid, 'Experiment B: PCA', order_label, scale, 'pca_speed', guide,
     ))
     return paths
 

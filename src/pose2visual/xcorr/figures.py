@@ -43,20 +43,23 @@ def heatmap_vmax(r: np.ndarray, percentile: float = 99.5, step: float = 0.05) ->
     return max(step, float(np.ceil(limit / step) * step))
 
 
-def save_figure(fig: Figure, stem: Path, dpi: int = 200) -> list[Path]:
-    """Save a figure as png and pdf.
+def save_figure(fig: Figure, stem: Path, dpi: int = 200, pdf: bool = True) -> list[Path]:
+    """Save a figure as png and, unless `pdf` is `False`, pdf.
 
     Args:
         fig: the figure.
         stem: output path without suffix; its folder is created.
         dpi: resolution of the png.
+        pdf: also write `<stem>.pdf`; the experiment figures (B, C) pass `False`.
 
     Returns:
-        The written paths, `<stem>.png` then `<stem>.pdf`.
+        The written paths, `<stem>.png` then (if `pdf`) `<stem>.pdf`.
     """
     stem.parent.mkdir(parents=True, exist_ok=True)
     # a dot in the stem (the session id is separated from other parts by dots) is not a suffix
-    paths = [stem.parent / f'{stem.name}.png', stem.parent / f'{stem.name}.pdf']
+    paths = [stem.parent / f'{stem.name}.png']
+    if pdf:
+        paths.append(stem.parent / f'{stem.name}.pdf')
     for path in paths:
         # tight bbox keeps text that runs past the canvas (e.g. a long title) instead of cutting it
         fig.savefig(path, dpi=dpi, bbox_inches='tight', pad_inches=0.1)

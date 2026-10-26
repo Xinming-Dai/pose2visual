@@ -18,64 +18,33 @@ source ~/.bashrc
 conda activate beast
 cd "$REPO"
 
-# Step 1: the xcorr computations for one session (needs step0_extract_neural.sh and
-# lightningpose_encoding/step0_list_keypoints.sh for every camera). A, B and C draw their figures
-# in both neuron orders (the heatmap of A carries PETH strips), so step2_plot_xcorr.sh is only
-# needed to redraw them (another colour scale, cameras, ...). session.camera is not read.
+# Step 1: neural-behavior cross-correlation of one session (needs step 0 and
+# lightningpose_encoding/step0_list_keypoints.sh).
+#   sbatch scripts/delta/lightningpose_xcorr/step1_compute_xcorr.sh [--exp A|B|C|all] <eid>
 #
-# --exp selects what runs (default all; a comma list such as B,C is allowed). Every experiment
-# writes two folders inside <video_preds_dir>/xcorr/<eid>/ (step-0 inputs stay in that folder):
-#   plot_video/<experiment>/<time>_<order>/   figures, videos and their guide md: download THIS
-#                                             folder to show the plots to others
-#   results/<experiment>/<time>/              npz, csv, json, pkl and run reports
-# <time> is the New York time of the run (PLOTS_SUBDIR names it instead).
-#   A  PETHs (pose2visual.xcorr.peth, optional, soft failure), then the baseline
-#      neural-behavior cross-correlation (pose2visual.xcorr.run_xcorr), whose heatmap carries
-#      the reward / movement-onset strips -> experiment_A_baseline/<time>_<order>/ (e.g.
-#      <time>_rastermap), plus the same heatmap with neurons in depth order ->
-#      experiment_A_baseline/<time>_depth/
-#   B  PCA of the face group (pose2visual.xcorr.experiments.pca) -> experiment_B_pca/<time>_<order>/
-#      and the same figures in depth order -> experiment_B_pca/<time>_depth/; it also draws the
-#      PCA decomposition of the face (heatmaps of X_centered / X_rank2 / X_residual over one
-#      window and the whole recording, a synchronized video, decomposition.<eid>.md) ->
-#      experiment_B_pca/<time>_decomposition/
-#   C  relative motion (pose2visual.xcorr.experiments.relative_motion)
-#      -> experiment_C_relative_motion/<time>_<order>/ and <time>_depth/
-# A, B and C are independent: B and C recompute the original speed xcorrs they compare against
-# (same code and settings as A), so they need only step 0 and can run as parallel jobs:
-#   for exp in A B C; do sbatch scripts/delta/lightningpose_xcorr/step1_compute_xcorr.sh --exp $exp <eid>; done
-# Use the same CAMERAS / EXCLUDE for all three so they compare like with like. A failing stage is
-# logged and does not stop the others; the job exits with the status of the first failure
-# (a PETH failure is only logged).
+# Experiments (independent, can run as parallel jobs; use the same CAMERAS / EXCLUDE for all):
+#   A  baseline xcorr of keypoint speed (+ PETHs)
+#   B  PCA of the face group
+#   C  centroid-corrected relative motion
 #
-# The yaml is copied by each python call when it starts, so it can be edited once the job is
-# running (a job that is still queued reads it when it starts).
-# Override from the environment, e.g.:
-#   sbatch --export=ALL,EID=...,CAMERAS=left,EXCLUDE=,ORDER=depth scripts/delta/lightningpose_xcorr/step1_compute_xcorr.sh --exp A
-#   EXP                 same as --exp (the command-line flag wins)
-#   CAMERAS             cameras to analyse, space separated (default "left right")
-#   EXCLUDE             A / B / C: glob patterns of keypoints to leave out (default "d*" = the
-#                       finger keypoints d1_tip_left ... d4_tip_right); EXCLUDE= keeps everything
-#   ORDER               A: neuron order of the heatmap: rastermap (needs
-#                       `pip install rastermap`), depth or none
-#   SKIP_DEPTH_ORDER    A / B / C: set to 1 to skip the extra depth-order figures (<time>_depth/);
-#                       they are never drawn twice when the first order is already depth
-#   N_PERMUTATIONS      A: circular-shift permutations of the significance test (default: the
-#                       yaml's xcorr.n_permutations = 0 = no test; e.g. 1000 adds p / q values)
-#   N_COMPONENTS        B: number of principal components to keep for the face group (default 2)
-#   SKIP_DECOMPOSITION  B: set to 1 to skip the decomposition heatmaps / video / md
-#   NO_VIDEO            B: set to 1 to draw the decomposition heatmaps but render no video
-#   START_SEC           B: decomposition window start in session seconds (default: picked on the
-#                       left camera, the right camera uses the same times)
+# Overrides (e.g. sbatch --export=ALL,EID=...,CAMERAS=left,EXCLUDE= ...):
+#   EXP                 same as --exp (the flag wins)
+#   CAMERAS             cameras, space separated (default "left right")
+#   EXCLUDE             glob patterns of keypoints to leave out (default "d*"); EXCLUDE= keeps all
+#   ORDER               A: neuron order: rastermap (default), depth or none
+#   SKIP_DEPTH_ORDER    set to 1 to skip the extra depth-order figures
+#   N_PERMUTATIONS      A: permutations of the significance test (default 0 = none)
+#   N_COMPONENTS        B: principal components kept (default 2)
+#   SKIP_DECOMPOSITION  B: set to 1 to skip the decomposition heatmap / video
+#   NO_VIDEO            B: set to 1 to skip the decomposition video
+#   START_SEC           B: decomposition window start in seconds (default: auto)
 #   DURATION_SEC        B: decomposition window length in seconds (default 10)
 #   VIDEO_ROOT          B: folder with the <left|right>Camera.video folders
 #   CROP_PAD            B: zoom the decomposition video to the keypoints plus this many pixels
-#                       (default: whole frame)
-#   MIN_VALID_FRACTION  B / C: a keypoint whose denoised/relative speed is defined in a smaller
-#                       fraction of the bins is left out and reported (default 0.5)
-#   NO_CENTROID_GROUPS  C: groups that keep their original speed although they have two or more
-#                       keypoints (default "forelimb"); set it empty (NO_CENTROID_GROUPS=) to
-#                       correct every group of 2+ keypoints
+#   MIN_VALID_FRACTION  B / C: leave out keypoints defined in a smaller fraction of bins (0.5)
+#   NO_CENTROID_GROUPS  C: groups that keep their original speed (default "forelimb");
+#                       NO_CENTROID_GROUPS= corrects every group of 2+ keypoints
+#   CONFIG, VIDEO_TIMESTAMPS_DIR, EID
 CONFIG="${CONFIG:-$REPO/configs/encoding/litpose_encoding.yaml}"
 VIDEO_TIMESTAMPS_DIR="${VIDEO_TIMESTAMPS_DIR:-/work/hdd/bfsr/xdai3/IBL-2view/timestamps}"
 ORDER="${ORDER:-rastermap}"
