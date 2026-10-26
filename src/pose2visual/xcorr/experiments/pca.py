@@ -27,10 +27,16 @@ keeps only ``wrist_left`` / ``wrist_right`` once the digits are excluded, as thi
 normally do), so its baseline speed is kept unchanged. Keypoints matching neither a face nor a paw
 token are likewise left unchanged and reported as ``unassigned``.
 
+The same fit is also shown for itself (``pca_reconstruction``): for one representative window and
+the whole recording, a heatmap of the centered positions, their rank-k part and the residual, and
+a synchronized video, written to ``plot_video/experiment_B_pca/<run>_decomposition/`` with an md
+that explains them (``--no-decomposition`` skips it).
+
 The original speed cross-correlations it is compared against are recomputed here with the
 baseline's own code (``common.compute_original``), so this does not wait for Experiment A; only the
 neuron order of the figures is taken from A when A has run (``common.resolve_order``). Everything
-is written to ``<session>/experiment_B_pca/``.
+is written to ``<session>/results/experiment_B_pca/<run>/`` (arrays, csv, json) and
+``<session>/plot_video/experiment_B_pca/<run>_<order>/`` (figures and their guide).
 
 Usage::
 
@@ -58,12 +64,19 @@ from pose2visual.encoding.litpose_pca import project_group, reproject_group
 from pose2visual.xcorr.experiments.common import (
     BASELINE_COLORBAR_LABEL,
     compute_original,
-    experiment_dir,
     relabel_overview,
     resolve_order,
     write_figure_guide,
 )
 from pose2visual.xcorr.experiments.masked_crosscorr import masked_cross_correlation
+from pose2visual.xcorr.experiments.pca_reconstruction import (
+    DECOMPOSITION_SUFFIX,
+    DecompositionOptions,
+    add_window_arguments,
+    decompose_positions,
+    options_from_args,
+    write_decomposition,
+)
 from pose2visual.xcorr.experiments.relative_motion import (
     DEFAULT_MIN_VALID_FRACTION,
     MIN_RELIABLE_KEYPOINTS,
@@ -72,7 +85,12 @@ from pose2visual.xcorr.experiments.relative_motion import (
     screen_traces,
 )
 from pose2visual.xcorr.plots import order_subdir, timestamp_subdir
-from pose2visual.xcorr.settings import EXPERIMENT_PCA, freeze_config, resolve_eids
+from pose2visual.xcorr.settings import (
+    EXPERIMENT_PCA,
+    freeze_config,
+    new_run_dirs,
+    resolve_eids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -177,8 +195,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='figure folder inside experiment_B_pca (default: New York time); the neuron order is '
-        'appended, e.g. <name>_rastermap.',
+        help='run name: results/experiment_B_pca/<name> and the figure folders '
+        'plot_video/experiment_B_pca/<name>_<order>, e.g. <name>_rastermap (default: New York '
+        'time).',
     )
     parser.add_argument(
         '--no-depth-plot', action='store_true',
@@ -189,6 +208,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help='compute and save the arrays/csv/json only, draw no figures; redraw them later '
         'with pose2visual.xcorr.experiments.replot_pca.',
     )
+    parser.add_argument(
+        '--no-decomposition', action='store_true',
+        help='do not draw the PCA decomposition (heatmaps, video, md) of the face; they are '
+        'written to plot_video/experiment_B_pca/<plots-subdir>_decomposition.',
+    )
+    add_window_arguments(parser)
     return parser.parse_args(argv)
 
 
@@ -281,7 +306,10 @@ def camera_pca(
         Dict with `names` (analysed keypoints, in `baseline_names` order), `pca_applied` (bool,
         one per name: `True` for a face keypoint with a usable PCA fit), `speed_traces` (name ->
         binned denoised speed, face keypoints only), `position_traces` (`face_pcK_position` ->
-        binned score, `K` from 1), `pca_info` (`None` if no usable face keypoint, else `members`,
+        binned score, `K` from 1), `decomposition` (`None` if no face keypoint, else `keypoints`,
+        `times`, `reliable` `[F, K]`, `csv_path` and `parts`: `decompose_positions` of the face
+        keypoints, i.e. the same fit as below, for `pca_reconstruction.write_decomposition`),
+        `pca_info` (`None` if no usable face keypoint, else `members`,
         `n_components_requested`, `n_components` (effective), `explained_variance_ratio` and
         `valid_fraction`), `plan` (one dict per non-empty group, for the report: `group`,
         `members`, `corrected`, `reason`, `valid_fraction`) and `stats` (name -> variance and
@@ -298,6 +326,7 @@ def camera_pca(
     speed_traces: dict[str, np.ndarray] = {}
     position_traces: dict[str, np.ndarray] = {}
     pca_info: dict[str, Any] | None = None
+    decomposition: dict[str, Any] | None = None
     xy_hat = None
     valid_speed_face = None
     if face_members:
@@ -328,6 +357,11 @@ def camera_pca(
             speed_traces[name] = bin_with_gaps(
                 speed, valid_speed_face, times, intervals, binsize, n_bins,
             )
+        decomposition = {
+            'keypoints': face_members, 'times': times, 'csv_path': data['csv_path'],
+            'reliable': np.stack([np.asarray(reliable[k], dtype=bool) for k in face_members], 1),
+            'parts': decompose_positions(positions, face_members, effective),
+        }
         pca_info = {
             'members': face_members, 'n_components_requested': n_components,
             'n_components': effective, 'explained_variance_ratio': [float(v) for v in ratio],
@@ -390,6 +424,7 @@ def camera_pca(
         'speed_traces': speed_traces,
         'position_traces': position_traces,
         'pca_info': pca_info,
+        'decomposition': decomposition,
         'plan': plan,
         'stats': stats,
     }
@@ -413,6 +448,9 @@ def explanation_text(report: dict[str, Any]) -> str:
         "denoised speed per keypoint, kept under the keypoint's own name. **Left/right paw** "
         '(`wrist`, `d1`-`d4` by side) and any keypoint matching neither a face nor a paw token '
         'keep their original speed unchanged.',
+        '',
+        'The same PCA is shown as heatmaps and a video in `plot_video/experiment_B_pca/'
+        '<run>_decomposition/decomposition.<eid>.md`.',
         '',
     ]
     for camera, info in report['cameras'].items():
@@ -455,7 +493,9 @@ def run_session(
     skip_plot: bool = False,
     n_jobs: int = 1,
     depth_plot: bool = True,
-) -> dict[str, Path | None]:
+    decompose: bool = True,
+    decomposition_options: DecompositionOptions | None = None,
+) -> dict[str, Any]:
     """Run Experiment B on one session.
 
     Args:
@@ -475,10 +515,16 @@ def run_session(
         n_jobs: cameras processed in parallel for the original xcorr.
         depth_plot: also draw the figures in probe-depth order into `<plots_subdir>_depth`
             (skipped when the first order is already depth, or when `skip_plot` is `True`).
+        decompose: also write the PCA decomposition of the face (heatmaps, video, md; see
+            `pca_reconstruction`) from the PCA fit above; skipped with `skip_plot`. A failure
+            there (e.g. a missing video) is logged and returned as `decomposition_error`, the
+            xcorr results stay saved.
+        decomposition_options: window / video choices of the decomposition; `None` = defaults.
 
     Returns:
         Dict of the written paths: `speed_arrays`, `position_arrays`, `summary`, `groups`,
-        `groups_md`, `plots` and `plots_depth` (each `None` when not drawn).
+        `groups_md`, `plots` and `plots_depth` (each `None` when not drawn), `decomposition` (the
+        dict of `write_decomposition`, or `None`) and `decomposition_error` (message or `None`).
 
     Raises:
         FileNotFoundError: if step 0 is missing.
@@ -489,7 +535,8 @@ def run_session(
     cams, lags_sec = base['cameras'], base['lags_sec']
     cfg = load_encoding_yaml(config_path)
     face_tokens = load_face_tokens(cfg['body_parts_json'])
-    out_dir = experiment_dir(base['session_dir'], EXPERIMENT_PCA)
+    plots_stem = plots_subdir or timestamp_subdir()
+    out_dir, plots_root = new_run_dirs(base['session_dir'], EXPERIMENT_PCA, plots_stem)
 
     idx_motion = [i for i, n in enumerate(base['names']) if not n.endswith(VISIBILITY_SUFFIX)]
     names = [base['names'][i] for i in idx_motion]
@@ -510,6 +557,7 @@ def run_session(
     r_position_pca = np.full((n_cam, n_neuron, n_components, n_lag), np.nan)
     valid_position = np.zeros((n_cam, n_components), dtype=bool)
     camera_report: dict[str, Any] = {}
+    decomposition_cameras: dict[str, dict[str, Any]] = {}
     stat_rows: list[dict[str, Any]] = []
 
     for idx_c, camera in enumerate(cams):
@@ -519,6 +567,8 @@ def run_session(
             neural['binsize'], exclude, face_tokens, n_components, baseline_names,
         )
         cam_names = result['names']
+        if result['decomposition'] is not None:
+            decomposition_cameras[camera] = result['decomposition']
         trace_matrix = np.full((neural['neural'].shape[0], len(cam_names)), np.nan)
         for idx_n, name in enumerate(cam_names):
             if name in result['speed_traces']:
@@ -597,7 +647,6 @@ def run_session(
     plots_dir = None
     plots_dir_depth = None
     if not skip_plot:
-        plots_stem = plots_subdir or timestamp_subdir()
         orders = ['saved', 'depth'] if depth_plot else ['saved']
         drawn: set[str] = set()
         for order in orders:
@@ -607,7 +656,7 @@ def run_session(
             if order_label in drawn:
                 continue  # the saved order already was depth
             drawn.add(order_label)
-            this_dir = out_dir / order_subdir(plots_stem, order_label)
+            this_dir = plots_root / order_subdir(plots_stem, order_label)
             plot_results(
                 this_dir, eid, lags_sec, cams, names, groups_out, valid, r_original,
                 r_speed_pca_masked, idx_order, order_label, vmax, position_names,
@@ -617,10 +666,23 @@ def run_session(
                 plots_dir = this_dir
             else:
                 plots_dir_depth = this_dir
+    decomposition_result = None
+    decomposition_error = None
+    if decompose and not skip_plot and decomposition_cameras:
+        try:
+            decomposition_result = write_decomposition(
+                decomposition_cameras, eid, config_path, out_dir,
+                plots_root / f'{plots_stem}_{DECOMPOSITION_SUFFIX}',
+                decomposition_options or DecompositionOptions(),
+            )
+        except Exception as error:  # noqa: BLE001 - the saved xcorr results must survive it
+            decomposition_error = str(error)
+            logger.error(f'PCA decomposition failed (the xcorr results are saved): {error}')
     return {
         'speed_arrays': speed_arrays_path, 'position_arrays': position_arrays_path,
         'summary': summary_path, 'groups': groups_path, 'groups_md': groups_md_path,
         'plots': plots_dir, 'plots_depth': plots_dir_depth,
+        'decomposition': decomposition_result, 'decomposition_error': decomposition_error,
     }
 
 
@@ -782,6 +844,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     failures: dict[str, str] = {}
     plots_subdir = args.plots_subdir or timestamp_subdir()
+    decomposition_options = options_from_args(args)
     with freeze_config(args.config) as config:
         eids = resolve_eids(config, args.eids, args.eid_group, args.eid_groups_json)
         for idx, eid in enumerate(eids, start=1):
@@ -791,8 +854,13 @@ def main(argv: list[str] | None = None) -> None:
                     config, eid, args.video_timestamps_dir, args.cameras, args.exclude,
                     args.n_components, args.min_valid_fraction, args.vmax, plots_subdir,
                     args.no_plot, args.n_jobs, not args.no_depth_plot,
+                    not args.no_decomposition, decomposition_options,
                 )
-                logger.info(f'wrote {[str(p) for p in paths.values()]}')
+                logger.info(
+                    f'wrote {[str(p) for k, p in paths.items() if isinstance(p, Path)]}',
+                )
+                if paths['decomposition_error'] is not None:
+                    failures[eid] = f'decomposition: {paths["decomposition_error"]}'
             except Exception as error:  # noqa: BLE001 - one session must not stop the others
                 logger.error(f'{eid} failed: {error}')
                 failures[eid] = str(error)

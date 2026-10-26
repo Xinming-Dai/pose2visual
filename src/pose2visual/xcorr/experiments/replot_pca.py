@@ -21,14 +21,16 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from pose2visual.xcorr.experiments.common import experiment_dir, resolve_order
+from pose2visual.xcorr.experiments.common import resolve_order
 from pose2visual.xcorr.experiments.pca import plot_results
 from pose2visual.xcorr.plots import order_subdir, timestamp_subdir
 from pose2visual.xcorr.replot import REPLOT_ORDERS
 from pose2visual.xcorr.settings import (
     EXPERIMENT_PCA,
     freeze_config,
+    latest_results_dir,
     load_xcorr_settings,
+    plot_video_dir,
     resolve_eids,
     xcorr_dir,
 )
@@ -68,8 +70,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='figure folder inside experiment_B_pca (default: New York time); the neuron order is '
-        'appended, e.g. <name>_rastermap.',
+        help='figure folder inside plot_video/experiment_B_pca (default: New York time); the '
+        'neuron order is appended, e.g. <name>_rastermap.',
     )
     return parser.parse_args(argv)
 
@@ -78,7 +80,7 @@ def load_results(out_dir: str | Path, eid: str) -> dict[str, Any]:
     """Load the saved results of one finished Experiment B run.
 
     Args:
-        out_dir: `<session_dir>/experiment_B_pca`.
+        out_dir: results folder of the run, `<session_dir>/results/experiment_B_pca/<run>`.
         eid: session id.
 
     Returns:
@@ -171,8 +173,8 @@ def replot_session(
         cameras: cameras to draw; `None` = all of the run.
         order: neuron order of the heatmaps, one of `REPLOT_ORDERS`.
         vmax: half-range of the colour scale; `None` takes it from the data.
-        plots_subdir: run name of the figure folder inside `experiment_B_pca`, to which the neuron
-            order is appended; `None` makes a new name from the current New York time.
+        plots_subdir: run name of the figure folder inside `plot_video/experiment_B_pca`, to which
+            the neuron order is appended; `None` makes a new name from the current New York time.
 
     Returns:
         The written figure files, png and pdf of each figure.
@@ -183,12 +185,19 @@ def replot_session(
     """
     settings = load_xcorr_settings(config_path)
     session_dir = xcorr_dir(config_path, eid, settings['output_name'])
-    out_dir = experiment_dir(session_dir, EXPERIMENT_PCA)
+    try:
+        out_dir = latest_results_dir(session_dir, EXPERIMENT_PCA, f'pca_speed_arrays.{eid}.npz')
+    except FileNotFoundError as error:
+        raise FileNotFoundError(
+            f'{error}; run pose2visual.xcorr.experiments.pca first',
+        ) from error
     results = select_cameras(load_results(out_dir, eid), cameras)
     idx_order, order_label = resolve_order(
         config_path, eid, order, results['neuron_ids'], results['neuron_depths'],
     )
-    plots_dir = out_dir / order_subdir(plots_subdir, order_label)
+    plots_dir = plot_video_dir(session_dir, EXPERIMENT_PCA) / order_subdir(
+        plots_subdir, order_label,
+    )
     return plot_results(
         plots_dir, eid, results['lags_sec'], results['cameras'], results['names'],
         results['groups'], results['valid'], results['r_original'], results['r_pca'],

@@ -71,6 +71,29 @@
     "forelimb": [
       "wrist"
     ]
+  }, "wholeface_tongue_forelimb": {
+    "wholeface": [
+      "eye",
+      "pupil",      
+      "mouth",
+      "upperlip",
+      "lowerlip",
+      "nose",
+      "pad",
+      "ear"
+    ],
+    "tongue": [
+      "tongue"
+    ],
+    "digits": [
+      "d1",
+      "d2",
+      "d3",
+      "d4"
+    ],
+    "forelimb": [
+      "wrist"
+    ]
   },
   "PCA_n_components": {
     "nonoverlapping_analysis_groups": {

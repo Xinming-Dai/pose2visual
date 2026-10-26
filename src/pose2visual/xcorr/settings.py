@@ -36,10 +36,14 @@ DEFAULTS: dict[str, Any] = {
 CORRECTIONS = ('fdr_bh', 'bonferroni')
 _PREFIX = 'xcorr_'
 
-# one subfolder of the session folder per experiment; step-0 inputs stay in the session folder
+# one subfolder per experiment inside `plot_video/` (figures, videos and their guides: the folder
+# to download and share) and inside `results/` (npz, csv, json, pkl); step-0 inputs stay in the
+# session folder
 EXPERIMENT_BASELINE = 'experiment_A_baseline'
 EXPERIMENT_PCA = 'experiment_B_pca'
 EXPERIMENT_RELMOTION = 'experiment_C_relative_motion'
+PLOT_VIDEO_DIR = 'plot_video'
+RESULTS_DIR = 'results'
 
 
 def _check_number(
@@ -211,21 +215,85 @@ def xcorr_dir(config_path: str | Path, eid: str, output_name: str) -> Path:
     return Path(video_preds_dir) / output_name / eid
 
 
-def baseline_dir(config_path: str | Path, eid: str, output_name: str) -> Path:
-    """Directory holding the outputs of Experiment A (baseline xcorr and PETH) of one session.
+def plot_video_dir(session_dir: str | Path, experiment: str) -> Path:
+    """Folder of the figures and videos of one experiment (the folder to download and share).
 
     Args:
-        config_path: path of the encoding yaml (`paths.video_preds_dir` is read from it).
-        eid: session id.
-        output_name: folder name, `xcorr.output_name`.
+        session_dir: session folder (`xcorr_dir`).
+        experiment: `EXPERIMENT_BASELINE`, `EXPERIMENT_PCA` or `EXPERIMENT_RELMOTION`.
 
     Returns:
-        `<video_preds_dir>/<output_name>/<eid>/experiment_A_baseline`; not created.
+        `<session_dir>/plot_video/<experiment>`; not created. Each run draws into subfolders
+        named `<run>_<order>` (or `<run>_decomposition`).
+    """
+    return Path(session_dir) / PLOT_VIDEO_DIR / experiment
+
+
+def results_dir(session_dir: str | Path, experiment: str) -> Path:
+    """Folder of the saved arrays, tables and reports of one experiment.
+
+    Args:
+        session_dir: session folder (`xcorr_dir`).
+        experiment: `EXPERIMENT_BASELINE`, `EXPERIMENT_PCA` or `EXPERIMENT_RELMOTION`.
+
+    Returns:
+        `<session_dir>/results/<experiment>`; not created. Each compute run writes into its own
+        `<run>` subfolder.
+    """
+    return Path(session_dir) / RESULTS_DIR / experiment
+
+
+def new_run_dirs(
+    session_dir: str | Path,
+    experiment: str,
+    run: str,
+) -> tuple[Path, Path]:
+    """Create the results folder of one compute run and the figure folder of its experiment.
+
+    Args:
+        session_dir: session folder (`xcorr_dir`).
+        experiment: experiment folder name.
+        run: run name, e.g. `plots.timestamp_subdir()` or `--plots-subdir`.
+
+    Returns:
+        `(results_run_dir, plot_video_experiment_dir)`: `results/<experiment>/<run>` and
+        `plot_video/<experiment>`, both created. Figures go into `<run>_<order>` subfolders of
+        the second.
+    """
+    run_dir = results_dir(session_dir, experiment) / run
+    plots_root = plot_video_dir(session_dir, experiment)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    plots_root.mkdir(parents=True, exist_ok=True)
+    return run_dir, plots_root
+
+
+def latest_results_dir(session_dir: str | Path, experiment: str, marker: str) -> Path:
+    """Newest results run of an experiment that holds a given file.
+
+    The newest run is the one whose `marker` file was written last (run names are New York
+    timestamps, but `--plots-subdir` can name a run anything). Results written before the
+    `results/` layout lie directly in `<session_dir>/<experiment>/`; that folder is used when no
+    run folder has the file.
+
+    Args:
+        session_dir: session folder (`xcorr_dir`).
+        experiment: experiment folder name.
+        marker: a file the run must contain, e.g. `xcorr_arrays.<eid>.npz`.
+
+    Returns:
+        The folder holding `marker`.
 
     Raises:
-        ValueError: if the yaml has no `paths.video_preds_dir`.
+        FileNotFoundError: if neither a run folder nor the legacy folder has `marker`.
     """
-    return xcorr_dir(config_path, eid, output_name) / EXPERIMENT_BASELINE
+    root = results_dir(session_dir, experiment)
+    files = [p / marker for p in root.iterdir() if (p / marker).is_file()] if root.is_dir() else []
+    if files:
+        return max(files, key=lambda path: (path.stat().st_mtime_ns, path.parent.name)).parent
+    legacy = Path(session_dir) / experiment
+    if (legacy / marker).is_file():
+        return legacy
+    raise FileNotFoundError(f'{marker} not found in {root}/<run>/ or in {legacy}')
 
 
 @contextmanager

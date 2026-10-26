@@ -7,10 +7,10 @@ position:
 
 session:
   # session to analyze (the --eid flag overrides this)
-  eid: 51e53aff-1d5d-4182-a684-aba783d50ae5
+  eid: b22f694e-4a34-4142-ab9d-2556c3487086
   # sessions of step 1 (extract) and of the plot that step 2 makes once all of them are done; a key
   # of neural_sessions in paths.eid_groups_json, null = none. Not a constraint: --eids / EIDS override
-  eid_group: sable
+  eid_group: ear_both
   # camera whose keypoints are used by step 2 (left | right | both). `both` fits one model on the
   # features of both cameras, as the SABLE baseline does; step 1 must have run for both cameras
   # and the results go to <video_preds_dir>/both_<output_name>/

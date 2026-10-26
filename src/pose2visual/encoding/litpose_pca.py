@@ -179,6 +179,33 @@ def project_group(xy: np.ndarray, n_components: int) -> tuple[np.ndarray, np.nda
     return centered @ basis, ratio
 
 
+def decompose_group(
+    xy: np.ndarray,
+    n_components: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Split centered features into their low-rank part and the residual.
+
+    With `centered = xy - mean`, the low-rank part is `centered @ basis @ basis.T` (what
+    `reproject_group` returns minus the mean) and the residual is what the top components leave
+    out, so `centered == low_rank + residual`.
+
+    Args:
+        xy: array of shape `[n_frames, n_features]`.
+        n_components: number of components to keep, in `[1, n_features]`.
+
+    Returns:
+        Tuple `(mean, centered, low_rank, residual, explained_variance_ratio)`: the feature mean
+        `[n_features]`, then the three `[n_frames, n_features]` float64 arrays, then the variance
+        ratio of the kept components `[n_components]`.
+
+    Raises:
+        ValueError: if `n_components` is not in `[1, n_features]`.
+    """
+    mean, centered, basis, ratio = _fit_group_basis(xy, n_components)
+    low_rank = centered @ basis @ basis.T
+    return mean, centered, low_rank, centered - low_rank, ratio
+
+
 def reproject_keypoints(
     positions: dict[str, tuple[np.ndarray, np.ndarray]],
     groups: dict[str, list[str]],

@@ -18,6 +18,12 @@ keypoints come from shared motion:
   each anatomical group with two or more keypoints from the keypoint coordinates, recompute the
   speed and the xcorrs, and compare with the original speed. Groups with a single keypoint
   keep their original speed and are listed in the report.
+* ``pca_reconstruction`` (part of Experiment B, ``experiment_B_pca/``): not a xcorr but a look
+  at the decomposition: for the whole face (``wholeface`` group, no tongue / forelimb / digits) the
+  centered positions, their rank-2 PCA part and the residual are drawn as a three-panel heatmap and
+  as a synchronized video (frame with the tracked keypoints | mean + rank-2 | mean + residual) over
+  one representative window per camera. Needs no neural data
+  (``scripts/delta/lightningpose_xcorr/step3_render_pca_reconstruction.sh``).
 * ``masked_crosscorr``: the baseline's Pearson cross-correlation for traces with missing samples
   (used by ``pca`` and ``relative_motion``).
 * ``common`` and ``diagnostics``: the original-xcorr computation, neuron order and the

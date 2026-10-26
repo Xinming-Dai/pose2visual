@@ -49,7 +49,8 @@ instead of across sides, so ``wrist_left`` and ``wrist_right`` each get their ow
 The original speed cross-correlations it is compared against are recomputed here with the
 baseline's own code (``common.compute_original``), so this does not wait for Experiment A; only the
 neuron order of the figures is taken from A when A has run (``common.resolve_order``). Everything
-is written to ``<session>/experiment_C_relative_motion/``.
+is written to ``<session>/results/experiment_C_relative_motion/<run>/`` (arrays, csv, json, pickle)
+and ``<session>/plot_video/experiment_C_relative_motion/<run>_<order>/`` (figures and their guide).
 
 Usage::
 
@@ -100,7 +101,6 @@ from pose2visual.xcorr.crosscorr import constant_columns
 from pose2visual.xcorr.experiments.common import (
     BASELINE_COLORBAR_LABEL,
     compute_original,
-    experiment_dir,
     relabel_overview,
     resolve_order,
     write_figure_guide,
@@ -108,7 +108,12 @@ from pose2visual.xcorr.experiments.common import (
 from pose2visual.xcorr.experiments.masked_crosscorr import masked_cross_correlation
 from pose2visual.xcorr.plots import order_subdir, timestamp_subdir
 from pose2visual.xcorr.run_xcorr import OTHER_GROUP, behavior_groups
-from pose2visual.xcorr.settings import EXPERIMENT_RELMOTION, freeze_config, resolve_eids
+from pose2visual.xcorr.settings import (
+    EXPERIMENT_RELMOTION,
+    freeze_config,
+    new_run_dirs,
+    resolve_eids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -228,8 +233,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='figure folder inside experiment_C_relative_motion (default: New York time); the '
-        'neuron order is appended, e.g. <name>_rastermap.',
+        help='run name: results/experiment_C_relative_motion/<name> and the figure folders '
+        'plot_video/experiment_C_relative_motion/<name>_<order>, e.g. <name>_rastermap '
+        '(default: New York time).',
     )
     parser.add_argument(
         '--no-depth-plot', action='store_true',
@@ -823,7 +829,8 @@ def run_session(
     neural = base['neural']
     cams, lags_sec = base['cameras'], base['lags_sec']
     body_groups = resolve_body_groups(config_path)
-    out_dir = experiment_dir(base['session_dir'], EXPERIMENT_RELMOTION)
+    plots_stem = plots_subdir or timestamp_subdir()
+    out_dir, plots_root = new_run_dirs(base['session_dir'], EXPERIMENT_RELMOTION, plots_stem)
 
     # keypoints (not visibility features) of the baseline, in its grouped order
     idx_motion = [i for i, n in enumerate(base['names']) if not n.endswith(VISIBILITY_SUFFIX)]
@@ -941,7 +948,6 @@ def run_session(
     plots_dir = None
     plots_dir_depth = None
     if not skip_plot:
-        plots_stem = plots_subdir or timestamp_subdir()
         orders = ['saved', 'depth'] if depth_plot else ['saved']
         drawn: set[str] = set()
         for order in orders:
@@ -951,7 +957,7 @@ def run_session(
             if order_label in drawn:
                 continue  # the saved order already was depth
             drawn.add(order_label)
-            this_dir = out_dir / order_subdir(plots_stem, order_label)
+            this_dir = plots_root / order_subdir(plots_stem, order_label)
             plot_results(
                 this_dir, eid, lags_sec, cams, names, groups, valid, r_original, r_relative,
                 idx_order, order_label, vmax, corrected, no_centroid, summary, group_rows,

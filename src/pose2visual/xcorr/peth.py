@@ -22,9 +22,9 @@ at a negative lag, the time reversal of the PETH. The correlations use the same 
 behavior strips instead of a change in firing rate.
 
 Part of Experiment A (baseline). Writes ``peth.<eid>.npz`` and ``peth_params.json`` into
-``<video_preds_dir>/<xcorr.output_name>/<eid>/experiment_A_baseline/``, which ``run_xcorr`` and ``replot`` draw as the
-``events`` columns of the overview figure (event cross-correlations, then PETHs). It reads only
-files, so it takes about a minute.
+``<video_preds_dir>/<xcorr.output_name>/<eid>/results/experiment_A_baseline/<time>/``, which
+``run_xcorr`` and ``replot`` draw as the ``events`` columns of the overview figure (event
+cross-correlations, then PETHs). It reads only files, so it takes about a minute.
 
 Usage::
 
@@ -43,10 +43,13 @@ import numpy as np
 import pandas as pd
 
 from pose2visual.xcorr.crosscorr import constant_columns, cross_correlation, smooth_neural
+from pose2visual.xcorr.plots import timestamp_subdir
 from pose2visual.xcorr.settings import (
-    baseline_dir,
+    EXPERIMENT_BASELINE,
     freeze_config,
+    latest_results_dir,
     load_xcorr_settings,
+    new_run_dirs,
     resolve_eids,
     xcorr_dir,
 )
@@ -390,8 +393,7 @@ def compute_peth_session(config_path: str | Path, eid: str) -> Path:
             f'({res["n_outside"]} outside the recording), {n_nan} neurons without a baseline; '
             f'xcorr: {event_xcorr["n_used"][idx_e]} events binned',
         )
-    out_dir = baseline_dir(config_path, eid, settings['output_name'])
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir, _ = new_run_dirs(session_dir, EXPERIMENT_BASELINE, timestamp_subdir())
     out_path = out_dir / f'peth.{eid}.npz'
     np.savez_compressed(out_path, **arrays)
     (out_dir / 'peth_params.json').write_text(json.dumps(params, indent=2), encoding='utf-8')
@@ -399,14 +401,15 @@ def compute_peth_session(config_path: str | Path, eid: str) -> Path:
 
 
 def load_peth(
-    out_dir: str | Path,
+    session_dir: str | Path,
     eid: str,
     neuron_ids: np.ndarray,
 ) -> dict[str, Any] | None:
-    """Load the saved PETHs and arrange the neurons like a cross-correlation run.
+    """Load the newest saved PETHs and arrange the neurons like a cross-correlation run.
 
     Args:
-        out_dir: `<video_preds_dir>/<xcorr.output_name>/<eid>/experiment_A_baseline`.
+        session_dir: `<video_preds_dir>/<xcorr.output_name>/<eid>`; the file is looked for in the
+            newest `results/experiment_A_baseline/<run>/` that has it (`latest_results_dir`).
         eid: session id.
         neuron_ids: unit ids ``[N]`` of the cross-correlation arrays, in their order. The run
             drops neurons without variance, so these can be a subset of the PETH's neurons.
@@ -422,8 +425,11 @@ def load_peth(
         ValueError: if a neuron of `neuron_ids` has no PETH (the files belong to different
             extractions) or the file lacks an event.
     """
-    path = Path(out_dir) / f'peth.{eid}.npz'
-    if not path.is_file():
+    try:
+        path = latest_results_dir(session_dir, EXPERIMENT_BASELINE, f'peth.{eid}.npz') / (
+            f'peth.{eid}.npz'
+        )
+    except FileNotFoundError:
         return None
     data = np.load(path)
     missing = [n for n in EVENT_LABELS if f'{n}_frac' not in data.files]

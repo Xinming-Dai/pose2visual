@@ -3,7 +3,7 @@
 #SBATCH -p cpu
 #SBATCH -c 2
 #SBATCH --mem 12G
-#SBATCH -t 0-00:59:00
+#SBATCH -t 0-00:15:00
 #SBATCH -J xcorr_compute
 #SBATCH -o /u/xdai3/project3d/pose2visual/pose2visual/scripts/delta/lightningpose_xcorr/step1_compute_xcorr_%j.log
 #SBATCH --export=ALL
@@ -23,15 +23,22 @@ cd "$REPO"
 # in both neuron orders (the heatmap of A carries PETH strips), so step2_plot_xcorr.sh is only
 # needed to redraw them (another colour scale, cameras, ...). session.camera is not read.
 #
-# --exp selects what runs (default all; a comma list such as B,C is allowed). Each experiment
-# writes its own subfolder of <video_preds_dir>/xcorr/<eid>/ (step-0 inputs stay in that folder):
+# --exp selects what runs (default all; a comma list such as B,C is allowed). Every experiment
+# writes two folders inside <video_preds_dir>/xcorr/<eid>/ (step-0 inputs stay in that folder):
+#   plot_video/<experiment>/<time>_<order>/   figures, videos and their guide md: download THIS
+#                                             folder to show the plots to others
+#   results/<experiment>/<time>/              npz, csv, json, pkl and run reports
+# <time> is the New York time of the run (PLOTS_SUBDIR names it instead).
 #   A  PETHs (pose2visual.xcorr.peth, optional, soft failure), then the baseline
 #      neural-behavior cross-correlation (pose2visual.xcorr.run_xcorr), whose heatmap carries
 #      the reward / movement-onset strips -> experiment_A_baseline/<time>_<order>/ (e.g.
 #      <time>_rastermap), plus the same heatmap with neurons in depth order ->
 #      experiment_A_baseline/<time>_depth/
 #   B  PCA of the face group (pose2visual.xcorr.experiments.pca) -> experiment_B_pca/<time>_<order>/
-#      and the same figures in depth order -> experiment_B_pca/<time>_depth/
+#      and the same figures in depth order -> experiment_B_pca/<time>_depth/; it also draws the
+#      PCA decomposition of the face (heatmaps of X_centered / X_rank2 / X_residual over one
+#      window and the whole recording, a synchronized video, decomposition.<eid>.md) ->
+#      experiment_B_pca/<time>_decomposition/
 #   C  relative motion (pose2visual.xcorr.experiments.relative_motion)
 #      -> experiment_C_relative_motion/<time>_<order>/ and <time>_depth/
 # A, B and C are independent: B and C recompute the original speed xcorrs they compare against
@@ -56,6 +63,14 @@ cd "$REPO"
 #   N_PERMUTATIONS      A: circular-shift permutations of the significance test (default: the
 #                       yaml's xcorr.n_permutations = 0 = no test; e.g. 1000 adds p / q values)
 #   N_COMPONENTS        B: number of principal components to keep for the face group (default 2)
+#   SKIP_DECOMPOSITION  B: set to 1 to skip the decomposition heatmaps / video / md
+#   NO_VIDEO            B: set to 1 to draw the decomposition heatmaps but render no video
+#   START_SEC           B: decomposition window start in session seconds (default: picked on the
+#                       left camera, the right camera uses the same times)
+#   DURATION_SEC        B: decomposition window length in seconds (default 10)
+#   VIDEO_ROOT          B: folder with the <left|right>Camera.video folders
+#   CROP_PAD            B: zoom the decomposition video to the keypoints plus this many pixels
+#                       (default: whole frame)
 #   MIN_VALID_FRACTION  B / C: a keypoint whose denoised/relative speed is defined in a smaller
 #                       fraction of the bins is left out and reported (default 0.5)
 #   NO_CENTROID_GROUPS  C: groups that keep their original speed although they have two or more
@@ -108,7 +123,13 @@ if [ -n "$RUN_B" ]; then
         --n-jobs "${SLURM_CPUS_PER_TASK:-2}" \
         ${N_COMPONENTS:+--n-components "$N_COMPONENTS"} \
         ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"} \
-        ${SKIP_DEPTH_ORDER:+--no-depth-plot}
+        ${SKIP_DEPTH_ORDER:+--no-depth-plot} \
+        ${SKIP_DECOMPOSITION:+--no-decomposition} \
+        ${NO_VIDEO:+--no-video} \
+        ${START_SEC:+--window-start-sec "$START_SEC"} \
+        ${DURATION_SEC:+--window-duration-sec "$DURATION_SEC"} \
+        ${VIDEO_ROOT:+--video-root "$VIDEO_ROOT"} \
+        ${CROP_PAD:+--crop-pad "$CROP_PAD"}
     STATUS_B=$?
     if [ "$STATUS_B" -ne 0 ]; then
         echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiment B (pca) failed (exit $STATUS_B); rerun it with --exp B." >&2

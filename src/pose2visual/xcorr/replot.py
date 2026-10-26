@@ -1,10 +1,11 @@
 """Redraw the figures of a finished cross-correlation run, without recomputing anything.
 
-Reads the files ``run_xcorr`` (Experiment A, baseline) left in
-``<video_preds_dir>/<xcorr.output_name>/<eid>/experiment_A_baseline/``
+Reads the files ``run_xcorr`` (Experiment A, baseline) left in the newest
+``<video_preds_dir>/<xcorr.output_name>/<eid>/results/experiment_A_baseline/<time>/``
 (``xcorr_arrays.<eid>.npz``, ``xcorr_summary.<eid>.csv`` and ``xcorr_params.json``) and writes the
-overview heatmap (and, with ``--n-examples N``, the example curves) into a new subfolder of that
-folder named by the New York time of the replot (``YYYYmmdd_HHMMSS``, so earlier figures are kept)
+overview heatmap (and, with ``--n-examples N``, the example curves) into a new subfolder of
+``<eid>/plot_video/experiment_A_baseline/`` named by the New York time of the replot
+(``YYYYmmdd_HHMMSS``, so earlier figures are kept)
 with the same code as the run itself (``plots.write_plots``). Nothing else is written, so a replot
 never changes the results. It takes seconds: no neural data, no behavior traces and no
 permutations are involved, and the neuron order stored by the run is reused (rastermap is not run
@@ -39,10 +40,13 @@ from pose2visual.xcorr.behavior import excluded_names
 from pose2visual.xcorr.peth import load_peth
 from pose2visual.xcorr.plots import DEFAULT_N_EXAMPLES, order_subdir, timestamp_subdir, write_plots
 from pose2visual.xcorr.settings import (
-    baseline_dir,
+    EXPERIMENT_BASELINE,
     freeze_config,
+    latest_results_dir,
     load_xcorr_settings,
+    plot_video_dir,
     resolve_eids,
+    xcorr_dir,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,8 +104,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         '--plots-subdir', type=str, default=None,
-        help='run name of the figure folder inside experiment_A_baseline; the neuron order is '
-        'appended, e.g. <name>_rastermap (default name: the New York time of the run, '
+        help='run name of the figure folder inside plot_video/experiment_A_baseline; the neuron '
+        'order is appended, e.g. <name>_rastermap (default name: the New York time of the run, '
         'YYYYmmdd_HHMMSS, so no earlier figure is overwritten).',
     )
     return parser.parse_args(argv)
@@ -111,7 +115,7 @@ def load_results(out_dir: str | Path, eid: str) -> dict[str, Any]:
     """Load the saved baseline results of one session.
 
     Args:
-        out_dir: `<video_preds_dir>/<xcorr.output_name>/<eid>/experiment_A_baseline`.
+        out_dir: results folder of the run, `<session>/results/experiment_A_baseline/<run>`.
         eid: session id.
 
     Returns:
@@ -247,10 +251,11 @@ def replot_session(
         exclude: glob patterns of behaviors to hide.
         vmax: half-range of the colour scale; `None` takes it from the data.
         n_examples: number of example curves; 0 (default) draws none.
-        plots_subdir: run name of the figure folder inside `experiment_A_baseline`, to which the
-            neuron order is appended (`plots.order_subdir`); `None` makes a new name from the
-            current New York time (`plots.timestamp_subdir`).
-        show_peth: draw the PETH strips when `peth.<eid>.npz` exists in `experiment_A_baseline`.
+        plots_subdir: run name of the figure folder inside `plot_video/experiment_A_baseline`, to
+            which the neuron order is appended (`plots.order_subdir`); `None` makes a new name
+            from the current New York time (`plots.timestamp_subdir`).
+        show_peth: draw the PETH strips when `peth.<eid>.npz` exists in a results run of
+            `experiment_A_baseline`.
         peth_vmax: half-range of the PETH colour scale.
 
     Returns:
@@ -263,7 +268,11 @@ def replot_session(
     if order not in REPLOT_ORDERS:
         raise ValueError(f'unknown order {order!r}; use one of {list(REPLOT_ORDERS)}')
     settings = load_xcorr_settings(config_path)
-    out_dir = baseline_dir(config_path, eid, settings['output_name'])
+    session_dir = xcorr_dir(config_path, eid, settings['output_name'])
+    try:
+        out_dir = latest_results_dir(session_dir, EXPERIMENT_BASELINE, f'xcorr_arrays.{eid}.npz')
+    except FileNotFoundError as error:
+        raise FileNotFoundError(f'{error}; run pose2visual.xcorr.run_xcorr first') from error
     full = load_results(out_dir, eid)
     n_neurons = full['r'].shape[1]
     if order == 'saved':
@@ -279,12 +288,12 @@ def replot_session(
     plots_subdir = order_subdir(plots_subdir, label)
     peth = None
     if show_peth and full['neuron_ids'] is not None:
-        peth = load_peth(out_dir, eid, full['neuron_ids'])
+        peth = load_peth(session_dir, eid, full['neuron_ids'])
         if peth is None:
             logger.info('no peth.<eid>.npz: run pose2visual.xcorr.peth to add the PETH strips')
     return write_plots(
-        out_dir / plots_subdir, eid, results['r'], results['lags_sec'], results['names'],
-        results['groups'], results['cameras'], results['valid'], idx_order, results['table'],
+        plot_video_dir(session_dir, EXPERIMENT_BASELINE) / plots_subdir, eid, results['r'],
+        results['lags_sec'], results['names'], results['groups'], results['cameras'], results['valid'], idx_order, results['table'],
         label, vmax, n_examples, results['null_p95'], peth, peth_vmax,
     )
 

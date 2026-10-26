@@ -386,7 +386,7 @@ def draw_banner(canvas: np.ndarray, job: VideoJob, show_pca: bool = False) -> No
     put_text(canvas, (10, 67), line, fit_font_scale(line, width - 20, 0.48))
 
 
-def _open_encoder(
+def open_encoder(
     out_path: Path,
     size: tuple[int, int],
     fps: float,
@@ -528,7 +528,7 @@ def render_video(job: VideoJob) -> Path:
         ).to_csv(job.out_path.with_suffix('.diagnostics.csv'), index=False)
 
     log_path = job.out_path.with_suffix('.ffmpeg.log')
-    process, log_file = _open_encoder(job.out_path, (width, height), fps, log_path)
+    process, log_file = open_encoder(job.out_path, (width, height), fps, log_path)
     logger.info(f'  rendering {job.n_frames} frames of {width}x{height} -> {job.out_path}')
     try:
         for frame_idx in range(job.n_frames):

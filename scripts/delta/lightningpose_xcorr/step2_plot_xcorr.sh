@@ -3,7 +3,7 @@
 #SBATCH -p cpu
 #SBATCH -c 1
 #SBATCH --mem 3G
-#SBATCH -t 0-00:25:00
+#SBATCH -t 0-00:10:00
 #SBATCH -J xcorr_plot
 #SBATCH -o /u/xdai3/project3d/pose2visual/pose2visual/scripts/delta/lightningpose_xcorr/step2_plot_xcorr_%j.log
 #SBATCH --export=ALL
@@ -26,9 +26,13 @@ cd "$REPO"
 # with neurons in depth order (ascending position along the probe). Each figure folder is named
 # "<PLOTS_SUBDIR>_<order>" (e.g. 20261021_153012_rastermap and 20261021_153012_depth), so the
 # figures of one plotting run are easy to find together and the order is readable from the name:
-# <video_preds_dir>/xcorr/<eid>/experiment_A_baseline/<PLOTS_SUBDIR>_<order>/,
-# .../experiment_B_pca/<PLOTS_SUBDIR>_<order>/ and
-# .../experiment_C_relative_motion/<PLOTS_SUBDIR>_<order>/.
+# <video_preds_dir>/xcorr/<eid>/plot_video/experiment_A_baseline/<PLOTS_SUBDIR>_<order>/,
+# .../plot_video/experiment_B_pca/<PLOTS_SUBDIR>_<order>/ and
+# .../plot_video/experiment_C_relative_motion/<PLOTS_SUBDIR>_<order>/ (plot_video/ is the folder to
+# download and share). The arrays are read from the newest results/<experiment>/<time>/ (runs from
+# before this layout, files directly in <eid>/<experiment>/, are still found). Experiment B's
+# decomposition (heatmaps / video of the PCA, <time>_decomposition/) is not redrawn here: rerun it
+# with step3_render_pca_reconstruction.sh.
 # In the saved order, B and C are drawn in A's neuron order when A has run on the same neurons
 # (else in depth order). Each of the three plot types, in each order, is independent: a missing or failed one is logged
 # and does not stop the others, and does not fail the job.

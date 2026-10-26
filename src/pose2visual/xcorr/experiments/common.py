@@ -5,9 +5,9 @@ Experiments B and C do not depend on Experiment A (baseline, ``pose2visual.xcorr
 against with the baseline's own functions (`run_xcorr.run_cameras`, same yaml settings, same
 neural smoothing and neuron selection), so B, C and A can run at the same time. Only the neuron
 order of the figures is borrowed from A when its arrays exist (`resolve_order`). This module also
-creates each experiment's own output folder, relabels the baseline overview figure for
-quantities that are not Pearson correlations and writes the guide to the figure names of a plot
-folder (`write_figure_guide`). Nothing here writes into the baseline's files.
+relabels the baseline overview figure for quantities that are not Pearson correlations and writes
+the guide to the figure names of a plot folder (`write_figure_guide`). Nothing here writes into
+the baseline's files.
 """
 
 import json
@@ -24,7 +24,12 @@ from pose2visual.xcorr.crosscorr import constant_columns, smooth_neural
 from pose2visual.xcorr.figures import TEXT_COLOR
 from pose2visual.xcorr.replot import REPLOT_ORDERS
 from pose2visual.xcorr.run_xcorr import CAMERAS, grouped_behaviors, run_cameras
-from pose2visual.xcorr.settings import baseline_dir, load_xcorr_settings, xcorr_dir
+from pose2visual.xcorr.settings import (
+    EXPERIMENT_BASELINE,
+    latest_results_dir,
+    load_xcorr_settings,
+    xcorr_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -181,10 +186,12 @@ def baseline_order(
         there is no baseline run or it has other neurons.
     """
     settings = load_xcorr_settings(config_path)
-    base_dir = baseline_dir(config_path, eid, settings['output_name'])
-    arrays_path = base_dir / f'xcorr_arrays.{eid}.npz'
-    if not arrays_path.is_file():
+    session_dir = xcorr_dir(config_path, eid, settings['output_name'])
+    try:
+        base_dir = latest_results_dir(session_dir, EXPERIMENT_BASELINE, f'xcorr_arrays.{eid}.npz')
+    except FileNotFoundError:
         return None
+    arrays_path = base_dir / f'xcorr_arrays.{eid}.npz'
     data = np.load(arrays_path)
     if 'neuron_ids' not in data.files or not np.array_equal(
         data['neuron_ids'].astype(str), np.asarray(neuron_ids).astype(str),
@@ -233,21 +240,6 @@ def resolve_order(
     if order == 'depth':
         return np.argsort(np.asarray(neuron_depths, dtype=np.float64), kind='stable'), 'depth'
     return np.arange(len(neuron_ids)), 'none'
-
-
-def experiment_dir(session_dir: str | Path, name: str) -> Path:
-    """Create and return the output folder of one experiment inside the session folder.
-
-    Args:
-        session_dir: session folder (`<video_preds_dir>/<xcorr.output_name>/<eid>`).
-        name: `settings.EXPERIMENT_PCA` or `settings.EXPERIMENT_RELMOTION`.
-
-    Returns:
-        `<session_dir>/<name>`, created if missing. Only this folder is ever written.
-    """
-    path = Path(session_dir) / name
-    path.mkdir(parents=True, exist_ok=True)
-    return path
 
 
 def write_figure_guide(
