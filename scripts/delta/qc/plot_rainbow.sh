@@ -21,7 +21,7 @@ echo "[$(date +'%Y-%m-%d %H:%M:%S')] plot_rainbow"
 
 echo "=== executing ==="
 PYTHONPATH="${REPO}/src:${PYTHONPATH}" python -u -m pose2visual.qc.rainbow \
-    --model-dir /work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/ibl-ears \
+    --model-dir /work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/ibl-ears \
     --seed-dirs 2026-10-10_19-41-30_seed-0 2026-10-10_20-02-37_seed-1 2026-10-10_20-23-51_seed-2 \
     --config "${CONFIG}" \
     --session-group ear_left \

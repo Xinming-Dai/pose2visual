@@ -21,7 +21,7 @@ export HF_HUB_OFFLINE=1
 
 REPO=/u/xdai3/project3d/pose2visual/pose2visual
 ROOT=/work/hdd/bfsr/xdai3/IBL-2view
-LIGHTNING_POSE_MODEL_DIR=/work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/E3a-headmlp256/face+ibl+cheese+caz+kondo+hmv+c3d+kauf_train/supervised/sampling-T2/tf1/vits_dinov3/seed0
+LIGHTNING_POSE_MODEL_DIR=/work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/E3a-headmlp256/face+ibl+cheese+caz+kondo+hmv+c3d+kauf_train/supervised/sampling-T2/tf1/vits_dinov3/seed0
 SCRIPT=${REPO}/src/pose2visual/lightningpose/predict_ibl.py
 CONFIG=${REPO}/configs/lightningpose/extraction_keypoints.yaml
 

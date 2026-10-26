@@ -13,7 +13,7 @@ source ~/.bashrc
 conda activate beast
 
 REPO=/u/xdai3/project3d/pose2visual/pose2visual
-MODEL_DIR=/work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/E6c-LOO-ibl-headmlp256_3seeds/face+cheese+caz+kondo+hmv+c3d+kauf_train
+MODEL_DIR=/work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/E6c-LOO-ibl-headmlp256_3seeds/face+cheese+caz+kondo+hmv+c3d+kauf_train
 SEED_DIRS=(vits_dinov3-seed0 vits_dinov3-seed1 vits_dinov3-seed2)
 SESSION_IDS=(
     "3e6a97d3-3991-49e2-b346-6948cb4580fb"

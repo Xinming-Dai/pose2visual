@@ -15,7 +15,7 @@ conda activate beast
 REPO=/u/xdai3/project3d/pose2visual/pose2visual
 cd "$REPO"
 
-EKS_DIR=/work/hdd/bfsr/xdai3/pose2visual/mighty-mouse-models/mm_ibl_ear/20261013_173251_n_20261014_141544
+EKS_DIR=/work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/mm_ibl_ear/20261013_173251_n_20261014_141544
 SESSION_IDS=(
     "51e53aff-1d5d-4182-a684-aba783d50ae5"
     # "9b528ad0-4599-4a55-9148-96cc1d93fb24"
