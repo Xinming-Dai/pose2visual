@@ -101,7 +101,7 @@
       "mouth_related": 16,
       "nose_pad_related": 4,
       "ear_related": 5,
-      "digits": 10,
+      "digits": 16,
       "forelimb": 2
     }, "nonoverlapping_analysis_groups_separate_tongue": {
       "eye_related": 5,
@@ -109,7 +109,7 @@
       "tongue": 1,
       "nose_pad_related": 4,
       "ear_related": 5,
-      "digits": 10,
+      "digits": 16,
       "forelimb": 2
     },
     "nonoverlapping_analysis_groups_ibl_ears": {
