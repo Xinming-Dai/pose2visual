@@ -10,7 +10,7 @@ session:
   eid: b22f694e-4a34-4142-ab9d-2556c3487086
   # sessions of step 1 (extract) and of the plot that step 2 makes once all of them are done; a key
   # of neural_sessions in paths.eid_groups_json, null = none. Not a constraint: --eids / EIDS override
-  eid_group: ear_both
+  eid_group: ear_left
   # camera whose keypoints are used by step 2 (left | right | both). `both` fits one model on the
   # features of both cameras, as the SABLE baseline does; step 1 must have run for both cameras
   # and the results go to <video_preds_dir>/both_<output_name>/
@@ -19,7 +19,7 @@ session:
 paths:
   # <model_dir>/video_preds of the lightning pose checkpoint; its location is recorded in the log.
   # With a `merge` section below this is the output dir: the merged csvs and every step's outputs
-  video_preds_dir: /work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/mm_ibl_ear/20261013_173251_n_20261014_141544
+  video_preds_dir: /work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/mm_digits/20261027_114133_n_20261027_113942
   # defines the groups used by pca and by anatomical_group
   body_parts_json: scripts/delta/data/body_parts.json
   # neural_sessions -> group name -> eids
@@ -57,9 +57,9 @@ merge:
   group_set: nonoverlapping_analysis_groups_separate_tongue
   # every keypoint comes from exactly one source; `rest` = all keypoints no other source claims
   sources:
-    - video_preds_dir: /work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/ibl-ears/eks/20261014_141544/eks
-      groups: [ear_related]
-    - video_preds_dir: /work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/E6c-LOO-ibl-headmlp256_3seeds/face+cheese+caz+kondo+hmv+c3d+kauf_train/eks/20261013_173251/eks
+    - video_preds_dir: /work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/ibl-digits-alora-v11/ibl-digits/mm-anchored-lora/eks/20261027_113942/eks
+      groups: [digits]
+    - video_preds_dir: /work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/ibl-alora-v11/mm-anchored-lora/eks/20261027_114133/eks
       groups: rest
 
 # PCA reprojection, done in step 1. On/off comes from step_order; this is only the group set
