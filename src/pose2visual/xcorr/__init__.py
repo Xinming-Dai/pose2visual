@@ -28,9 +28,9 @@ cameras are a command-line choice, ``session.camera`` is not read. Step-0 inputs
 ``<video_preds_dir>/<xcorr.output_name>/<eid>/``. Every experiment (``experiment_A_baseline`` =
 ``run_xcorr`` and ``peth``, ``experiment_B_pca`` and ``experiment_C_relative_motion`` =
 ``experiments``) writes two folders there, one run name (a New York time, or ``--plots-subdir``)
-for both: ``plot_video/<experiment>/<run>_<order>/`` holds the figures, videos and figure guides
-(the folder to download and show to others) and ``results/<experiment>/<run>/`` the arrays, tables
-and reports. Replots read the newest results run; runs from before this layout (files directly in
-``<eid>/<experiment>/``) are still found.
+for both: ``plot_video/<experiment>/<run>_<order>/`` holds the figures (``png/`` and vector
+``pdf/`` subfolders), videos and figure guides (the folder to download and show to others) and
+``results/<experiment>/<run>/`` the arrays, tables and reports. Replots read the newest results
+run; runs from before this layout (files directly in ``<eid>/<experiment>/``) are still found.
 Importing the package is cheap: heavy dependencies are imported inside the functions using them.
 """

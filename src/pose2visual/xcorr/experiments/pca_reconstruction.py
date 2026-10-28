@@ -30,7 +30,8 @@ recomputes only the decomposition (another window, rank or crop) without any neu
 needs only the keypoint json of ``list_litpose_keypoints`` and the camera timestamps.
 
 Files: ``<session>/results/experiment_B_pca/<run>/pca_decomposition.<eid>[.<camera>].{npz,json}``
-and ``<session>/plot_video/experiment_B_pca/<run>_decomposition/`` (the heatmap, videos, the md).
+and ``<session>/plot_video/experiment_B_pca/<run>_decomposition/`` (the heatmap in ``png/`` and
+``pdf/``, videos, the md).
 
 Usage::
 
@@ -446,7 +447,7 @@ def draw_decomposition_heatmap(
     vmax: float,
     mark: tuple[float, float],
 ) -> Path:
-    """Draw and save `heatmap.pca_decomposition.<eid>.<camera>.png` (whole recording, png only).
+    """Draw and save `heatmap.pca_decomposition.<eid>.<camera>` as png and pdf (whole recording).
 
     Shared by `write_decomposition` and `replot_pca.replot_decomposition`.
 
@@ -465,7 +466,7 @@ def draw_decomposition_heatmap(
         mark: `(start, end)` seconds of the video window, outlined in every panel.
 
     Returns:
-        The written png.
+        The written png (the pdf is next to it in `pdf/`).
     """
     # lazy: matplotlib is only needed to draw
     from pose2visual.xcorr.figures import save_figure
@@ -474,7 +475,7 @@ def draw_decomposition_heatmap(
         eid, camera, keypoints, bin_times, x_centered, x_rank, x_residual, explained_variance,
         rank, vmax, mark=mark, note=f'; whole recording, {len(bin_times)} time bins averaged',
     )
-    return save_figure(fig, plots_dir / f'heatmap.pca_decomposition.{eid}.{camera}', pdf=False)[0]
+    return save_figure(fig, plots_dir / f'heatmap.pca_decomposition.{eid}.{camera}')[0]
 
 
 def build_video_path(

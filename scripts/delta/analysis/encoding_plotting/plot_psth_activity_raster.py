@@ -22,8 +22,9 @@ Usage::
     PYTHONPATH=src python scripts/delta/analysis/encoding_plotting/plot_psth_activity_raster.py \\
       --config configs/encoding/litpose_encoding.yaml --no-show
 
-Outputs ``psth_activity_raster.<eid>.png`` and ``psth_activity_raster.<eid>.json`` (neurons, BPS
-and the variant folder that was read) in the ``plots`` folder of the run, unless ``-o`` is given.
+Outputs ``png/psth_activity_raster.<eid>.png``, ``pdf/psth_activity_raster.<eid>.pdf`` and
+``psth_activity_raster.<eid>.json`` (neurons, BPS and the variant folder that was read) in the
+``plots`` folder of the run, unless ``-o`` is given.
 """
 
 import argparse
@@ -49,6 +50,7 @@ from pose2visual.encoding.litpose_results import (
     plots_dir,
     resolve_eid,
 )
+from pose2visual.plot_io import save_figure, strip_figure_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -335,7 +337,6 @@ def plot_psth_comparison(
     raster_neuron_index: int | None = None,
     normalize: bool = True,
     save_path: Path | None = None,
-    also_save_pdf: bool = False,
     show: bool = True,
     colors: tuple[str, str] | None = None,
 ) -> plt.Figure:
@@ -353,8 +354,8 @@ def plot_psth_comparison(
         trials_idx: trial selection, see `trials_idx_to_bounds`.
         raster_neuron_index: neuron of the raster row; the first of `neuron_indices` when `None`.
         normalize: scale each PSTH panel to [0, 1] instead of raw rates.
-        save_path: png path; the figure is not saved when `None`.
-        also_save_pdf: also save a pdf next to the png.
+        save_path: png path; the png goes to its `png/` folder, the pdf to `pdf/` (same name);
+            the figure is not saved when `None`.
         show: show the figure, otherwise close it.
         colors: colors of the two methods; `None` takes those of `methods` from
             `CONDITION_PSTH_COLORS`.
@@ -474,11 +475,7 @@ def plot_psth_comparison(
 
     fig.subplots_adjust(left=0.08, right=0.90, top=0.82, bottom=0.14, wspace=0.45, hspace=0.95)
     if save_path is not None:
-        save_path = Path(save_path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, bbox_inches='tight')
-        if also_save_pdf:
-            fig.savefig(save_path.with_suffix('.pdf'), bbox_inches='tight')
+        save_figure(fig, strip_figure_suffix(save_path), bbox_inches='tight')
     if show:
         plt.show()
     else:
@@ -580,9 +577,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--seed', type=int, default=None, help='only match runs of this seed (default: any)',
     )
     parser.add_argument(
-        '-o', '--output', type=Path, default=None, help='output png path (default: see docstring)',
+        '-o', '--output', type=Path, default=None,
+        help='output png path; the files go to png/ and pdf/ next to it (default: see docstring)',
     )
-    parser.add_argument('--save-pdf', action='store_true', help='also save a pdf next to the png')
     parser.add_argument('--no-show', action='store_true', help='save without showing the figure')
     return parser.parse_args(argv)
 
@@ -663,7 +660,6 @@ def main(argv: list[str] | None = None) -> None:
         raster_neuron_index=args.raster_neuron_index,
         normalize=not args.no_normalize,
         save_path=save_path,
-        also_save_pdf=args.save_pdf,
         show=not args.no_show,
     )
     start, stop = trials_idx_to_bounds(gt_list[0].shape[0], args.trial_idx)
@@ -687,7 +683,10 @@ def main(argv: list[str] | None = None) -> None:
             'wanted': wanted,
         },
     )
-    logger.info(f'wrote {save_path} and {save_path.with_suffix(".json")}')
+    logger.info(
+        f'wrote {save_path.name} (png/ and pdf/ in {save_path.parent}) and '
+        f'{save_path.with_suffix(".json")}',
+    )
 
 
 if __name__ == '__main__':

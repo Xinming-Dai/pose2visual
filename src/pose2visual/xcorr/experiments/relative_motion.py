@@ -39,7 +39,8 @@ movement and are left out; no permutation test is run (the masked estimator woul
 per-shift normalization); the spec's backward difference ``|dp| / dt`` is replaced by the
 baseline's central difference so that the only change is the centroid subtraction.
 
-Figures (png only; see ``HEATMAP_GUIDE`` and the other ``*_GUIDE`` entries, written to
+Figures (``png/`` and vector ``pdf/`` subfolders; see ``HEATMAP_GUIDE`` and the other
+``*_GUIDE`` entries, written to
 ``figures.<eid>.md``): ``heatmap.original_speed`` and ``heatmap.relative_speed`` (same neurons,
 keypoints, lags and colour scale), ``scatter.peak_abs_r`` (peak |r| before against after the
 centroid subtraction, coloured by anatomical group), ``bar.variance``, ``centroid_trajectories``
@@ -954,7 +955,7 @@ def plot_results(
             fig, f'{eid}: {label}; colour scale +-{scale:.2f}; each strip: neurons x lag, '
             'number = max |value|', BASELINE_COLORBAR_LABEL,
         )
-        paths += save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}', pdf=False)
+        paths += save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}')
     scatter_panels = []
     for idx_c, camera in enumerate(cams):
         idx_b = np.flatnonzero(valid[idx_c])
@@ -965,19 +966,18 @@ def plot_results(
         })
     paths += save_figure(
         diagnostics.plot_peak_scatter(scatter_panels), plots_dir / f'scatter.peak_abs_r.{eid}',
-        pdf=False,
     )
     paths += save_figure(
-        diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}', pdf=False,
+        diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}',
     )
     if centroids:
         paths += save_figure(
             diagnostics.plot_centroid_trajectories(centroids),
-            plots_dir / f'centroid_trajectories.{eid}', pdf=False,
+            plots_dir / f'centroid_trajectories.{eid}',
         )
         guide.append(CENTROID_GUIDE)
     paths += save_figure(
-        diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}', pdf=False,
+        diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}',
     )
     guide.append(GROUPS_TABLE_GUIDE)
     paths.append(write_figure_guide(

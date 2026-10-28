@@ -221,7 +221,7 @@ def replot_decomposition(
     cameras: list[str] | None = None,
     plots_subdir: str | None = None,
 ) -> list[Path]:
-    """Redraw the PCA decomposition heatmap of one finished Experiment B run (png only).
+    """Redraw the PCA decomposition heatmap of one finished Experiment B run (png and pdf).
 
     Reads the `pca_decomposition.<eid>.<camera>.npz` files the run saved; the colour scale is the
     run's own (its `pca_decomposition.<eid>.json`, else the data's percentile). The video is not

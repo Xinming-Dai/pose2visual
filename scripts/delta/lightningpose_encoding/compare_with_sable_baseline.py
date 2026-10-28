@@ -43,7 +43,8 @@ The sessions are ``--eids``, else the group ``--eid-group`` of ``paths.eid_group
 ``comparison.json``, ``comparison.csv`` (one row per session, method and encoder),
 ``comparison_pooled.csv`` (one row per method and encoder), ``bps_bars.png`` and
 ``bps_scatter.png`` in ``--output-dir`` (default: the ``plots/compare_with_sable_baseline_<group>``
-folder of the run, so another session group does not overwrite it). The same two figures that
+folder of the run, so another session group does not overwrite it). Every figure is saved as
+png in ``png/`` and vector pdf in ``pdf/`` of that folder. The same two figures that
 hold only "Sparse keypoints" (the ``keypoints`` method) and "Dense keypoints" are saved as
 ``bps_bars_keypoints_vs_dense_keypoints.png`` and
 ``bps_scatter_keypoints_vs_dense_keypoints.png``, plus one PSTH / raster figure per session,
@@ -82,6 +83,7 @@ from pose2visual.encoding.litpose_results import (
     load_wanted_settings,
 )
 from pose2visual.encoding.utils import bits_per_spike
+from pose2visual.plot_io import PNG_DIR, save_figure, strip_figure_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -556,16 +558,15 @@ def write_tables(
 
 
 def _finish_figure(fig: plt.Figure, save_path: Path, show: bool) -> None:
-    """Save a figure as png and show or close it.
+    """Save a figure as png and pdf and show or close it.
 
     Args:
         fig: the figure.
-        save_path: png path; its folder is created if missing.
+        save_path: png path; the png goes to its `png/` folder, the pdf to `pdf/` (same name).
         show: show the figure, otherwise close it.
     """
     fig.tight_layout()
-    save_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(save_path, bbox_inches='tight', dpi=200)
+    save_figure(fig, strip_figure_suffix(save_path), dpi=200, bbox_inches='tight')
     if show:
         plt.show()
     else:
@@ -733,7 +734,7 @@ def plot_pairwise(
     plot_scatter(
         results, [PAIRWISE_METHOD], encoder, scatter_path, show=show, colors=PAIRWISE_COLORS,
     )
-    return [bars_path, scatter_path]
+    return [path.parent / PNG_DIR / path.name for path in (bars_path, scatter_path)]
 
 
 def load_psth_module() -> ModuleType:
@@ -813,7 +814,7 @@ def plot_pairwise_psth(
             colors=(PAIRWISE_COLORS[PAIRWISE_METHOD], PAIRWISE_COLORS[LITPOSE]),
         )
         logger.info(f'{eid}: PSTH neurons {neuron_indices} -> {save_path}')
-        saved.append(save_path)
+        saved.append(save_path.parent / PNG_DIR / save_path.name)
     return saved
 
 

@@ -29,10 +29,10 @@ for the figures, ``plot_video/experiment_A_baseline/`` (the folder to download a
   behavior), lags, names, cameras, neuron order, p values and the null 95th percentile.
 * ``xcorr_params.json`` and ``xcorr_config.yaml`` — settings and alignment diagnostics.
 * ``plot_video/experiment_A_baseline/<YYYYmmdd_HHMMSS>_<order>/`` (``<order>`` is the neuron order,
-  e.g. ``rastermap``) —
-  ``heatmap.all.<eid>.{png,pdf}``: every behavior on one figure,
+  e.g. ``rastermap``), each figure as ``png/<name>.png`` and vector ``pdf/<name>.pdf`` —
+  ``heatmap.all.<eid>``: every behavior on one figure,
   rows = cameras (Figure 20), each row labelled with its own camera's keypoint names; and
-  ``example_curves.<eid>.{png,pdf}`` (only with ``--n-examples N``, off by default).
+  ``example_curves.<eid>`` (only with ``--n-examples N``, off by default).
   ``replot`` redraws them from the files above without recomputing anything.
 * ``plot_video/experiment_A_baseline/<YYYYmmdd_HHMMSS>_depth/`` — the same figures with the
   neurons in probe-depth order, written unless ``--order depth`` (already depth) or

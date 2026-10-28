@@ -269,9 +269,9 @@ def write_figure_guide(
     lines = [
         f'# {title}: figures ({eid})',
         '',
-        f'Every figure is saved as `<stem>.{eid}.png` (png only); the parts of a stem are '
-        'separated by `.`, so `heatmap.original_speed` is a `heatmap` of variant '
-        '`original_speed`.',
+        f'Every figure is saved as `png/<stem>.{eid}.png` and vector `pdf/<stem>.{eid}.pdf`; the '
+        'parts of a stem are separated by `.`, so `heatmap.original_speed` is a `heatmap` of '
+        'variant `original_speed`.',
         '',
         '## Reading a `heatmap.*` figure',
         '',

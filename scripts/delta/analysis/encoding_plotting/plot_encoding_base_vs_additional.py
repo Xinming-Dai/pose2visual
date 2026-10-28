@@ -35,10 +35,11 @@ Usage::
       --config configs/encoding/litpose_encoding.yaml --no-show
 
 Outputs ``<video_preds_dir>/<camera>_<output_name>/plots/encoding_base_vs_additional_<...>/`` with
-``encoding_barplot.png`` and ``encoding_barplot.json`` (numbers and provenance), unless ``-o`` is
-given. The per-session figures of ``plot_psth_activity_raster.py`` and ``plot_bps_scatter.py`` go to
-the same folder; ``step2_run_encoding.sh`` makes those right after each session finishes, without
-waiting for the other sessions. The helpers shared by the three scripts are in
+``png/encoding_barplot.png``, ``pdf/encoding_barplot.pdf`` and ``encoding_barplot.json`` (numbers
+and provenance), unless ``-o`` is given. The per-session figures of
+``plot_psth_activity_raster.py`` and ``plot_bps_scatter.py`` go to the same folder;
+``step2_run_encoding.sh`` makes those right after each session finishes, without waiting for the
+other sessions. The helpers shared by the three scripts are in
 ``pose2visual.encoding.litpose_results``.
 """
 
@@ -64,6 +65,7 @@ from pose2visual.encoding.litpose_results import (
     load_wanted_settings,
     plots_dir,
 )
+from pose2visual.plot_io import save_figure, strip_figure_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -421,7 +423,8 @@ def plot_encoding_bars(
     Args:
         stats: output of `collect_stats`.
         text: block printed under the axes (see `keypoint_text`).
-        save_path: png path; the figure is not saved when `None`.
+        save_path: png path; the png goes to its `png/` folder, the pdf to `pdf/` (same name);
+            the figure is not saved when `None`.
         show: show the figure, otherwise close it.
 
     Returns:
@@ -500,9 +503,10 @@ def plot_encoding_bars(
     fig.tight_layout(pad=0.4)
 
     if save_path is not None:
-        save_path = Path(save_path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, dpi=400, bbox_inches='tight', pad_inches=0.05, facecolor='white')
+        save_figure(
+            fig, strip_figure_suffix(save_path), dpi=400, bbox_inches='tight', pad_inches=0.05,
+            facecolor='white',
+        )
     if show:
         plt.show()
     else:
@@ -517,7 +521,8 @@ def default_output_path(wanted: dict[str, Any]) -> Path:
         wanted: output of `load_wanted_settings`.
 
     Returns:
-        `encoding_barplot.png` in `plots_dir(wanted)`.
+        `encoding_barplot.png` in `plots_dir(wanted)`; it is written to the `png/` subfolder
+        there, with the pdf in `pdf/`.
     """
     return plots_dir(wanted) / 'encoding_barplot.png'
 
@@ -616,7 +621,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     plot_encoding_bars(stats, text, save_path=save_path, show=not args.no_show)
     write_summary_json(save_path.with_suffix('.json'), stats, results, wanted)
-    logger.info(f'wrote {save_path} and {save_path.with_suffix(".json")}')
+    logger.info(
+        f'wrote {save_path.name} (png/ and pdf/ in {save_path.parent}) and '
+        f'{save_path.with_suffix(".json")}',
+    )
 
 
 if __name__ == '__main__':

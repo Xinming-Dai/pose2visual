@@ -25,7 +25,7 @@ SESSION_IDS=(
 echo "[$(date +'%Y-%m-%d %H:%M:%S')] qc showcase for sessions: ${SESSION_IDS[*]}"
 
 echo "=== executing ==="
-# per session in <EKS_DIR>/qc/showcase/ (png + pdf):
+# per session in <EKS_DIR>/qc/showcase/ (png/ + pdf/ subfolders):
 #   kp_frame.<session>.frame000200           left | right frame, keypoints above --conf-threshold
 #   kp_traces.<session>.frame000200.pm2p5s   same frames + x/y traces, 2.5 s before to 2.5 s after
 # --anchor-frame N      frame to show (default: 200)

@@ -12,7 +12,8 @@ Usage::
     PYTHONPATH=src python scripts/delta/analysis/encoding_plotting/plot_bps_scatter.py \\
       --config configs/encoding/litpose_encoding.yaml --no-show
 
-Outputs ``scatter_plot.<eid>.png`` in the ``plots`` folder of the run, unless ``-o`` is given.
+Outputs ``png/scatter_plot.<eid>.png`` and ``pdf/scatter_plot.<eid>.pdf`` in the ``plots`` folder
+of the run, unless ``-o`` is given.
 """
 
 import argparse
@@ -33,6 +34,7 @@ from pose2visual.encoding.litpose_results import (
     plots_dir,
     resolve_eid,
 )
+from pose2visual.plot_io import save_figure, strip_figure_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +61,6 @@ def plot_bps_scatter(
     show_bps: bool = False,
     show_axis_labels: bool = True,
     save_path: Path | None = None,
-    also_save_pdf: bool = False,
     show: bool = True,
 ) -> plt.Figure:
     """Scatter the per-neuron BPS of two methods.
@@ -72,8 +73,8 @@ def plot_bps_scatter(
         panel_label: panel letter; none when `None`.
         show_bps: print the mean BPS of both methods in the lower right corner.
         show_axis_labels: draw the axis labels.
-        save_path: png path; the figure is not saved when `None`.
-        also_save_pdf: also save a pdf next to the png.
+        save_path: png path; the png goes to its `png/` folder, the pdf to `pdf/` (same name);
+            the figure is not saved when `None`.
         show: show the figure, otherwise close it.
 
     Returns:
@@ -152,11 +153,7 @@ def plot_bps_scatter(
         )
 
     if save_path is not None:
-        save_path = Path(save_path)
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(save_path, bbox_inches='tight')
-        if also_save_pdf:
-            fig.savefig(save_path.with_suffix('.pdf'), bbox_inches='tight')
+        save_figure(fig, strip_figure_suffix(save_path), bbox_inches='tight')
     if show:
         plt.show()
     else:
@@ -226,7 +223,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         '-o', '--output', type=Path, default=None, help='output png path (default: see docstring)',
     )
-    parser.add_argument('--save-pdf', action='store_true', help='also save a pdf next to the png')
     parser.add_argument('--no-show', action='store_true', help='save without showing the figure')
     return parser.parse_args(argv)
 
@@ -276,10 +272,11 @@ def main(argv: list[str] | None = None) -> None:
         show_bps=args.show_bps,
         show_axis_labels=not args.no_axis_labels,
         save_path=save_path,
-        also_save_pdf=args.save_pdf,
         show=not args.no_show,
     )
-    logger.info(f'wrote {save_path} (variant {variant_path})')
+    logger.info(
+        f'wrote {save_path.name} (png/ and pdf/ in {save_path.parent}; variant {variant_path})',
+    )
 
 
 if __name__ == '__main__':

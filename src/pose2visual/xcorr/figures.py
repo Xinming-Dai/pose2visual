@@ -1,9 +1,10 @@
 """Figures of the cross-correlation: a Figure 20-style overview and example curves.
 
-Built on ``matplotlib.figure.Figure`` directly (no pyplot backend), saved as png and pdf like the
-showcase figures. A strip of the overview is one behavior of one camera: neurons (rows, one order
-for every strip) by lag (columns), coloured by the signed correlation on a symmetric scale centred
-at zero that is shared by all strips, so weak behaviors stay pale instead of being stretched.
+Built on ``matplotlib.figure.Figure`` directly (no pyplot backend), saved as png and pdf
+(``plot_io``) like the showcase figures. A strip of the overview is one behavior of one camera:
+neurons (rows, one order for every strip) by lag (columns), coloured by the signed correlation on a
+symmetric scale centred at zero that is shared by all strips, so weak behaviors stay pale instead
+of being stretched.
 """
 
 from dataclasses import dataclass
@@ -12,6 +13,8 @@ from pathlib import Path
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.ticker import MaxNLocator
+
+from pose2visual.plot_io import save_figure as save_figure_pair
 
 COLORMAP = 'bwr'
 # fractional rate change of the PETH strips: orange = more than baseline, purple = less
@@ -44,26 +47,19 @@ def heatmap_vmax(r: np.ndarray, percentile: float = 99.5, step: float = 0.05) ->
 
 
 def save_figure(fig: Figure, stem: Path, dpi: int = 200, pdf: bool = True) -> list[Path]:
-    """Save a figure as png and, unless `pdf` is `False`, pdf.
+    """Save a figure as png in `png/` and, unless `pdf` is `False`, as pdf in `pdf/`.
 
     Args:
         fig: the figure.
-        stem: output path without suffix; its folder is created.
+        stem: output path without suffix; the `png/` and `pdf/` folders are created next to it.
         dpi: resolution of the png.
-        pdf: also write `<stem>.pdf`; the experiment figures (B, C) pass `False`.
+        pdf: also write the pdf.
 
     Returns:
-        The written paths, `<stem>.png` then (if `pdf`) `<stem>.pdf`.
+        The written paths, `png/<stem>.png` then (if `pdf`) `pdf/<stem>.pdf`.
     """
-    stem.parent.mkdir(parents=True, exist_ok=True)
-    # a dot in the stem (the session id is separated from other parts by dots) is not a suffix
-    paths = [stem.parent / f'{stem.name}.png']
-    if pdf:
-        paths.append(stem.parent / f'{stem.name}.pdf')
-    for path in paths:
-        # tight bbox keeps text that runs past the canvas (e.g. a long title) instead of cutting it
-        fig.savefig(path, dpi=dpi, bbox_inches='tight', pad_inches=0.1)
-    return paths
+    # tight bbox keeps text that runs past the canvas (e.g. a long title) instead of cutting it
+    return save_figure_pair(fig, stem, dpi=dpi, pdf=pdf, bbox_inches='tight', pad_inches=0.1)
 
 
 @dataclass

@@ -783,7 +783,7 @@ def plot_results(
             fig, f'{eid}: {label}; colour scale +-{scale:.2f}; each strip: neurons x lag, '
             'number = max |value|', BASELINE_COLORBAR_LABEL,
         )
-        paths += save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}', pdf=False)
+        paths += save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}')
     if valid_position.any():
         pos_scale = heatmap_vmax(r_position_pca)
         pos_groups = ['face_position'] * len(position_names)
@@ -795,7 +795,7 @@ def plot_results(
             fig, f'{eid}: PCA on positions (face group component scores); colour scale '
             f'+-{pos_scale:.2f}', BASELINE_COLORBAR_LABEL,
         )
-        paths += save_figure(fig, plots_dir / f'heatmap.position_pca.{eid}', pdf=False)
+        paths += save_figure(fig, plots_dir / f'heatmap.position_pca.{eid}')
         guide.append(POSITION_PCA_GUIDE)
     with warnings.catch_warnings():
         # a camera without a keypoint is all NaN
@@ -812,13 +812,11 @@ def plot_results(
         })
     paths += save_figure(
         diagnostics.plot_peak_scatter(scatter_panels), plots_dir / f'scatter.peak_abs_r.{eid}',
-        pdf=False,
     )
     guide.append(SCATTER_GUIDE)
     if not summary.empty:
         paths += save_figure(
             diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}',
-            pdf=False,
         )
         guide.append(VARIANCE_GUIDE)
     group_rows = [
@@ -826,7 +824,7 @@ def plot_results(
         for camera, info in camera_report.items() for entry in info['plan']
     ]
     paths += save_figure(
-        diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}', pdf=False,
+        diagnostics.plot_group_table(group_rows), plots_dir / f'groups_table.{eid}',
     )
     guide.append(GROUPS_TABLE_GUIDE)
     variance_entries = [
@@ -836,7 +834,7 @@ def plot_results(
     if variance_entries:
         paths += save_figure(
             diagnostics.plot_pca_explained_variance(variance_entries),
-            plots_dir / f'bar.explained_variance.{eid}', pdf=False,
+            plots_dir / f'bar.explained_variance.{eid}',
         )
         guide.append(EXPLAINED_VARIANCE_GUIDE)
     paths.append(write_figure_guide(

@@ -8,8 +8,8 @@ anchor. The source videos are auto-discovered from the csv names (IBL-2view conv
 `--video-root` or `$IBL_2VIEW_ROOT`).
 
 Default output, in the folder of the csvs:
-`<eks-dir>/qc/showcase/kp_frame.<session>.frame<anchor>.{png,pdf}` and
-`<eks-dir>/qc/showcase/kp_traces.<session>.frame<anchor>.pm<seconds>s.{png,pdf}`.
+`<eks-dir>/qc/showcase/{png/*.png,pdf/*.pdf}`, named `kp_frame.<session>.frame<anchor>` and
+`kp_traces.<session>.frame<anchor>.pm<seconds>s`.
 A SLURM launcher lives in `scripts/delta/qc/render_showcase.sh`.
 """
 

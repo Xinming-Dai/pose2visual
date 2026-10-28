@@ -17,6 +17,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
+from pose2visual.plot_io import save_figure as save_figure_pair
 from pose2visual.qc.video.loading import CameraData
 from pose2visual.qc.video.trace_panels import compute_trace_limits, gate_mask
 
@@ -344,19 +345,14 @@ def build_trace_figure(
 
 
 def save_figure(fig: Figure, stem: Path, dpi: int = 200) -> list[Path]:
-    """Save a figure as png and pdf.
+    """Save a figure as png in `png/` and as pdf in `pdf/`.
 
     Args:
         fig: the figure.
-        stem: output path without suffix; its folder is created.
+        stem: output path without suffix; the `png/` and `pdf/` folders are created next to it.
         dpi: resolution of the png.
 
     Returns:
-        the written paths, `<stem>.png` then `<stem>.pdf`.
+        the written paths, `png/<stem>.png` then `pdf/<stem>.pdf`.
     """
-    stem.parent.mkdir(parents=True, exist_ok=True)
-    # a dot in the stem (the session id is separated from other parts by dots) is not a suffix
-    paths = [stem.parent / f'{stem.name}.png', stem.parent / f'{stem.name}.pdf']
-    for path in paths:
-        fig.savefig(path, dpi=dpi)
-    return paths
+    return save_figure_pair(fig, stem, dpi=dpi)
