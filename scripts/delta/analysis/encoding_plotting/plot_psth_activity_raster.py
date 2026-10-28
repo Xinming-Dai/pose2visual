@@ -22,8 +22,9 @@ Usage::
     PYTHONPATH=src python scripts/delta/analysis/encoding_plotting/plot_psth_activity_raster.py \\
       --config configs/encoding/litpose_encoding.yaml --no-show
 
-Outputs ``png/psth_activity_raster.<eid>.png``, ``pdf/psth_activity_raster.<eid>.pdf`` and
-``psth_activity_raster.<eid>.json`` (neurons, BPS and the variant folder that was read) in the
+Outputs ``png/psth_activity_raster.<eid>.png``, ``pdf/psth_activity_raster.<eid>.pdf``,
+``svg/psth_activity_raster.<eid>.svg`` and ``psth_activity_raster.<eid>.json`` (neurons, BPS and
+the variant folder that was read) in the
 ``plots`` folder of the run, unless ``-o`` is given.
 """
 
@@ -475,7 +476,7 @@ def plot_psth_comparison(
 
     fig.subplots_adjust(left=0.08, right=0.90, top=0.82, bottom=0.14, wspace=0.45, hspace=0.95)
     if save_path is not None:
-        save_figure(fig, strip_figure_suffix(save_path), bbox_inches='tight')
+        save_figure(fig, strip_figure_suffix(save_path), svg=True, bbox_inches='tight')
     if show:
         plt.show()
     else:

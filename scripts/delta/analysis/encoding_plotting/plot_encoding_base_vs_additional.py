@@ -35,8 +35,9 @@ Usage::
       --config configs/encoding/litpose_encoding.yaml --no-show
 
 Outputs ``<video_preds_dir>/<camera>_<output_name>/plots/encoding_base_vs_additional_<...>/`` with
-``png/encoding_barplot.png``, ``pdf/encoding_barplot.pdf`` and ``encoding_barplot.json`` (numbers
-and provenance), unless ``-o`` is given. The per-session figures of
+``png/encoding_barplot.png``, ``pdf/encoding_barplot.pdf``, ``svg/encoding_barplot.svg`` and
+``encoding_barplot.json`` (numbers and
+provenance), unless ``-o`` is given. The per-session figures of
 ``plot_psth_activity_raster.py`` and ``plot_bps_scatter.py`` go to the same folder;
 ``step2_run_encoding.sh`` makes those right after each session finishes, without waiting for the
 other sessions. The helpers shared by the three scripts are in
@@ -504,8 +505,8 @@ def plot_encoding_bars(
 
     if save_path is not None:
         save_figure(
-            fig, strip_figure_suffix(save_path), dpi=400, bbox_inches='tight', pad_inches=0.05,
-            facecolor='white',
+            fig, strip_figure_suffix(save_path), dpi=400, svg=True, bbox_inches='tight',
+            pad_inches=0.05, facecolor='white',
         )
     if show:
         plt.show()

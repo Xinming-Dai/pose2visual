@@ -12,8 +12,8 @@ Usage::
     PYTHONPATH=src python scripts/delta/analysis/encoding_plotting/plot_bps_scatter.py \\
       --config configs/encoding/litpose_encoding.yaml --no-show
 
-Outputs ``png/scatter_plot.<eid>.png`` and ``pdf/scatter_plot.<eid>.pdf`` in the ``plots`` folder
-of the run, unless ``-o`` is given.
+Outputs ``png/scatter_plot.<eid>.png``, ``pdf/scatter_plot.<eid>.pdf`` and
+``svg/scatter_plot.<eid>.svg`` in the ``plots`` folder of the run, unless ``-o`` is given.
 """
 
 import argparse
@@ -153,7 +153,7 @@ def plot_bps_scatter(
         )
 
     if save_path is not None:
-        save_figure(fig, strip_figure_suffix(save_path), bbox_inches='tight')
+        save_figure(fig, strip_figure_suffix(save_path), svg=True, bbox_inches='tight')
     if show:
         plt.show()
     else:
