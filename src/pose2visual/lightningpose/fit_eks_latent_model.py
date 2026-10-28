@@ -34,7 +34,9 @@ Usage::
 
 Default output, for every session and camera:
 ``<model-dir>/eks/<timestamp>[__<tag>]/eks/_iblrig_<camera>Camera.downsampled.<session>.csv``,
-plus one ``<model-dir>/eks/<timestamp>[__<tag>]/manifest.json`` for the whole run. 
+plus one ``<model-dir>/eks/<timestamp>[__<tag>]/manifest.json`` for the whole run.
+``--csv-dir`` moves the csvs elsewhere, so several jobs (one per session) can write into one shared
+folder while each keeps its own ``--out-dir`` and manifest.
 """
 
 import argparse
@@ -357,6 +359,12 @@ def build_parser() -> argparse.ArgumentParser:
         '<out-dir>/manifest.json (default: <model-dir>/eks/<timestamp>[__<tag>])',
     )
     parser.add_argument(
+        '--csv-dir',
+        default=None,
+        help='Folder for the smoothed csvs (default: <out-dir>/eks). Lets jobs that fit different '
+        'sessions share one csv folder while keeping separate --out-dir manifests',
+    )
+    parser.add_argument(
         '--tag',
         default=None,
         help='Optional tag appended to the default run folder name',
@@ -445,9 +453,10 @@ def main(argv: list[str] | None = None) -> None:
         out_dir = Path(args.out_dir).resolve()
     else:
         out_dir = model_dir / 'eks' / run_name
-    csv_dir = out_dir / 'eks'
+    csv_dir = Path(args.csv_dir).resolve() if args.csv_dir else out_dir / 'eks'
+    out_dir.mkdir(parents=True, exist_ok=True)
     csv_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f'output: {out_dir}')
+    logger.info(f'output: {out_dir}, csvs: {csv_dir}')
 
     outputs: dict[str, dict[str, dict]] = {}
     failed: list[dict[str, str]] = []
@@ -531,6 +540,7 @@ def main(argv: list[str] | None = None) -> None:
         'smooth_param': args.smooth_param,
         's_frames': args.s_frames,
         'tag': args.tag,
+        'csv_dir': str(csv_dir),
         'outputs': outputs,
         'failed': failed,
     }

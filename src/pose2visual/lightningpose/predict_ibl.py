@@ -11,10 +11,12 @@ Usage::
       --root /work/hdd/bfsr/xdai3/IBL-2view \\
       --model-dir /path/to/lightning_pose_model \\
       --config configs/lightningpose/extraction_pipeline_pose2visual.yaml \\
-      [--sessionids <eid1> <eid2>] \\
+      [--sessionids <eid1> <eid2>] [--cameras right] \\
       [--skip-existing] [--dry-run] [-- --skip_viz]
 
-Arguments after ``--`` are forwarded to ``litpose predict`` unchanged.
+``--cameras`` restricts prediction to a subset of the cameras of the config (e.g. to finish only
+the camera that did not complete in an earlier job). Arguments after ``--`` are forwarded to
+``litpose predict`` unchanged.
 """
 
 import argparse
@@ -197,6 +199,27 @@ def _should_skip(model_dir: Path, cam_videos: dict[str, Path]) -> bool:
     )
 
 
+def _select_cameras(cameras: list[str], requested: list[str] | None) -> list[str]:
+    """Restrict the configured cameras to the requested ones.
+
+    Args:
+        cameras: camera names of the config, in video order.
+        requested: camera names to keep, or None to keep all.
+
+    Returns:
+        the requested cameras in config order, or all cameras if ``requested`` is None.
+
+    Raises:
+        ValueError: if a requested camera is not in ``cameras``.
+    """
+    if requested is None:
+        return cameras
+    unknown = sorted(set(requested) - set(cameras))
+    if unknown:
+        raise ValueError(f'cameras {unknown} not in the config cameras {cameras}')
+    return [cam for cam in cameras if cam in requested]
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser.
 
@@ -229,6 +252,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar='SESSION_ID',
         help='session ids to predict; overrides config sessionids if provided',
+    )
+    parser.add_argument(
+        '--cameras',
+        nargs='+',
+        default=None,
+        metavar='CAMERA',
+        help='cameras to predict, a subset of the config cameras (default: all of them)',
     )
     parser.add_argument(
         '--dry-run',
@@ -270,6 +300,7 @@ def main(argv: list[str] | None = None) -> None:
 
     config = load_config(args.config)
     sessionids = args.sessionids if args.sessionids is not None else config.sessionids
+    cameras = _select_cameras(config.cameras, args.cameras)
 
     if not args.dry_run and shutil.which(args.litpose_bin) is None:
         raise FileNotFoundError(
@@ -277,16 +308,16 @@ def main(argv: list[str] | None = None) -> None:
             'or pass --litpose-bin /path/to/litpose.'
         )
 
-    session_ids = _discover_sessions(root, config.cameras, config.video_naming, sessionids)
+    session_ids = _discover_sessions(root, cameras, config.video_naming, sessionids)
     if not session_ids:
-        raise RuntimeError(f'no sessions with videos for cameras {config.cameras} under {root}')
+        raise RuntimeError(f'no sessions with videos for cameras {cameras} under {root}')
 
     extra = list(args.litpose_argv)
     if extra and extra[0] == '--':
         extra = extra[1:]
 
     for session_id in session_ids:
-        cam_videos = _video_paths(root, config.cameras, session_id, config.video_naming)
+        cam_videos = _video_paths(root, cameras, session_id, config.video_naming)
         for cam, video in cam_videos.items():
             if not video.is_file():
                 raise FileNotFoundError(

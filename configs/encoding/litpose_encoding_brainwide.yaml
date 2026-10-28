@@ -1,0 +1,46 @@
+# config for the Brainwide sessions, read by step 0 (pose2visual.encoding.list_litpose_keypoints:
+# merge + keypoint listing + PCA) and by pose2visual.lightningpose.litpose_to_pqt.
+# Same settings as litpose_encoding.yaml, so the PCA is comparable; only the paths differ.
+# <out-root> is /work/hdd/bfsr/xdai3/brainwide-litpose (DEFAULT_OUT_ROOT of predict_brainwide).
+
+# required; name of an entry in src/pose2visual/encoding/litpose_step_pipelines.json
+step_order: step_01
+position:
+  columns: ens_post_mean
+
+# sessions are passed on the command line (--eids)
+session:
+  eid: null
+  eid_group: null
+  camera: both
+
+paths:
+  # the merged csvs and, under encoding/, the keypoint listing and the PCA are written here
+  video_preds_dir: /work/hdd/bfsr/xdai3/brainwide-litpose/merged
+  # defines the groups used by merge, pca and visibility
+  body_parts_json: scripts/delta/data/body_parts.json
+
+# a frame is masked when its likelihood is below likelihood_threshold or x/y is NaN
+filter:
+  likelihood_threshold: 0.7
+  max_masked_frac: 0.3
+
+# groups that become one binary "<group>_visible" feature instead of keypoint speeds
+visibility:
+  group_set: nonoverlapping_analysis_groups_separate_tongue
+  likelihood_threshold: 0.7
+  groups: [tongue]
+
+# every keypoint comes from exactly one source; `rest` = all keypoints no other source claims.
+# The sources are the EKS runs of predict_brainwide's shadow models (scripts step2_fit_eks.sh)
+merge:
+  group_set: nonoverlapping_analysis_groups_separate_tongue
+  sources:
+    - video_preds_dir: /work/hdd/bfsr/xdai3/brainwide-litpose/models/digits/eks_run/eks
+      groups: [digits]
+    - video_preds_dir: /work/hdd/bfsr/xdai3/brainwide-litpose/models/rest/eks_run/eks
+      groups: rest
+
+# PCA reprojection; on/off comes from step_order, this is only the group set
+pca:
+  group_set: nonoverlapping_analysis_groups_separate_tongue

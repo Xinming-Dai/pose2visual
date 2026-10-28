@@ -8,6 +8,7 @@ look up a run's directory before deleting it.
 """
 
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -26,9 +27,20 @@ def append_entry(registry_path: Path, run_name: str, entry: dict[str, Any]) -> N
         registry = json.loads(registry_path.read_text())
 
     registry[run_name] = entry
+    _write_registry(registry_path, registry)
 
+
+def _write_registry(registry_path: Path, registry: dict[str, Any]) -> None:
+    """Write a registry through a temporary file, so a concurrent reader never sees half of it.
+
+    Args:
+        registry_path: path to the registry.json file (parent folders are created).
+        registry: the full registry content.
+    """
     registry_path.parent.mkdir(parents=True, exist_ok=True)
-    registry_path.write_text(json.dumps(registry, indent=2, sort_keys=True) + '\n')
+    tmp_path = registry_path.with_name(f'{registry_path.name}.{os.getpid()}.tmp')
+    tmp_path.write_text(json.dumps(registry, indent=2, sort_keys=True) + '\n')
+    tmp_path.replace(registry_path)
 
 
 def prune_entry(registry_path: Path, run_dir: Path, run_name: str) -> None:
@@ -53,4 +65,4 @@ def prune_entry(registry_path: Path, run_dir: Path, run_name: str) -> None:
         shutil.rmtree(run_dir)
 
     del registry[run_name]
-    registry_path.write_text(json.dumps(registry, indent=2, sort_keys=True) + '\n')
+    _write_registry(registry_path, registry)
