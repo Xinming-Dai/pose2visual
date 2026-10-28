@@ -25,6 +25,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_frame_times,
     load_keypoint_csv,
     load_position_columns,
+    load_same_side_excluded,
     load_unfiltered_keypoints,
     load_video_preds_dir,
     load_visibility_features,
@@ -146,6 +147,7 @@ def build_continuous_behavior(
     check_filter_settings_match(
         keypoint_info, likelihood_threshold, max_masked_frac, json_path, no_filter_keypoints,
         visibility, position_columns,
+        load_same_side_excluded(config_path, keypoint_info['keypoints'], camera),
     )
     keypoints = list(keypoint_info['usable'])
     feature_members = {} if visibility is None else dict(visibility['features'])

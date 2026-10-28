@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH -A bfsr-delta-cpu
+#SBATCH -A bezq-delta-cpu
 #SBATCH -p cpu
 #SBATCH -c 3
 #SBATCH --mem 20G

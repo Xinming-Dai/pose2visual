@@ -21,8 +21,10 @@ the step B outputs of ``left_<output_name>`` and ``right_<output_name>`` are loa
 resolved against each camera's own keypoints and the selected columns are concatenated, named
 ``left:<name>`` and ``right:<name>``. A trace that does not depend on the camera (``wheel_speed``,
 ``licks``) is taken once, from the left camera, and keeps its plain name. With explicit keypoint
-names (``anatomical_group.name: all``) each name must exist in both cameras. The results go to
-``both_<output_name>``.
+names (``anatomical_group.name: all``) each name must exist in both cameras, except the keypoints
+the yaml's ``same_side_filter`` drops for a camera (``side_excluded`` of its step A json): the left
+camera then takes ``wrist_left`` and the right camera ``wrist_right`` of the same list. The results
+go to ``both_<output_name>``.
 
 The ``anatomical_group`` section holds the two lists and ``anatomical_group.name`` (default
 ``all``) says what they hold. With ``all`` they are explicit keypoint names. With a group set of
@@ -107,12 +109,14 @@ from pose2visual.encoding.litpose_keypoints import (
     load_encoding_yaml,
     load_one_api_trace_settings,
     load_position_columns,
+    load_same_side_excluded,
     load_unfiltered_keypoints,
     load_visibility_features,
     load_visibility_settings,
     output_folder_name,
     session_output_dir,
     validate_filter_settings,
+    validate_same_side_groups,
     validate_unfiltered_groups,
     variant_dir,
 )
@@ -234,7 +238,8 @@ def run_signature(
         `base_keypoints` / `additional_keypoints` are the entries of the config (group names in
         group mode); `anatomical_group` is only present when it is not `all`, and
         `unfiltered_groups` / `filter_group_set` only when groups are exempt from confidence
-        filtering and `visibility` (group set, groups, threshold) only when the yaml has a
+        filtering, `same_side_groups` only when the yaml has a `same_side_filter`, and
+        `visibility` (group set, groups, threshold) only when the yaml has a
         `visibility` section, and `one_api` (sorted traces) only when the yaml has a `one_api`
         section, so results from before they existed keep matching.
     """
@@ -254,6 +259,8 @@ def run_signature(
     if cfg.get('unfiltered_groups'):
         signature['unfiltered_groups'] = sorted(cfg['unfiltered_groups'])
         signature['filter_group_set'] = cfg['filter_group_set']
+    if cfg.get('same_side_groups'):
+        signature['same_side_groups'] = sorted(cfg['same_side_groups'])
     if cfg.get('visibility'):
         signature['visibility'] = {
             'group_set': cfg['visibility']['group_set'],
@@ -471,6 +478,7 @@ def load_config(path: str | Path, eid: str | None = None) -> dict[str, Any]:
             f'{path}: filter.group_set.unfiltered_groups needs paths.body_parts_json to look the '
             'groups up',
         )
+    cfg['same_side_groups'] = validate_same_side_groups(cfg.get('same_side_groups'), path)
     cfg['visibility'] = load_visibility_settings(path)
     cfg['one_api'] = load_one_api_trace_settings(path)
     cfg['pca_group_set'] = str(cfg.get('pca_group_set', DEFAULT_PCA_GROUP_SET))
@@ -536,8 +544,11 @@ def split_keypoints(
     additional: list[str],
     keypoint_info: dict[str, Any],
     available: list[str],
-) -> list[str]:
-    """Validate the base / additional selection and return the unused keypoints.
+) -> tuple[list[str], list[str]]:
+    """Validate the base / additional selection and return the usable additional and unused ones.
+
+    A masked `additional` keypoint is dropped with a warning, so a session where it is not
+    tracked reliably still runs; a masked `base` keypoint is an error.
 
     Args:
         base: `base_keypoints` from the config.
@@ -546,12 +557,13 @@ def split_keypoints(
         available: keypoint names stored in `dynamic_vars.npz`.
 
     Returns:
-        Keypoints of the csv header that are in neither `base` nor `additional`, including
-        those skipped as mostly masked.
+        Tuple `(additional, unused)`. `additional` is the input without the keypoints skipped as
+        mostly masked, in the input order. `unused` holds the keypoints of the csv header that
+        are in neither `base` nor `additional`, including those skipped as mostly masked.
 
     Raises:
-        ValueError: if a keypoint appears in both lists, twice in a list, was skipped as masked,
-            or does not exist.
+        ValueError: if a keypoint appears in both lists, twice in a list, does not exist, or a
+            `base` keypoint was skipped as masked.
     """
     for key, names in (('base_keypoints', base), ('additional_keypoints', additional)):
         duplicated = sorted({name for name in names if names.count(name) > 1})
@@ -561,19 +573,26 @@ def split_keypoints(
     if overlap:
         raise ValueError(f'keypoints in both base_keypoints and additional_keypoints: {overlap}')
     skipped_masked = keypoint_info['skipped_masked']
+    additional_kept = []
     for name in base + additional:
         if name in skipped_masked:
-            raise ValueError(
+            message = (
                 f'keypoint {name!r} was skipped as mostly masked (masked fraction '
                 f'{skipped_masked[name]:.3f} > {keypoint_info["max_masked_frac"]}, likelihood '
                 f'threshold {keypoint_info["likelihood_threshold"]}) in '
-                f'{keypoint_info["csv_path"]}',
-
+                f'{keypoint_info["csv_path"]}'
             )
+            if name in base:
+                raise ValueError(message)
+            logger.warning(f'dropping {name!r} from additional_keypoints: {message}')
+            continue
         if name not in available:
             raise ValueError(f'unknown keypoint {name!r}; available: {available}')
-    selected = set(base) | set(additional)
-    return [name for name in keypoint_info['keypoints'] if name not in selected]
+        if name not in base:
+            additional_kept.append(name)
+    selected = set(base) | set(additional_kept)
+    unused = [name for name in keypoint_info['keypoints'] if name not in selected]
+    return additional_kept, unused
 
 
 def select_keypoints(
@@ -1004,6 +1023,7 @@ def _load_camera_inputs(
         no_filter_keypoints,
         visibility,
         load_position_columns(args.config),
+        load_same_side_excluded(args.config, keypoint_info['keypoints'], camera),
     )
 
     latent_data_dict = np.load(dynamic_vars_path)
@@ -1037,6 +1057,7 @@ def select_camera_features(
     groups: dict[str, list[str]] | None,
     available: list[str],
     skip_session_traces: bool,
+    side_excluded: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Resolve `base_keypoints` and `additional_keypoints` against one camera's features.
 
@@ -1047,17 +1068,33 @@ def select_camera_features(
         available: feature names stored in this camera's `dynamic_vars.npz`.
         skip_session_traces: drop the one_api traces that do not depend on the camera
             (`wheel_speed`, `licks`), because another camera already provides them.
+        side_excluded: keypoints the yaml's `same_side_filter` drops for this camera (`side_excluded`
+            of the step A json). With explicit keypoint names (`groups is None`) they are left out
+            of the selection instead of failing as unknown, so `wrist_left` and `wrist_right` can
+            both be listed and each camera takes its own. Group names need nothing, as a group
+            only resolves to the keypoints in `available`.
 
     Returns:
         Tuple `(base, additional)` of feature names of this camera.
 
     Raises:
-        ValueError: if a group is unknown or has no usable keypoint, or a trace is missing from
-            `available` (see `expand_selection`).
+        ValueError: if a group is unknown or has no usable keypoint, a trace is missing from
+            `available` (see `expand_selection`), or the side filter leaves no base keypoint.
     """
     if groups is None:
-        base = list(cfg['base_keypoints'])
-        additional = list(cfg['additional_keypoints'])
+        dropped = set(side_excluded or [])
+        base = [name for name in cfg['base_keypoints'] if name not in dropped]
+        additional = [name for name in cfg['additional_keypoints'] if name not in dropped]
+        left_out = sorted(
+            dropped & (set(cfg['base_keypoints']) | set(cfg['additional_keypoints'])),
+        )
+        if left_out:
+            logger.info(f'same_side_filter: not using {left_out} for this camera')
+        if not base:
+            raise ValueError(
+                f'same_side_filter leaves no base keypoint for this camera; '
+                f'base_keypoints {cfg["base_keypoints"]}, dropped {sorted(dropped)}',
+            )
     else:
         base = expand_selection(cfg['base_keypoints'], groups, cfg['one_api'], available)
         additional = expand_selection(
@@ -1187,6 +1224,7 @@ def _run(
         # the traces that do not depend on the camera come from the first camera only
         item['base'], item['additional'] = select_camera_features(
             cfg, groups, item['available'], skip_session_traces=idx > 0,
+            side_excluded=item['keypoint_info'].get('side_excluded', []),
         )
         camera = item['camera']
         if groups is not None:
@@ -1195,7 +1233,7 @@ def _run(
                 f'[{camera}] additional groups {additional_groups} -> keypoints '
                 f'{item["additional"]}',
             )
-        item['unused'] = split_keypoints(
+        item['additional'], item['unused'] = split_keypoints(
             item['base'], item['additional'], item['keypoint_info'], item['available'],
         )
         base += column_names(camera, item['base'], both)

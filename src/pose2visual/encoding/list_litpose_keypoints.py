@@ -31,6 +31,12 @@ likelihood is ignored, so only NaN ``x``/``y`` frames count as masked and ``max_
 applies to those alone. They are listed in the json as ``no_filter_keypoints``; steps B and C fail when the yaml's
 list differs from it.
 
+Groups of the yaml's ``same_side_filter.groups`` (looked up in ``filter.group_set.name``, e.g.
+``digits``, ``forelimb``, ``eye_related``, ``ear_related``) are restricted to the camera's own
+side: the left camera does not use their ``*_right`` keypoints and the right camera not their
+``*_left`` ones. The dropped keypoints are listed in the json as ``side_excluded`` and are
+neither usable nor unusable; steps B and C fail when the yaml's list differs from it.
+
 Groups of the yaml's ``visibility`` section (e.g. the tongue, which is often hidden) do not become
 speed features: their keypoints are neither usable nor unusable here, whatever their masked
 fraction. Step B turns each group into one binary ``<group>_visible`` feature (1 when any of its
@@ -76,6 +82,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_keypoint_csv,
     load_merge_settings,
     load_position_columns,
+    load_same_side_excluded,
     load_unfiltered_keypoints,
     load_video_preds_dir,
     load_visibility_features,
@@ -199,15 +206,18 @@ def build_keypoint_info(
         likelihood_threshold: frames below this likelihood count as masked.
         max_masked_frac: keypoints with a larger masked fraction are not usable.
         config_path: encoding yaml whose `filter.group_set.unfiltered_groups` names the
-            groups exempt from confidence filtering and whose `visibility` section names the
-            groups turned into binary features; `None` filters every keypoint and has no binary
-            feature. For an exempt keypoint the likelihood is ignored, so `masked_fraction`
-            counts NaN x/y frames only. Its `position.columns` picks the x/y columns that are
-            checked for NaN (`None` = `x`, `y`).
+            groups exempt from confidence filtering, whose `visibility` section names the groups
+            turned into binary features and whose `same_side_filter.groups` names the groups
+            restricted to the camera's own side; `None` filters every keypoint, has no binary
+            feature and drops no side. For an exempt keypoint the likelihood is ignored, so
+            `masked_fraction` counts NaN x/y frames only. Its `position.columns` picks the x/y
+            columns that are checked for NaN (`None` = `x`, `y`).
 
     Returns:
         Json-serializable dict with `csv_path`, `video_preds_dir`, `model_dir`, `camera`, `eid`,
         `n_frames`, `likelihood_threshold`, `max_masked_frac`, `no_filter_keypoints`,
+        `side_excluded` (the opposite-side keypoints the yaml's `same_side_filter` drops for this
+        camera; in neither `usable` nor `unusable`),
         `position_columns` (the x/y csv columns the yaml's `position.columns` selects),
         `keypoints`, per-keypoint `masked_fraction`, `nan_fraction` and
         `low_likelihood_fraction`, `usable`, `unusable` (names, header order),
@@ -224,6 +234,11 @@ def build_keypoint_info(
         else load_unfiltered_keypoints(config_path, keypoints)
     )
     visibility = None if config_path is None else load_visibility_features(config_path, keypoints)
+    side_excluded = (
+        [] if config_path is None else load_same_side_excluded(config_path, keypoints, camera)
+    )
+    if side_excluded:
+        logger.info(f'[{camera} {eid}] not using the opposite-side keypoints: {side_excluded}')
     position_columns = (
         POSITION_COLUMNS[DEFAULT_POSITION] if config_path is None
         else load_position_columns(config_path)
@@ -244,6 +259,7 @@ def build_keypoint_info(
     skipped_masked = {
         name: frac for name, frac in masked_fractions.items()
         if frac > max_masked_frac and name not in visibility_keypoints
+        and name not in side_excluded
     }
     unusable_reasons = {
         name: (
@@ -268,6 +284,7 @@ def build_keypoint_info(
         'likelihood_threshold': likelihood_threshold,
         'max_masked_frac': max_masked_frac,
         'no_filter_keypoints': no_filter_keypoints,
+        'side_excluded': side_excluded,
         'position_columns': list(position_columns),
         'keypoints': keypoints,
         'masked_fraction': masked_fractions,
@@ -287,6 +304,7 @@ def build_keypoint_info(
         'usable': [
             name for name in keypoints
             if name not in skipped_masked and name not in visibility_keypoints
+            and name not in side_excluded
         ],
         'unusable': [name for name in keypoints if name in skipped_masked],
         'unusable_reasons': unusable_reasons,

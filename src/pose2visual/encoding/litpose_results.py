@@ -69,7 +69,8 @@ def load_wanted_settings(
         Dict with `video_preds_dir`, `output_name`, `output_folder` (`<camera>_<output_name>`),
         `camera`, `base_keypoints`,
         `additional_keypoints` (group names when `anatomical_group` is a group set),
-        `anatomical_group` (default `all`), `pca`, `pca_group_set`, `step_order`, `seed` and `eids`
+        `anatomical_group` (default `all`), `same_side_groups` (sorted, empty when the yaml has no
+        `same_side_filter`), `pca`, `pca_group_set`, `step_order`, `seed` and `eids`
         (the sessions of the eid group, `None` when there is no group).
 
     Raises:
@@ -101,6 +102,7 @@ def load_wanted_settings(
             cfg.get('anatomical_group', _ANATOMICAL_GROUP_ALL)
             if anatomical_group is None else anatomical_group,
         ),
+        'same_side_groups': sorted(cfg.get('same_side_groups') or []),
         'pca': cfg.get('pca', False),
         'pca_group_set': str(cfg.get('pca_group_set', _DEFAULT_PCA_GROUP_SET)),
         'step_order': str(cfg.get('step_order', 'unknown')),
@@ -130,6 +132,12 @@ def signature_differences(signature: dict[str, Any], wanted: dict[str, Any]) -> 
             differences.append(f'{key} differ')
     if signature.get('camera') != wanted['camera']:
         differences.append(f'camera: run {signature.get("camera")!r}, yaml {wanted["camera"]!r}')
+    # a signature from before the filter existed has no such entry and counts as none
+    run_sides = sorted(signature.get('same_side_groups', []))
+    if run_sides != wanted.get('same_side_groups', []):
+        differences.append(
+            f'same_side_groups: run {run_sides}, yaml {wanted.get("same_side_groups", [])}',
+        )
     if signature.get('pca') != wanted['pca']:
         differences.append(
             f'pca: run {signature.get("pca")}, yaml {wanted["pca"]} '

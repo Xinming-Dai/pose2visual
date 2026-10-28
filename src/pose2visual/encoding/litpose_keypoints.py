@@ -93,6 +93,7 @@ ENCODING_YAML_SECTIONS = {
         'likelihood_threshold': 'likelihood_threshold',
         'max_masked_frac': 'max_masked_frac',
     },
+    'same_side_filter': {'groups': 'same_side_groups'},
     'pca': {'group_set': 'pca_group_set'},
     'merge': {'group_set': 'merge_group_set', 'sources': 'merge_sources'},
     'position': {'columns': 'position_columns'},
@@ -461,7 +462,7 @@ def load_encoding_yaml(config_path: str | Path) -> dict[str, Any]:
         `video_preds_dir`, `body_parts_json`, `eid_groups_json`, `output_name`, `variant_name`,
         `likelihood_threshold`, `max_masked_frac`, `unfiltered_groups`
         (`filter.group_set.unfiltered_groups`), `filter_group_set` (`filter.group_set.name`),
-        `pca_group_set` (`pca.group_set`), `merge_group_set` and `merge_sources` (`merge.*`),
+        `same_side_groups` (`same_side_filter.groups`), `pca_group_set` (`pca.group_set`), `merge_group_set` and `merge_sources` (`merge.*`),
         `position_columns` (`position.columns`),
         `visibility_group_set`, `visibility_likelihood_threshold` and `visibility_groups`
         (`visibility.*`), `one_api_traces` (`one_api.behavior_traces`),
@@ -735,6 +736,90 @@ def load_unfiltered_keypoints(config_path: str | Path, keypoints: list[str]) -> 
         )
     tokens = {token for name in group_names for token in groups[name]}
     return [name for name in keypoints if name.split('_')[0] in tokens]
+
+
+def validate_same_side_groups(value: Any, source: str | Path) -> list[str]:
+    """Check the `same_side_filter.groups` setting.
+
+    Args:
+        value: the yaml value; `None` (absent or null) means the filter is off.
+        source: where the value came from, used in error messages.
+
+    Returns:
+        The group names as a list of str, empty when the filter is off.
+
+    Raises:
+        ValueError: if the value is not a list of non-empty strings, or names `all`, which is
+            not a group but the explicit-keypoint mode of `anatomical_group.name`.
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(n, str) and n for n in value):
+        raise ValueError(
+            f'{source}: same_side_filter.groups must be a list of group names, got {value!r}',
+        )
+    if ANATOMICAL_GROUP_ALL in value:
+        raise ValueError(
+            f'{source}: same_side_filter.groups cannot contain {ANATOMICAL_GROUP_ALL!r}; list '
+            'the groups of filter.group_set.name instead (e.g. digits, forelimb)',
+        )
+    return list(dict.fromkeys(value))
+
+
+def load_same_side_excluded(
+    config_path: str | Path,
+    keypoints: list[str],
+    camera: str,
+) -> list[str]:
+    """Resolve `same_side_filter.groups` to the keypoints one camera must not use.
+
+    A camera only uses the keypoints of its own side: the left camera drops the `*_right`
+    keypoints of the listed groups and the right camera the `*_left` ones. Keypoints of the
+    groups without a side suffix and keypoints of other groups are kept. A keypoint belongs to a
+    group when the first `_`-separated segment of its name is one of the group's tokens, the
+    rule of `expand_groups`. The groups are looked up in `filter.group_set.name`, whatever
+    `anatomical_group.name` is.
+
+    Args:
+        config_path: path of the encoding yaml.
+        keypoints: keypoint names of the prediction csv, in header order.
+        camera: `'left'` or `'right'`.
+
+    Returns:
+        The keypoints to drop, in `keypoints` order; empty when the yaml has no
+        `same_side_filter`.
+
+    Raises:
+        ValueError: if the yaml is invalid, `camera` is not a camera, `groups` is invalid (see
+            `validate_same_side_groups`), `paths.body_parts_json` is missing, or a group is not
+            in the group set.
+    """
+    if camera not in CAMERAS:
+        raise ValueError(f'camera must be one of {CAMERAS}, got {camera!r}')
+    cfg = load_encoding_yaml(config_path)
+    group_names = validate_same_side_groups(cfg.get('same_side_groups'), config_path)
+    if not group_names:
+        return []
+    body_parts_json = cfg.get('body_parts_json')
+    if body_parts_json is None:
+        raise ValueError(
+            f'{config_path}: same_side_filter.groups needs paths.body_parts_json to look the '
+            'groups up',
+        )
+    group_set = str(cfg.get('filter_group_set') or DEFAULT_FILTER_GROUP_SET)
+    groups = load_groups(body_parts_json, group_set)
+    unknown = sorted(set(group_names) - set(groups))
+    if unknown:
+        raise ValueError(
+            f'{config_path}: same_side_filter.groups {unknown} not in group set {group_set!r} '
+            f'of {body_parts_json}; available: {sorted(groups)}',
+        )
+    tokens = {token for name in group_names for token in groups[name]}
+    other_side = next(cam for cam in CAMERAS if cam != camera)
+    return [
+        name for name in keypoints
+        if name.split('_')[0] in tokens and name.endswith(f'_{other_side}')
+    ]
 
 
 def visibility_feature_name(group: str) -> str:
@@ -1158,6 +1243,7 @@ def check_filter_settings_match(
     no_filter_keypoints: list[str] | None = None,
     visibility: dict[str, Any] | None = None,
     position_columns: tuple[str, str] = POSITION_COLUMNS[DEFAULT_POSITION],
+    side_excluded: list[str] | None = None,
 ) -> None:
     """Fail when the step A json was written with other filter settings than the yaml holds.
 
@@ -1173,10 +1259,14 @@ def check_filter_settings_match(
             no `visibility` section. A json from before the section existed counts as `None`.
         position_columns: `(x_column, y_column)` from `load_position_columns`. A json from before
             the setting existed counts as `('x', 'y')`.
+        side_excluded: keypoints the yaml's `same_side_filter` drops for this camera (see
+            `load_same_side_excluded`); `None` or empty means none. A json from before the
+            filter existed has no such entry and counts as none.
 
     Raises:
         ValueError: if the json's `likelihood_threshold`, `max_masked_frac`,
-            `no_filter_keypoints`, `visibility` or `position_columns` differs from the yaml; the
+            `no_filter_keypoints`, `visibility`, `position_columns` or `side_excluded` differs
+            from the yaml; the
             usable-keypoint list in the json is then stale, so step A must be rerun.
     """
     mismatches = [
@@ -1193,6 +1283,10 @@ def check_filter_settings_match(
         mismatches.append(
             f'no_filter_keypoints: yaml {expected_exempt} vs json {json_exempt}',
         )
+    expected_side = sorted(side_excluded or [])
+    json_side = sorted(keypoint_info.get('side_excluded', []))
+    if json_side != expected_side:
+        mismatches.append(f'side_excluded: yaml {expected_side} vs json {json_side}')
     if keypoint_info.get('visibility') != visibility:
         mismatches.append(
             f'visibility: yaml {visibility} vs json {keypoint_info.get("visibility")}',

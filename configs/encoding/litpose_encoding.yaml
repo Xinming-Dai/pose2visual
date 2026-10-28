@@ -1,7 +1,7 @@
 # config for pose2visual.encoding.run_litpose_encoding.
 
 # required; name of an entry in src/pose2visual/encoding/litpose_step_pipelines.json
-step_order: step_01
+step_order: step_02
 position:
   columns: ens_post_mean
 
@@ -10,7 +10,7 @@ session:
   eid: b22f694e-4a34-4142-ab9d-2556c3487086
   # sessions of step 1 (extract) and of the plot that step 2 makes once all of them are done; a key
   # of neural_sessions in paths.eid_groups_json, null = none. Not a constraint: --eids / EIDS override
-  eid_group: ear_left
+  eid_group: sable 
   # camera whose keypoints are used by step 2 (left | right | both). `both` fits one model on the
   # features of both cameras, as the SABLE baseline does; step 1 must have run for both cameras
   # and the results go to <video_preds_dir>/both_<output_name>/
@@ -31,14 +31,19 @@ paths:
 # <video_preds_dir>/<camera>_<output_name>/<eid>/<variant_name>/
 output:
   # without the camera: step 1 runs both cameras, each writes into its own <camera>_ folder
-  output_name: encoding
+  output_name: encoding_step_02
   # null = the sorted additional_keypoints joined by "_"
-  variant_name: null
+  variant_name: nose_tip_wrist_vs_rest
 
 # a frame is masked when its likelihood is below likelihood_threshold or x/y is NaN
 filter:
   likelihood_threshold: 0.7
   max_masked_frac: 0.3
+
+# optional: each camera only uses the keypoints of its own side for these groups.
+# rerun step 0 and 1 after changing it. null / empty = off
+same_side_filter:
+  groups: [digits, forelimb, eye_related, ear_related, nose_pad_related, mouth_related]
 
 # groups that become one binary "<group>_visible" feature instead of keypoint speeds
 visibility:
@@ -68,22 +73,54 @@ pca:
 
 anatomical_group:
   # group set of body_parts.json 
-  name: nonoverlapping_analysis_groups_separate_tongue
+  name: all
   # fitted as the `base` condition (RRR and CNN)
   base_keypoints:
-    - nose_pad_related
-    - forelimb
-    - eye_related
-    - ear_related
-    - mouth_related
-    - tongue
-    - whisker_motion_energy
-    - wheel_speed
-    - licks
+    - nose_tip
+    - wrist_left
+    - wrist_right
     
   # empty = only the base is fitted (variant folder base_only). List groups here to also fit
   # base + additional and compare the two (the plots in step 2 need this)
-  additional_keypoints: []
+  additional_keypoints:
+    - d1_tip_left
+    - d1_tip_right
+    - d2_tip_left
+    - d2_tip_right
+    - d3_tip_left
+    - d3_tip_right
+    - d4_tip_left
+    - d4_tip_right
+    - eye_back_left
+    - eye_back_right
+    - eye_bottom_left
+    - eye_bottom_right
+    - eye_front_left
+    - eye_front_right
+    - eye_top_left
+    - eye_top_right
+    - pupil_center_left
+    - pupil_center_right
+    - upperlip_left
+    - upperlip_right
+    - nose_top
+    - nose_bottom
+    - pad_center
+    - pad_top_left
+    - pad_top_right
+    - pad_side_left
+    - pad_side_right
+    - mouth
+    - lowerlip
+    - ear_top_left
+    - ear_top_right
+    - ear_tip_left
+    - ear_tip_right
+    - ear_bottom_left
+    - ear_bottom_right
+    - ear_base_left
+    - ear_base_right
+    - tongue_visible
 
 # neural-behavior cross-correlation (pose2visual.xcorr). Filtering, imputation, position columns,
 # visibility features and camera come from the sections above.

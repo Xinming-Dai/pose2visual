@@ -96,6 +96,7 @@ from pose2visual.encoding.litpose_keypoints import (
     load_output_name,
     load_position_columns,
     load_step_order,
+    load_same_side_excluded,
     load_unfiltered_keypoints,
     load_video_preds_dir,
     load_visibility_features,
@@ -385,6 +386,8 @@ def extract_session(
     check_filter_settings_match(
         keypoint_info, likelihood_threshold, max_masked_frac, json_path, no_filter_keypoints,
         visibility, position_columns,
+        [] if config_path is None
+        else load_same_side_excluded(config_path, keypoint_info['keypoints'], camera),
     )
     keypoints = keypoint_info['usable']
 
