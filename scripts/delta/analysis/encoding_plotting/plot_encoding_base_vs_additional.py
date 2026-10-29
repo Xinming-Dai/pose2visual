@@ -4,12 +4,12 @@ Reads the ``encoding_result.npz`` files written by ``step2_run_encoding.sh``
 (``pose2visual.encoding.run_litpose_encoding``) and plots the held-out test bits-per-spike (BPS)
 of the RRR and CNN encoders for the two input sets. One bar is the mean over all neurons of all
 sessions (non-finite BPS dropped), the error bar is the standard error over those neurons. The
-base and additional keypoint names are printed under the axes, so a saved figure says which
-keypoints it compares.
+figure has no text below the axes: the base and additional keypoint names, the camera and the
+neuron counts are written to a txt file next to it.
 
 With ``anatomical_group`` set to a group set of ``body_parts_json`` (e.g.
 ``nonoverlapping_analysis_groups``), the two keypoint lists of the config hold group names such as
-``eye_related``; the figure then prints the group names (the keypoints a group resolved to can
+``eye_related``; the txt file then lists the group names (the keypoints a group resolved to can
 differ between sessions, they are listed per session in the json next to the figure).
 
 Result layout (see ``pose2visual.encoding.litpose_keypoints``)::
@@ -37,7 +37,9 @@ Usage::
 Outputs ``<video_preds_dir>/<camera>_<output_name>/plots/encoding_base_vs_additional_<...>/`` with
 ``png/encoding_barplot.png``, ``pdf/encoding_barplot.pdf``, ``svg/encoding_barplot.svg`` and
 ``encoding_barplot.json`` (numbers and
-provenance), unless ``-o`` is given. The per-session figures of
+provenance) and ``encoding_barplot_keypoints.txt`` (camera, step order, sessions, neuron counts and
+the keypoint lists, one name per line; the figure itself carries no text below the axes), unless
+``-o`` is given. The per-session figures of
 ``plot_psth_activity_raster.py`` and ``plot_bps_scatter.py`` go to the same folder;
 ``step2_run_encoding.sh`` makes those right after each session finishes, without waiting for the
 other sessions. The helpers shared by the three scripts are in
@@ -47,7 +49,6 @@ other sessions. The helpers shared by the three scripts are in
 import argparse
 import json
 import logging
-import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -72,7 +73,6 @@ logger = logging.getLogger(__name__)
 
 # `anatomical_group` value meaning "the keypoint lists hold keypoint names"
 _ANATOMICAL_GROUP_ALL = 'all'
-_KEYPOINT_TEXT_WIDTH = 46
 
 
 @dataclass
@@ -294,16 +294,17 @@ def load_all_sessions(
 
 
 def check_same_keypoints(results: list[SessionResult]) -> None:
-    """Check that all sessions were fitted with the same base and additional keypoints.
+    """Warn if the sessions were not fitted with the same base and additional keypoints.
 
     In group mode the usable keypoints a group resolves to differ between sessions, so the group
-    names are compared instead of the keypoints.
+    names are compared instead of the keypoints. Keypoints that are masked too often are dropped
+    per session, so a difference is logged as a warning and the sessions are still pooled.
 
     Args:
         results: sessions to compare.
 
     Raises:
-        ValueError: if `results` is empty or the keypoints (groups) differ between sessions.
+        ValueError: if `results` is empty.
     """
     if not results:
         raise ValueError('no sessions to plot')
@@ -322,8 +323,9 @@ def check_same_keypoints(results: list[SessionResult]) -> None:
                 and sorted(result.additional_keypoints) == sorted(first.additional_keypoints)
             )
         if not same:
-            raise ValueError(
-                f'keypoints of {result.eid} differ from {first.eid}: '
+            logger.warning(
+                f'keypoints of {result.eid} differ from {first.eid} (the txt file lists '
+                f'those of {first.eid} in full): '
                 f'{result.base_groups or result.base_keypoints} + '
                 f'{result.additional_groups or result.additional_keypoints} vs '
                 f'{first.base_groups or first.base_keypoints} + '
@@ -337,7 +339,8 @@ def collect_stats(
     """Pool the finite per-neuron BPS of all sessions and take mean and standard error.
 
     Args:
-        results: sessions with identical keypoints or groups (`check_same_keypoints` is applied).
+        results: sessions to pool (`check_same_keypoints` warns if their keypoints or groups
+            differ).
 
     Returns:
         `(condition, model)` -> dict with `mean`, `se` (std with ddof=1 over sqrt of the number
@@ -345,7 +348,7 @@ def collect_stats(
         finite value.
 
     Raises:
-        ValueError: if `results` is empty or the keypoints (groups) differ between sessions.
+        ValueError: if `results` is empty.
     """
     check_same_keypoints(results)
     stats: dict[tuple[str, str], dict[str, float]] = {}
@@ -378,44 +381,8 @@ def _label_position(value: float, se: float, label_offset: float) -> tuple[float
     return value - se - label_offset, 'top'
 
 
-def keypoint_text(
-    base_keypoints: list[str],
-    additional_keypoints: list[str],
-    camera: str,
-    step_order: str,
-    n_sessions: int,
-    stats: dict[tuple[str, str], dict[str, float]],
-) -> str:
-    """Text printed under the axes: the compared keypoints and the data behind the bars.
-
-    Args:
-        base_keypoints: base keypoint names, or group names in group mode.
-        additional_keypoints: additional keypoint names, or group names in group mode.
-        camera: camera of the keypoints.
-        step_order: step pipeline name that encodes preprocessing (e.g., step_01 with PCA).
-        n_sessions: number of pooled sessions.
-        stats: output of `collect_stats`.
-
-    Returns:
-        Wrapped multi-line text.
-    """
-    counts = [int(entry['n_neurons']) for entry in stats.values()]
-    n_neurons = str(counts[0]) if min(counts) == max(counts) else f'{min(counts)}-{max(counts)}'
-    lines = []
-    for title, names in (('Base', base_keypoints), ('Additional', additional_keypoints)):
-        lines.append(textwrap.fill(
-            f'{title}: {", ".join(names)}',
-            width=_KEYPOINT_TEXT_WIDTH,
-            subsequent_indent='    ',
-        ))
-    lines.append(f'{camera} camera, {step_order}, {n_sessions} sessions')
-    lines.append(f'{n_neurons} neurons; mean ± SE over neurons')
-    return '\n'.join(lines)
-
-
 def plot_encoding_bars(
     stats: dict[tuple[str, str], dict[str, float]],
-    text: str,
     save_path: Path | None = None,
     show: bool = True,
 ) -> plt.Figure:
@@ -423,7 +390,6 @@ def plot_encoding_bars(
 
     Args:
         stats: output of `collect_stats`.
-        text: block printed under the axes (see `keypoint_text`).
         save_path: png path; the png goes to its `png/` folder, the pdf to `pdf/` (same name);
             the figure is not saved when `None`.
         show: show the figure, otherwise close it.
@@ -435,13 +401,7 @@ def plot_encoding_bars(
     bar_center_spacing = 1.0
     edge_padding = 0.7
     x_centers = np.arange(len(MODELS), dtype=np.float64) * bar_center_spacing
-    fig, (ax, ax_text) = plt.subplots(
-        2,
-        1,
-        figsize=(3.4, 4.0),
-        dpi=200,
-        gridspec_kw={'height_ratios': [3.0, 0.9]},
-    )
+    fig, ax = plt.subplots(figsize=(3.4, 3.1), dpi=200)
 
     finite = [entry for entry in stats.values() if np.isfinite(entry['mean'])]
     y_max = max((entry['mean'] + entry['se'] for entry in finite), default=1.0)
@@ -499,8 +459,6 @@ def plot_encoding_bars(
         columnspacing=1.0,
     )
 
-    ax_text.axis('off')
-    ax_text.text(0.0, 1.0, text, ha='left', va='top', fontsize=6.5, linespacing=1.4)
     fig.tight_layout(pad=0.4)
 
     if save_path is not None:
@@ -526,6 +484,68 @@ def default_output_path(wanted: dict[str, Any]) -> Path:
         there, with the pdf in `pdf/`.
     """
     return plots_dir(wanted) / 'encoding_barplot.png'
+
+
+def write_keypoints_txt(
+    path: Path,
+    results: list[SessionResult],
+    wanted: dict[str, Any],
+    stats: dict[tuple[str, str], dict[str, float]],
+) -> None:
+    """Save the setup behind the figure and the keypoint lists next to it.
+
+    The header holds the camera, step pipeline, sessions and neuron counts; the keypoint lists
+    follow, one name per line.
+
+    The lists of the first session are written in full. Every other session gets a line saying
+    whether its keypoints are identical to those of the first session; if not, the keypoints it
+    has in addition to (`+`) or lacks (`-`) compared with the first session are listed.
+
+    Args:
+        path: txt path.
+        results: sessions behind the bars.
+        wanted: output of `load_wanted_settings`.
+        stats: output of `collect_stats`.
+    """
+    first = results[0]
+    counts = [int(entry['n_neurons']) for entry in stats.values()]
+    n_neurons = str(counts[0]) if min(counts) == max(counts) else f'{min(counts)}-{max(counts)}'
+    lines = [
+        f'camera: {wanted["camera"]}',
+        f'step_order: {wanted["step_order"]}',
+        f'anatomical_group: {first.anatomical_group}',
+        f'neurons: {n_neurons} (bars: mean ± SE over neurons)',
+        f'sessions ({len(results)}): {", ".join(result.eid for result in results)}',
+        f'lists below are those of session {first.eid}',
+        '',
+    ]
+    sections = [
+        ('Base groups', first.base_groups),
+        ('Additional groups', first.additional_groups),
+        ('Base keypoints', first.base_keypoints),
+        ('Additional keypoints', first.additional_keypoints),
+    ]
+    for title, names in sections:
+        if names:
+            lines += [f'{title} ({len(names)}):', *(f'  {name}' for name in names), '']
+    for result in results[1:]:
+        diff_lines = []
+        for title, names, ref_names in (
+            ('base keypoints', result.base_keypoints, first.base_keypoints),
+            ('additional keypoints', result.additional_keypoints, first.additional_keypoints),
+        ):
+            extra = sorted(set(names) - set(ref_names))
+            missing = sorted(set(ref_names) - set(names))
+            if extra or missing:
+                diff_lines.append(f'  {title}:')
+                diff_lines += [f'    + {name}' for name in extra]
+                diff_lines += [f'    - {name}' for name in missing]
+        if diff_lines:
+            lines += [f'session {result.eid} differs from {first.eid}:', *diff_lines, '']
+        else:
+            lines += [f'session {result.eid}: same keypoints as {first.eid}', '']
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('\n'.join(lines), encoding='utf-8')
 
 
 def write_summary_json(
@@ -573,7 +593,7 @@ def main(argv: list[str] | None = None) -> None:
 
     Raises:
         FileNotFoundError: if a session has no finished matching result.
-        ValueError: if a session has several matching variants or the keypoints differ.
+        ValueError: if a session has several matching variants.
     """
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
     args = parse_args(argv)
@@ -610,21 +630,15 @@ def main(argv: list[str] | None = None) -> None:
             f'({entry["n_neurons"]} neurons, {len(results)} sessions)',
         )
     save_path = args.output if args.output is not None else default_output_path(wanted)
+    keypoints_path = save_path.with_name(f'{save_path.stem}_keypoints.txt')
     if args.no_show:
         plt.switch_backend('Agg')
-    text = keypoint_text(
-        results[0].base_groups or results[0].base_keypoints,
-        results[0].additional_groups or results[0].additional_keypoints,
-        wanted['camera'],
-        wanted['step_order'],
-        len(results),
-        stats,
-    )
-    plot_encoding_bars(stats, text, save_path=save_path, show=not args.no_show)
+    plot_encoding_bars(stats, save_path=save_path, show=not args.no_show)
     write_summary_json(save_path.with_suffix('.json'), stats, results, wanted)
+    write_keypoints_txt(keypoints_path, results, wanted, stats)
     logger.info(
-        f'wrote {save_path.name} (png/ and pdf/ in {save_path.parent}) and '
-        f'{save_path.with_suffix(".json")}',
+        f'wrote {save_path.name} (png/ and pdf/ in {save_path.parent}), '
+        f'{save_path.with_suffix(".json")} and {keypoints_path}',
     )
 
 
