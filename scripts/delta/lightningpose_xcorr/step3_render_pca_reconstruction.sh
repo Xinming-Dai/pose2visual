@@ -23,7 +23,7 @@ cd "$REPO"
 #
 # Overrides:
 #   CAMERAS       cameras, space separated (default "left right"; the left one picks the window)
-#   EXCLUDE       glob patterns of keypoints to leave out (default "d*"); EXCLUDE= keeps all
+#   EXCLUDE       glob patterns of keypoints to leave out (default none; EXCLUDE='d*' drops the digits)
 #   N_COMPONENTS  rank of the reconstruction (default 2)
 #   START_SEC     window start in seconds (default: auto-picked on the left camera)
 #   DURATION_SEC  window length in seconds (default 10)
@@ -39,7 +39,7 @@ EID="${1:-${EID:-}}"
 VIDEO_TIMESTAMPS_DIR="${VIDEO_TIMESTAMPS_DIR:-/work/hdd/bfsr/xdai3/IBL-2view/timestamps}"
 # read -a splits on spaces without expanding globs such as d*
 read -r -a CAMERA_LIST <<< "${CAMERAS:-left right}"
-read -r -a EXCLUDE_LIST <<< "${EXCLUDE-d*}"
+read -r -a EXCLUDE_LIST <<< "${EXCLUDE:-}"
 
 echo "[$(date +'%Y-%m-%d %H:%M:%S')] PCA decomposition, config=$CONFIG eid=${EID:-<session.eid of the config>} cameras=${CAMERA_LIST[*]} exclude=${EXCLUDE_LIST[*]:-<none>}"
 

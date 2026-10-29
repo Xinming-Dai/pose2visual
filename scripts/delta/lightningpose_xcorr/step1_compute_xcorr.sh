@@ -30,7 +30,7 @@ cd "$REPO"
 # Overrides (e.g. sbatch --export=ALL,EID=...,CAMERAS=left,EXCLUDE= ...):
 #   EXP                 same as --exp (the flag wins)
 #   CAMERAS             cameras, space separated (default "left right")
-#   EXCLUDE             glob patterns of keypoints to leave out (default "d*"); EXCLUDE= keeps all
+#   EXCLUDE             glob patterns of keypoints to leave out (default none; EXCLUDE='d*' drops the digits)
 #   ORDER               A: neuron order: rastermap (default), depth or none
 #   SKIP_DEPTH_ORDER    set to 1 to skip the extra depth-order figures
 #   N_PERMUTATIONS      A: permutations of the significance test (default 0 = none)
@@ -50,7 +50,7 @@ VIDEO_TIMESTAMPS_DIR="${VIDEO_TIMESTAMPS_DIR:-/work/hdd/bfsr/xdai3/IBL-2view/tim
 ORDER="${ORDER:-rastermap}"
 # read -a splits on spaces without expanding globs such as d*
 read -r -a CAMERA_LIST <<< "${CAMERAS:-left right}"
-read -r -a EXCLUDE_LIST <<< "${EXCLUDE-d*}"
+read -r -a EXCLUDE_LIST <<< "${EXCLUDE:-}"
 read -r -a NO_CENTROID_LIST <<< "${NO_CENTROID_GROUPS-forelimb}"
 STATUS=0
 
