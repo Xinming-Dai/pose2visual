@@ -10,7 +10,7 @@
 
 REPO=/u/xdai3/project3d/pose2visual/pose2visual
 ROOT=/work/hdd/bfsx/yzhang39/brainwide/video/raw
-OUT_ROOT=/work/hdd/bfsr/xdai3/brainwide-litpose
+OUT_ROOT=${OUT_ROOT:-/work/hdd/bezq/xdai3/brainwide-litpose}
 ENCODING_CONFIG=${REPO}/configs/encoding/litpose_encoding_brainwide.yaml
 
 MODELS=(digits rest)

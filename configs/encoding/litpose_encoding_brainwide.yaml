@@ -1,7 +1,7 @@
 # config for the Brainwide sessions, read by step 0 (pose2visual.encoding.list_litpose_keypoints:
 # merge + keypoint listing + PCA) and by pose2visual.lightningpose.litpose_to_pqt.
 # Same settings as litpose_encoding.yaml, so the PCA is comparable; only the paths differ.
-# <out-root> is /work/hdd/bfsr/xdai3/brainwide-litpose (DEFAULT_OUT_ROOT of predict_brainwide).
+# <out-root> is /work/hdd/bezq/xdai3/brainwide-litpose (DEFAULT_OUT_ROOT of predict_brainwide).
 
 # required; name of an entry in src/pose2visual/encoding/litpose_step_pipelines.json
 step_order: step_01
@@ -16,7 +16,7 @@ session:
 
 paths:
   # the merged csvs and, under encoding/, the keypoint listing and the PCA are written here
-  video_preds_dir: /work/hdd/bfsr/xdai3/brainwide-litpose/merged
+  video_preds_dir: /work/hdd/bezq/xdai3/brainwide-litpose/merged
   # defines the groups used by merge, pca and visibility
   body_parts_json: scripts/delta/data/body_parts.json
 
@@ -36,9 +36,9 @@ visibility:
 merge:
   group_set: nonoverlapping_analysis_groups_separate_tongue
   sources:
-    - video_preds_dir: /work/hdd/bfsr/xdai3/brainwide-litpose/models/digits/eks_run/eks
+    - video_preds_dir: /work/hdd/bezq/xdai3/brainwide-litpose/models/digits/eks_run/eks
       groups: [digits]
-    - video_preds_dir: /work/hdd/bfsr/xdai3/brainwide-litpose/models/rest/eks_run/eks
+    - video_preds_dir: /work/hdd/bezq/xdai3/brainwide-litpose/models/rest/eks_run/eks
       groups: rest
 
 # PCA reprojection; on/off comes from step_order, this is only the group set

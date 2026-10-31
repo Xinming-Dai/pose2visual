@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 CAMERAS = ('left', 'right')
 DEFAULT_ROOT = Path('/work/hdd/bfsx/yzhang39/brainwide/video/raw')
-DEFAULT_OUT_ROOT = Path('/work/hdd/bfsr/xdai3/brainwide-litpose')
+DEFAULT_OUT_ROOT = Path('/work/hdd/bezq/xdai3/brainwide-litpose')
 DEFAULT_MODEL_DIRS = {
     'digits': Path(
         '/work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/'
