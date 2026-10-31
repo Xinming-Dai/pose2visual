@@ -469,7 +469,7 @@ def _run_predict(args: argparse.Namespace) -> None:
     if args.dry_run:
         argv.append('--dry-run')
     # skip overlay videos; the shadow dir doubles as the config's data_dir
-    argv += ['--', '--skip-viz', '--overrides', f'data.data_dir={shadow}', *extra]
+    argv += ['--', '--skip_viz', '--overrides', f'data.data_dir={shadow}', *extra]
     predict_ibl.main(argv)
 
 
