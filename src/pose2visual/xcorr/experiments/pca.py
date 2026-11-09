@@ -65,6 +65,7 @@ from pose2visual.xcorr.experiments.common import (
     compute_original,
     relabel_overview,
     resolve_order,
+    save_signed_comparison,
     write_figure_guide,
 )
 from pose2visual.xcorr.experiments.masked_crosscorr import masked_cross_correlation
@@ -121,11 +122,13 @@ POSITION_PCA_GUIDE = (
 )
 SCATTER_GUIDE = (
     'scatter.peak_abs_r',
-    'one panel per camera (row) and corrected anatomical group (column), same axes in every '
-    'panel and the same group colours in every camera and session; one dot per neuron-keypoint '
-    'pair: peak \\|r\\| over lags of the original speed (x) against the PCA speed (y); below '
-    'the dashed diagonal = the denoising lost correlation, above = gained; uncorrected keypoints '
-    '(on the diagonal by construction) are not drawn',
+    'one panel per camera (row) and reduced anatomical group (column), same axes in every panel; '
+    'one dot per neuron-keypoint pair, coloured per keypoint (same colour for both sides and in '
+    'every camera and session): peak \\|r\\| over lags of the original speed (x) against the PCA '
+    'speed (y). The sign is ignored and the two peaks may be at different lags (see '
+    '`scatter.signed_r_at_original_peak`); below the dashed diagonal = the denoising lost '
+    'correlation, above = gained; unreduced keypoints (on the diagonal by construction) are not '
+    'drawn',
 )
 VARIANCE_GUIDE = (
     'bar.variance',
@@ -196,6 +199,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help='run name: results/experiment_B_pca/<name> and the figure folders '
         'plot_video/experiment_B_pca/<name>_<order>, e.g. <name>_rastermap (default: New York '
         'time).',
+    )
+    parser.add_argument(
+        '--diff-vmax', type=float, default=None,
+        help='half-range of the one colour scale of every difference strip of '
+        'heatmap.signed_difference; fix it to compare sessions (default: from the data, once per '
+        'figure).',
     )
     parser.add_argument(
         '--no-depth-plot', action='store_true',
@@ -511,6 +520,7 @@ def run_session(
     depth_plot: bool = True,
     decompose: bool = True,
     decomposition_options: DecompositionOptions | None = None,
+    diff_vmax: float | None = None,
 ) -> dict[str, Any]:
     """Run Experiment B on one session.
 
@@ -536,6 +546,8 @@ def run_session(
             there (e.g. a missing video) is logged and returned as `decomposition_error`, the
             xcorr results stay saved.
         decomposition_options: window / video choices of the decomposition; `None` = defaults.
+        diff_vmax: fixed half-range of the difference strips of `heatmap.signed_difference`
+            (to compare sessions); `None` = data driven.
 
     Returns:
         Dict of the written paths: `speed_arrays`, `position_arrays`, `summary`, `groups`,
@@ -678,7 +690,7 @@ def run_session(
                 this_dir, eid, lags_sec, cams, names, groups_out, valid, r_original,
                 r_speed_pca_masked, idx_order, order_label, vmax, position_names,
                 r_position_pca, valid_position, pca_applied, summary, camera_report,
-                scatter_groups,
+                scatter_groups, diff_vmax,
             )
             if order == 'saved':
                 plots_dir = this_dir
@@ -724,6 +736,7 @@ def plot_results(
     summary: pd.DataFrame,
     camera_report: dict[str, Any],
     scatter_groups: list[str],
+    diff_vmax: float | None = None,
 ) -> list[Path]:
     """Draw every Experiment B figure from already-computed (or reloaded) arrays.
 
@@ -754,6 +767,8 @@ def plot_results(
             `camera_report`, or the `cameras` entry of a saved `pca_groups.<eid>.json`).
         scatter_groups: anatomical group of each behavior (`names` order) that colours
             `scatter.peak_abs_r` (`anatomical_groups`).
+        diff_vmax: half-range of the one colour scale of every difference strip of
+            `heatmap.signed_difference`; `None` takes it from the data, once per figure.
 
     Returns:
         The written png files, then the figure guide `figures.<eid>.md`
@@ -809,11 +824,19 @@ def plot_results(
             'camera': camera, 'original': peak_original[idx_c][:, idx_b],
             'relative': peak_pca[idx_c][:, idx_b],
             'groups': [scatter_groups[i] for i in idx_b], 'corrected': pca_applied[idx_c, idx_b],
+            'names': [names[i] for i in idx_b],
         })
     paths += save_figure(
         diagnostics.plot_peak_scatter(scatter_panels), plots_dir / f'scatter.peak_abs_r.{eid}',
     )
     guide.append(SCATTER_GUIDE)
+    signed_paths, signed_guide = save_signed_comparison(
+        plots_dir, eid, lags_sec, cams, names, groups_out, valid, r_original,
+        r_speed_pca_masked, idx_order, scale, ylabel, 'pca', pca_applied, scatter_groups,
+        diff_vmax,
+    )
+    paths += signed_paths
+    guide += signed_guide
     if not summary.empty:
         paths += save_figure(
             diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}',
@@ -866,7 +889,7 @@ def main(argv: list[str] | None = None) -> None:
                     config, eid, args.video_timestamps_dir, args.cameras, args.exclude,
                     args.n_components, args.min_valid_fraction, args.vmax, plots_subdir,
                     args.no_plot, args.n_jobs, not args.no_depth_plot,
-                    not args.no_decomposition, decomposition_options,
+                    not args.no_decomposition, decomposition_options, args.diff_vmax,
                 )
                 logger.info(
                     f'wrote {[str(p) for k, p in paths.items() if isinstance(p, Path)]}',

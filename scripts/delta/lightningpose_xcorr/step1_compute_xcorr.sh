@@ -11,7 +11,7 @@
 exec 2>&1
 
 REPO="/u/xdai3/project3d/pose2visual/pose2visual"
-# sets RUN_A / RUN_B / RUN_C, EXP_SELECTED and EID from --exp and the positional eid
+# sets RUN_A / RUN_B / RUN_C / RUN_D, EXP_SELECTED and EID from --exp and the positional eid
 source "$REPO/scripts/delta/lib/parse_exp.sh"
 
 source ~/.bashrc
@@ -20,12 +20,13 @@ cd "$REPO"
 
 # Step 1: neural-behavior cross-correlation of one session (needs step 0 and
 # lightningpose_encoding/step0_list_keypoints.sh).
-#   sbatch scripts/delta/lightningpose_xcorr/step1_compute_xcorr.sh [--exp A|B|C|all] <eid>
+#   sbatch scripts/delta/lightningpose_xcorr/step1_compute_xcorr.sh [--exp A|B|C|D|all] <eid>
 #
 # Experiments (independent, can run as parallel jobs; use the same CAMERAS / EXCLUDE for all):
 #   A  baseline xcorr of keypoint speed (+ PETHs)
 #   B  PCA of the face group
 #   C  centroid-corrected relative motion
+#   D  PCA of each anatomical group (first N_COMPONENTS components of every group)
 #
 # Overrides (e.g. sbatch --export=ALL,EID=...,CAMERAS=left,EXCLUDE= ...):
 #   EXP                 same as --exp (the flag wins)
@@ -34,16 +35,19 @@ cd "$REPO"
 #   ORDER               A: neuron order: rastermap (default), depth or none
 #   SKIP_DEPTH_ORDER    set to 1 to skip the extra depth-order figures
 #   N_PERMUTATIONS      A: permutations of the significance test (default 0 = none)
-#   N_COMPONENTS        B: principal components kept (default 2)
+#   N_COMPONENTS        B / D: principal components kept (per group for D; default 2)
 #   SKIP_DECOMPOSITION  B: set to 1 to skip the decomposition heatmap / video
 #   NO_VIDEO            B: set to 1 to skip the decomposition video
 #   START_SEC           B: decomposition window start in seconds (default: auto)
 #   DURATION_SEC        B: decomposition window length in seconds (default 10)
 #   VIDEO_ROOT          B: folder with the <left|right>Camera.video folders
 #   CROP_PAD            B: zoom the decomposition video to the keypoints plus this many pixels
-#   MIN_VALID_FRACTION  B / C: leave out keypoints defined in a smaller fraction of bins (0.5)
-#   NO_CENTROID_GROUPS  C: groups that keep their original speed (default "forelimb");
-#                       NO_CENTROID_GROUPS= corrects every group of 2+ keypoints
+#   NO_CENTROID_GROUPS  C: groups that keep their original speed, space separated (default none:
+#                       every group of 2+ keypoints is corrected)
+#   NO_CENTROID_XCORR   C: set to 1 to skip the xcorr with each corrected group's centroid speed
+#                       magnitude (heatmap.centroid_speed, drawn by default)
+#   DIFF_VMAX           B / C / D: fixed half-range of the difference strips of
+#                       heatmap.signed_difference (default: from the data, once per figure)
 #   CONFIG, VIDEO_TIMESTAMPS_DIR, EID
 CONFIG="${CONFIG:-$REPO/configs/encoding/litpose_encoding.yaml}"
 VIDEO_TIMESTAMPS_DIR="${VIDEO_TIMESTAMPS_DIR:-/work/hdd/bfsr/xdai3/IBL-2view/timestamps}"
@@ -51,7 +55,7 @@ ORDER="${ORDER:-rastermap}"
 # read -a splits on spaces without expanding globs such as d*
 read -r -a CAMERA_LIST <<< "${CAMERAS:-left right}"
 read -r -a EXCLUDE_LIST <<< "${EXCLUDE:-}"
-read -r -a NO_CENTROID_LIST <<< "${NO_CENTROID_GROUPS-forelimb}"
+read -r -a NO_CENTROID_LIST <<< "${NO_CENTROID_GROUPS:-}"
 STATUS=0
 
 echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiments: ${EXP_SELECTED}; config=$CONFIG eid=${EID:-<session.eid of the config>} cameras=${CAMERA_LIST[*]}"
@@ -93,6 +97,7 @@ if [ -n "$RUN_B" ]; then
         ${N_COMPONENTS:+--n-components "$N_COMPONENTS"} \
         ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"} \
         ${SKIP_DEPTH_ORDER:+--no-depth-plot} \
+        ${DIFF_VMAX:+--diff-vmax "$DIFF_VMAX"} \
         ${SKIP_DECOMPOSITION:+--no-decomposition} \
         ${NO_VIDEO:+--no-video} \
         ${START_SEC:+--window-start-sec "$START_SEC"} \
@@ -118,11 +123,33 @@ if [ -n "$RUN_C" ]; then
         --n-jobs "${SLURM_CPUS_PER_TASK:-2}" \
         --no-centroid-groups "${NO_CENTROID_LIST[@]}" \
         ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"} \
+        ${NO_CENTROID_XCORR:+--no-centroid-xcorr} \
+        ${DIFF_VMAX:+--diff-vmax "$DIFF_VMAX"} \
         ${SKIP_DEPTH_ORDER:+--no-depth-plot}
     STATUS_C=$?
     if [ "$STATUS_C" -ne 0 ]; then
         echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiment C (relative motion) failed (exit $STATUS_C); rerun it with --exp C." >&2
         [ "$STATUS" -eq 0 ] && STATUS=$STATUS_C
+    fi
+fi
+
+if [ -n "$RUN_D" ]; then
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiment D (pca of each group), exclude=${EXCLUDE_LIST[*]:-<none>} n-components=${N_COMPONENTS:-2}"
+    PYTHONPATH="${REPO}/src:${PYTHONPATH:-}" python -u -m pose2visual.xcorr.experiments.pca_groups \
+        --config "$CONFIG" \
+        ${EID:+--eids "$EID"} \
+        --video-timestamps-dir "$VIDEO_TIMESTAMPS_DIR" \
+        ${CAMERA_LIST[@]:+--cameras "${CAMERA_LIST[@]}"} \
+        ${EXCLUDE_LIST[@]:+--exclude "${EXCLUDE_LIST[@]}"} \
+        --n-jobs "${SLURM_CPUS_PER_TASK:-2}" \
+        ${N_COMPONENTS:+--n-components "$N_COMPONENTS"} \
+        ${MIN_VALID_FRACTION:+--min-valid-fraction "$MIN_VALID_FRACTION"} \
+        ${DIFF_VMAX:+--diff-vmax "$DIFF_VMAX"} \
+        ${SKIP_DEPTH_ORDER:+--no-depth-plot}
+    STATUS_D=$?
+    if [ "$STATUS_D" -ne 0 ]; then
+        echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiment D (pca of each group) failed (exit $STATUS_D); rerun it with --exp D." >&2
+        [ "$STATUS" -eq 0 ] && STATUS=$STATUS_D
     fi
 fi
 

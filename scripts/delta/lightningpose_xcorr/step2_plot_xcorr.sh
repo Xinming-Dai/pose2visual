@@ -11,7 +11,7 @@
 exec 2>&1
 
 REPO="/u/xdai3/project3d/pose2visual/pose2visual"
-# sets RUN_A / RUN_B / RUN_C, EXP_SELECTED and EID from --exp and the positional eid
+# sets RUN_A / RUN_B / RUN_C / RUN_D, EXP_SELECTED and EID from --exp and the positional eid
 source "$REPO/scripts/delta/lib/parse_exp.sh"
 
 source ~/.bashrc
@@ -19,7 +19,7 @@ conda activate beast
 cd "$REPO"
 
 # Step 2: redraw the figures of a finished step 1 run from its saved results (no recomputation).
-#   sbatch scripts/delta/lightningpose_xcorr/step2_plot_xcorr.sh [--exp A|B|C|all] <eid>
+#   sbatch scripts/delta/lightningpose_xcorr/step2_plot_xcorr.sh [--exp A|B|C|D|all] <eid>
 # Draws once in $ORDER and, unless SKIP_DEPTH_ORDER is set, once in depth order. B also redraws
 # heatmap.pca_decomposition and its decomposition.<eid>.md; the video comes from step3 only.
 #
@@ -30,6 +30,7 @@ cd "$REPO"
 #   ORDER            neuron order: saved (default, A's order), depth or none
 #   SKIP_DEPTH_ORDER set to 1 to skip the depth-order pass
 #   VMAX             fixed colour scale +-VMAX (default: from the data)
+#   DIFF_VMAX        B / C / D: fixed half-range of the signed-difference strips (default: data)
 #   PLOTS_SUBDIR     run name of the figure folders (default: New York time)
 #   N_EXAMPLES       A: number of example curves (default 0)
 #   NO_PETH          A: set to 1 to leave out the reward / movement-onset strips
@@ -72,6 +73,7 @@ replot_one_order() {
             ${CAMERA_LIST[@]:+--cameras "${CAMERA_LIST[@]}"} \
             --order "$order" \
             ${VMAX:+--vmax "$VMAX"} \
+            ${DIFF_VMAX:+--diff-vmax "$DIFF_VMAX"} \
             --plots-subdir "$subdir"
         [ $? -ne 0 ] && echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiment B (pca) replot failed (order=$order; no saved run? rerun step1 --exp B first); skipping." >&2
     fi
@@ -84,8 +86,22 @@ replot_one_order() {
             ${CAMERA_LIST[@]:+--cameras "${CAMERA_LIST[@]}"} \
             --order "$order" \
             ${VMAX:+--vmax "$VMAX"} \
+            ${DIFF_VMAX:+--diff-vmax "$DIFF_VMAX"} \
             --plots-subdir "$subdir"
         [ $? -ne 0 ] && echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiment C (relative motion) replot failed (order=$order; no saved run? rerun step1 --exp C first); skipping." >&2
+    fi
+
+    if [ -n "$RUN_D" ]; then
+        echo "[$(date +'%Y-%m-%d %H:%M:%S')] Replotting Experiment D (pca of each group), order=$order"
+        PYTHONPATH="${REPO}/src:${PYTHONPATH:-}" python -u -m pose2visual.xcorr.experiments.replot_pca_groups \
+            --config "$CONFIG" \
+            ${EID:+--eids "$EID"} \
+            ${CAMERA_LIST[@]:+--cameras "${CAMERA_LIST[@]}"} \
+            --order "$order" \
+            ${VMAX:+--vmax "$VMAX"} \
+            ${DIFF_VMAX:+--diff-vmax "$DIFF_VMAX"} \
+            --plots-subdir "$subdir"
+        [ $? -ne 0 ] && echo "[$(date +'%Y-%m-%d %H:%M:%S')] Experiment D (pca of each group) replot failed (order=$order; no saved run? rerun step1 --exp D first); skipping." >&2
     fi
 }
 

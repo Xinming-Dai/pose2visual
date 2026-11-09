@@ -1,8 +1,8 @@
 """Optional follow-up experiments on the neural-behavior cross-correlation.
 
-Both need only step 0, not a finished Experiment A (baseline, ``pose2visual.xcorr.run_xcorr``):
+They need only step 0, not a finished Experiment A (baseline, ``pose2visual.xcorr.run_xcorr``):
 they recompute the original keypoint-speed cross-correlations with the baseline's own code
-(``common.compute_original``), so A, B and C can run at the same time. Each writes to its own
+(``common.compute_original``), so A, B, C and D can run at the same time. Each writes to its own
 folder inside the session folder; when A has run on the same neurons, its saved neuron order is
 used for their figures. They ask whether the similar xcorr patterns of ear, eye, nose and mouth
 keypoints come from shared motion:
@@ -18,6 +18,11 @@ keypoints come from shared motion:
   each anatomical group with two or more keypoints from the keypoint coordinates, recompute the
   speed and the xcorrs, and compare with the original speed. Groups with a single keypoint
   keep their original speed and are listed in the report.
+* ``pca_groups`` (Experiment D, ``experiment_D_pca_groups/``): one PCA per anatomical group of
+  ``body_parts.json`` (the group set of Experiment C) and camera, so the left and right forelimb
+  are never fitted together; the first components of every group become new behaviors ("PCA on
+  positions") and the group positions reprojected onto them give a denoised per-keypoint speed
+  ("PCA on speed"). Single-keypoint groups keep their original speed.
 * ``pca_reconstruction`` (part of Experiment B, ``experiment_B_pca/``): not a xcorr but a look
   at the decomposition: for the whole face (``wholeface`` group, no tongue / forelimb / digits) the
   centered positions, their rank-2 PCA part and the residual are drawn as a three-panel heatmap and
@@ -30,8 +35,8 @@ keypoints come from shared motion:
   diagnostic figures.
 
 Each experiment computes and (unless ``--no-plot``) plots in one command line
-(``python -m pose2visual.xcorr.experiments.pca`` or ``.relative_motion``); its ``replot_*``
-counterpart (``replot_pca`` / ``replot_relative_motion``) redraws the figures of a finished run
+(``python -m pose2visual.xcorr.experiments.pca``, ``.relative_motion`` or ``.pca_groups``); its
+``replot_*`` counterpart (``replot_pca`` / ``replot_relative_motion`` / ``replot_pca_groups``) redraws the figures of a finished run
 from the saved arrays/csv/json with no recomputation, the same split
 ``pose2visual.xcorr.run_xcorr``/``replot`` uses for the baseline. See
 ``scripts/delta/lightningpose_xcorr/step1_compute_xcorr.sh`` (computes the baseline and both

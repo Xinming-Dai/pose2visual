@@ -315,3 +315,122 @@ def relabel_overview(fig, suptitle: str, colorbar_label: str) -> None:
     for ax in fig.axes:
         if ax.get_ylabel() == BASELINE_COLORBAR_LABEL:
             ax.set_ylabel(colorbar_label)
+
+
+SIGNED_DIFFERENCE_GUIDE = (
+    'heatmap.signed_difference',
+    'per camera three rows, original | corrected | difference r(corrected) - r(original), same '
+    'neuron order and lags. The first two rows share the correlation scale; every difference '
+    'strip of the figure (all cameras, groups, keypoints) shares ONE diverging scale printed in '
+    'the title, so equal colours mean equal changes. Red = the correlation moved positive at that '
+    'neuron and lag, blue = negative; read the paired rows to tell a stronger, weaker or '
+    'sign-reversed relationship (a positive original that turns less positive is blue)',
+)
+SIGNED_SCATTER_GUIDE = (
+    'scatter.signed_r_at_original_peak',
+    'EXPLORATORY. One dot per neuron-keypoint pair: signed r of the original speed (x) against '
+    'the corrected speed (y) at the lag where the original |r| peaks (selected from the '
+    'original only, reused for the corrected). Keeps the sign and compares the two at the same '
+    'lag, but the lag is an extreme of the original data, so the original value is biased away '
+    'from zero: a descriptive comparison, not an independent test and not a significance test. '
+    'Above the diagonal = moved positive, across a zero line = sign reversed. Dots are coloured '
+    'per keypoint (same colour for both sides)',
+)
+
+
+def difference_vmax(
+    r_original: np.ndarray,
+    r_other: np.ndarray,
+    diff_vmax: float | None = None,
+    step: float = 0.01,
+) -> float:
+    """The one half-range of every difference strip of a figure.
+
+    Args:
+        r_original: original correlations (any shape, NaN where undefined).
+        r_other: corrected correlations, same shape.
+        diff_vmax: fixed half-range (e.g. to compare sessions); `None` takes the 99.5th
+            percentile of the whole difference array, rounded up to `step`.
+        step: rounding step of the data-driven scale.
+
+    Returns:
+        A positive symmetric limit, shared by all panels of the figure.
+    """
+    if diff_vmax is not None:
+        return float(diff_vmax)
+    difference = r_other - r_original
+    if not np.isfinite(difference).any():
+        return step
+    # lazy: figures pulls in matplotlib
+    from pose2visual.xcorr.figures import heatmap_vmax
+
+    return heatmap_vmax(difference, step=step)
+
+
+def save_signed_comparison(
+    plots_dir: str | Path,
+    eid: str,
+    lags_sec: np.ndarray,
+    cams: list[str],
+    names: list[str],
+    groups: list[str],
+    valid: np.ndarray,
+    r_original: np.ndarray,
+    r_other: np.ndarray,
+    idx_order: np.ndarray,
+    scale: float,
+    ylabel: str,
+    label_other: str,
+    flags: np.ndarray,
+    scatter_groups: list[str],
+    diff_vmax: float | None = None,
+) -> tuple[list[Path], list[tuple[str, str]]]:
+    """Draw the signed-difference heatmap and the signed same-lag scatter of one experiment.
+
+    Args:
+        plots_dir: folder the figures are written into.
+        eid: session id.
+        lags_sec: lag axis.
+        cams: cameras, in plotting order.
+        names: behavior (keypoint) names, baseline order.
+        groups: group of each behavior that lays out the heatmap strips.
+        valid: boolean ``[C, B]``.
+        r_original: original xcorr ``[C, N, B, L]``, NaN where not `valid`.
+        r_other: corrected xcorr, same shape.
+        idx_order: neuron order of the heatmaps (the scatter does not depend on it).
+        scale: correlation half-range of the first two heatmap rows.
+        ylabel: label of the neuron axis.
+        label_other: name of the corrected condition, e.g. `'relative'` or `'pca'`.
+        flags: boolean ``[C, B]``, whether the correction was applied to a behavior.
+        scatter_groups: group of each behavior that splits the scatter columns.
+        diff_vmax: fixed half-range of the difference strips; `None` = data driven, once per
+            figure.
+
+    Returns:
+        `(paths, guide)`: the written files and the guide rows of the two figures.
+    """
+    # lazy: matplotlib is only needed to draw
+    from pose2visual.xcorr.experiments import diagnostics
+    from pose2visual.xcorr.figures import plot_signed_difference, save_figure
+
+    plots_dir = Path(plots_dir)
+    limit = difference_vmax(r_original, r_other, diff_vmax)
+    fig = plot_signed_difference(
+        r_original[:, idx_order], r_other[:, idx_order], lags_sec, names, cams, groups, valid,
+        eid, scale, limit, label_other, ylabel=ylabel,
+    )
+    paths = save_figure(fig, plots_dir / f'heatmap.signed_difference.{eid}')
+    panels = []
+    for idx_c, camera in enumerate(cams):
+        idx_b = np.flatnonzero(valid[idx_c])
+        panels.append({
+            'camera': camera, 'original': r_original[idx_c][:, idx_b],
+            'relative': r_other[idx_c][:, idx_b],
+            'groups': [scatter_groups[i] for i in idx_b], 'corrected': flags[idx_c, idx_b],
+            'names': [names[i] for i in idx_b],
+        })
+    paths += save_figure(
+        diagnostics.plot_signed_scatter(panels),
+        plots_dir / f'scatter.signed_r_at_original_peak.{eid}',
+    )
+    return paths, [SIGNED_DIFFERENCE_GUIDE, SIGNED_SCATTER_GUIDE]

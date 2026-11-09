@@ -76,6 +76,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "run's own rule applied to the original xcorrs.",
     )
     parser.add_argument(
+        '--diff-vmax', type=float, default=None,
+        help='half-range of the one colour scale of every difference strip of '
+        'heatmap.signed_difference; fix it to compare sessions (default: from the data, once per '
+        'figure).',
+    )
+    parser.add_argument(
         '--plots-subdir', type=str, default=None,
         help='figure folder inside plot_video/experiment_B_pca (default: New York time); the '
         'neuron order is appended, e.g. <name>_rastermap.',
@@ -171,6 +177,7 @@ def replot_session(
     order: str = 'saved',
     vmax: float | None = None,
     plots_subdir: str | None = None,
+    diff_vmax: float | None = None,
 ) -> list[Path]:
     """Redraw the Experiment B figures of one finished session.
 
@@ -182,6 +189,7 @@ def replot_session(
         vmax: half-range of the colour scale; `None` takes it from the data.
         plots_subdir: run name of the figure folder inside `plot_video/experiment_B_pca`, to which
             the neuron order is appended; `None` makes a new name from the current New York time.
+        diff_vmax: fixed half-range of the difference strips; `None` = from the data.
 
     Returns:
         The written png files and the figure guide.
@@ -212,6 +220,7 @@ def replot_session(
         results['r_position'], results['valid_position'], results['pca_applied'],
         results['summary'], results['camera_report'],
         anatomical_groups(config_path, results['names']),
+        diff_vmax=diff_vmax,
     )
 
 
@@ -309,6 +318,7 @@ def main(argv: list[str] | None = None) -> None:
             try:
                 paths = replot_session(
                     config, eid, args.cameras, args.order, args.vmax, plots_subdir,
+                    args.diff_vmax,
                 )
                 paths += replot_decomposition(config, eid, args.cameras, plots_subdir)
                 logger.info(f'wrote {[str(p) for p in paths]}')

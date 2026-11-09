@@ -71,6 +71,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "run's own rule applied to the original xcorrs.",
     )
     parser.add_argument(
+        '--diff-vmax', type=float, default=None,
+        help='half-range of the one colour scale of every difference strip of '
+        'heatmap.signed_difference; fix it to compare sessions (default: from the data, once per '
+        'figure).',
+    )
+    parser.add_argument(
         '--plots-subdir', type=str, default=None,
         help='figure folder inside plot_video/experiment_C_relative_motion (default: New York '
         'time); the neuron order is appended, e.g. <name>_rastermap.',
@@ -172,6 +178,7 @@ def replot_session(
     order: str = 'saved',
     vmax: float | None = None,
     plots_subdir: str | None = None,
+    diff_vmax: float | None = None,
 ) -> list[Path]:
     """Redraw the Experiment C figures of one finished session.
 
@@ -184,6 +191,7 @@ def replot_session(
         plots_subdir: run name of the figure folder inside
             `plot_video/experiment_C_relative_motion`, to which the neuron order is appended;
             `None` makes a new name from the current New York time.
+        diff_vmax: fixed half-range of the difference strips; `None` = from the data.
 
     Returns:
         The written png files and the figure guide.
@@ -213,7 +221,7 @@ def replot_session(
         plots_dir, eid, results['lags_sec'], results['cameras'], results['names'],
         results['groups'], results['valid'], results['r_original'], results['r_relative'],
         idx_order, order_label, vmax, results['corrected'], results['summary'],
-        results['group_rows'], results['centroids'],
+        results['group_rows'], results['centroids'], diff_vmax=diff_vmax,
     )
 
 
@@ -237,6 +245,7 @@ def main(argv: list[str] | None = None) -> None:
             try:
                 paths = replot_session(
                     config, eid, args.cameras, args.order, args.vmax, plots_subdir,
+                    args.diff_vmax,
                 )
                 logger.info(f'wrote {[str(p) for p in paths]}')
             except Exception as error:  # noqa: BLE001 - one session must not stop the others

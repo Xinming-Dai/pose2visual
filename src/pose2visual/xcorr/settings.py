@@ -42,6 +42,7 @@ _PREFIX = 'xcorr_'
 EXPERIMENT_BASELINE = 'experiment_A_baseline'
 EXPERIMENT_PCA = 'experiment_B_pca'
 EXPERIMENT_RELMOTION = 'experiment_C_relative_motion'
+EXPERIMENT_PCA_GROUPS = 'experiment_D_pca_groups'
 PLOT_VIDEO_DIR = 'plot_video'
 RESULTS_DIR = 'results'
 
@@ -220,7 +221,8 @@ def plot_video_dir(session_dir: str | Path, experiment: str) -> Path:
 
     Args:
         session_dir: session folder (`xcorr_dir`).
-        experiment: `EXPERIMENT_BASELINE`, `EXPERIMENT_PCA` or `EXPERIMENT_RELMOTION`.
+        experiment: `EXPERIMENT_BASELINE`, `EXPERIMENT_PCA`, `EXPERIMENT_RELMOTION` or
+            `EXPERIMENT_PCA_GROUPS`.
 
     Returns:
         `<session_dir>/plot_video/<experiment>`; not created. Each run draws into subfolders
@@ -234,7 +236,8 @@ def results_dir(session_dir: str | Path, experiment: str) -> Path:
 
     Args:
         session_dir: session folder (`xcorr_dir`).
-        experiment: `EXPERIMENT_BASELINE`, `EXPERIMENT_PCA` or `EXPERIMENT_RELMOTION`.
+        experiment: `EXPERIMENT_BASELINE`, `EXPERIMENT_PCA`, `EXPERIMENT_RELMOTION` or
+            `EXPERIMENT_PCA_GROUPS`.
 
     Returns:
         `<session_dir>/results/<experiment>`; not created. Each compute run writes into its own

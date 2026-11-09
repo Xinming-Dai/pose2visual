@@ -18,8 +18,7 @@ Which groups are corrected (documented per camera in ``relative_groups.<eid>.{js
 figure):
 
 * **corrected**: groups with two or more usable keypoints (after ``--exclude``), except
-  ``--no-centroid-groups`` (default ``forelimb``: ``wrist_left`` and ``wrist_right`` are
-  different limbs, not one rigid body).
+  ``--no-centroid-groups`` (default none).
 * **skipped, original speed kept**: groups with a single keypoint (the centroid would be the
   keypoint itself and the relative motion identically zero), groups named in
   ``--no-centroid-groups``, and keypoints that belong to no anatomical group (unrelated keypoints
@@ -104,6 +103,7 @@ from pose2visual.xcorr.experiments.common import (
     compute_original,
     relabel_overview,
     resolve_order,
+    save_signed_comparison,
     write_figure_guide,
 )
 from pose2visual.xcorr.experiments.masked_crosscorr import masked_cross_correlation
@@ -118,7 +118,7 @@ from pose2visual.xcorr.settings import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_NO_CENTROID_GROUPS = ('forelimb',)
+DEFAULT_NO_CENTROID_GROUPS: tuple[str, ...] = ()
 DEFAULT_MIN_VALID_FRACTION = 0.5
 # a group needs this many reliably tracked keypoints at a frame for its relative motion to exist
 MIN_RELIABLE_KEYPOINTS = 2
@@ -126,6 +126,8 @@ MIN_RELIABLE_KEYPOINTS = 2
 # (the baseline stores its binned traces in float32)
 SELF_CHECK_RTOL = 1e-4
 SELF_CHECK_ATOL = 1e-3
+# a group's centroid speed is named `<group>_centroid` in the centroid xcorr
+CENTROID_SUFFIX = '_centroid'
 # (stem, meaning) rows of the figure guide (`common.write_figure_guide`)
 HEATMAP_GUIDE = (
     (
@@ -144,10 +146,12 @@ HEATMAP_GUIDE = (
 SCATTER_GUIDE = (
     'scatter.peak_abs_r',
     'one panel per camera (row) and corrected anatomical group (column), same axes in every '
-    'panel and the same group colours in every camera and session; one dot per neuron-keypoint '
-    'pair: peak \\|r\\| over lags of the original speed (x) against the relative speed (y); below '
-    'the dashed diagonal = the group lost correlation when its centroid was removed, above = '
-    'gained; uncorrected keypoints (on the diagonal by construction) are not drawn',
+    'panel; one dot per neuron-keypoint pair, coloured per keypoint (same colour for both sides '
+    'and in every camera and session): peak \\|r\\| over lags of the original speed (x) against '
+    'the relative speed (y). The sign is ignored and the two peaks may be at different lags (see '
+    '`scatter.signed_r_at_original_peak`); below the dashed diagonal = the group lost correlation '
+    'when its centroid was removed, above = gained; uncorrected keypoints (on the diagonal by '
+    'construction) are not drawn',
 )
 VARIANCE_GUIDE = (
     'bar.variance',
@@ -159,6 +163,16 @@ CENTROID_GUIDE = (
     'one row per corrected camera/group: centroid x and y over a middle excerpt (undefined '
     'frames shaded), centroid speed against the mean member speed (how much of the motion is '
     'shared), and x and y over the whole session',
+)
+CENTROID_HEATMAP_GUIDE = (
+    'heatmap.centroid_speed',
+    "xcorr of each corrected group's centroid SPEED MAGNITUDE (px/s of the centroid trajectory; "
+    'the direction of the movement is not kept), one strip per group and camera, same colour '
+    'scale and neuron order. It relates neural activity to the group\'s translational speed, '
+    'while `heatmap.relative_speed` is the speed of each keypoint relative to the centroid: '
+    'different behavioral measures, read side by side rather than as one quantity. A tight group '
+    'looks like its keypoints in `heatmap.original_speed`; it differs when the members deform. '
+    'Drawn unless --no-centroid-xcorr',
 )
 GROUPS_TABLE_GUIDE = (
     'groups_table',
@@ -201,13 +215,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--no-centroid-groups', type=str, nargs='*', default=list(DEFAULT_NO_CENTROID_GROUPS),
         metavar='GROUP',
         help='groups that keep their original speed although they have two or more keypoints '
-        f'(default: {" ".join(DEFAULT_NO_CENTROID_GROUPS)}; pass the flag with no value to '
-        'correct every group with two or more keypoints).',
+        '(default: none, every group with two or more keypoints is corrected).',
     )
     parser.add_argument(
         '--min-valid-fraction', type=float, default=DEFAULT_MIN_VALID_FRACTION,
         help='a corrected keypoint whose relative speed is defined in a smaller fraction of the '
         f'bins is left out and reported (default: {DEFAULT_MIN_VALID_FRACTION}).',
+    )
+    parser.add_argument(
+        '--no-centroid-xcorr', action='store_true',
+        help="do not correlate the neurons with each corrected group's centroid speed magnitude "
+        '(the extra heatmap.centroid_speed and r_centroid in the npz are written by default).',
     )
     parser.add_argument(
         '--vmax', type=float, default=None,
@@ -219,6 +237,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help='run name: results/experiment_C_relative_motion/<name> and the figure folders '
         'plot_video/experiment_C_relative_motion/<name>_<order>, e.g. <name>_rastermap '
         '(default: New York time).',
+    )
+    parser.add_argument(
+        '--diff-vmax', type=float, default=None,
+        help='half-range of the one colour scale of every difference strip of '
+        'heatmap.signed_difference; fix it to compare sessions (default: from the data, once per '
+        'figure).',
     )
     parser.add_argument(
         '--no-depth-plot', action='store_true',
@@ -527,6 +551,8 @@ def camera_motion(
     corrected: dict[str, bool] = {}
     stats: dict[str, dict[str, Any]] = {}
     centroids: list[dict[str, Any]] = []
+    centroid_traces: dict[str, np.ndarray] = {}
+    centroid_groups: dict[str, str] = {}
     group_of: dict[str, str] = {}
     for entry in plan:
         members = entry['members']
@@ -539,10 +565,16 @@ def camera_motion(
             entry['interpolated_fraction'] = float(
                 np.mean(~np.all([reliable[k] for k in members], axis=0)),
             )
+            centroid_speed = speed_from_positions(*motion['centroid'], times)
+            centroid_name = f'{entry["group"]}{CENTROID_SUFFIX}'
+            centroid_traces[centroid_name] = bin_with_gaps(
+                centroid_speed, motion['valid_speed'], times, intervals, binsize, n_bins,
+            )
+            centroid_groups[centroid_name] = entry['group']
             centroids.append({
                 'camera': camera, 'group': entry['group'], 'times': times,
                 'x': motion['centroid'][0], 'y': motion['centroid'][1],
-                'speed': speed_from_positions(*motion['centroid'], times),
+                'speed': centroid_speed,
                 'member_speed': np.mean([motion['absolute_speed'][k] for k in members], axis=0),
                 'valid': motion['valid_speed'],
             })
@@ -589,6 +621,11 @@ def camera_motion(
         'groups': [group_of[name] for name in names],
         'traces': np.stack([traces[name] for name in names], axis=1),
         'corrected': np.asarray([corrected[name] for name in names]),
+        'centroid_names': list(centroid_traces),
+        'centroid_groups': [centroid_groups[name] for name in centroid_traces],
+        'centroid_traces': np.stack(
+            list(centroid_traces.values()), axis=1,
+        ) if centroid_traces else np.zeros((len(intervals) * n_bins, 0)),
         'plan': plan,
         'stats': {name: stats[name] for name in names},
         'centroids': centroids,
@@ -696,6 +733,8 @@ def run_session(
     skip_plot: bool = False,
     n_jobs: int = 1,
     depth_plot: bool = True,
+    centroid_xcorr: bool = True,
+    diff_vmax: float | None = None,
 ) -> dict[str, Path | None]:
     """Run Experiment C on one session.
 
@@ -717,6 +756,11 @@ def run_session(
         n_jobs: cameras processed in parallel for the original xcorr.
         depth_plot: also draw the figures in probe-depth order into `<plots_subdir>_depth`
             (skipped when the first order is already depth, or when `skip_plot` is `True`).
+        centroid_xcorr: also correlate the neurons with the centroid speed magnitude (px/s, no
+            direction) of every corrected group (`r_centroid` in the arrays npz and
+            `heatmap.centroid_speed`).
+        diff_vmax: fixed half-range of the difference strips of `heatmap.signed_difference`
+            (to compare sessions); `None` = data driven.
 
     Returns:
         Dict of the written paths: `arrays`, `summary`, `groups`, `groups_md` and `plots`
@@ -753,6 +797,8 @@ def run_session(
     camera_report: dict[str, Any] = {}
     stat_rows: list[dict[str, Any]] = []
     centroids: list[dict[str, Any]] = []
+    # camera -> {centroid trace name: (group, xcorr [N, L])}, only with centroid_xcorr
+    centroid_fits: dict[str, dict[str, tuple[str, np.ndarray]]] = {}
     for idx_c, camera in enumerate(cams):
         baseline_names = [n for n, ok in zip(names, valid_base[idx_c]) if ok]
         motion = camera_motion(
@@ -786,6 +832,23 @@ def run_session(
                     f'{camera} {name}: baseline group {groups[idx_b]!r} but this run grouped it '
                     f'under {motion["groups"][idx_k]!r}',
                 )
+        if centroid_xcorr and motion['centroid_names']:
+            usable_c, dropped_c = screen_traces(
+                motion['centroid_traces'], motion['centroid_names'],
+                np.ones(len(motion['centroid_names']), dtype=bool), min_valid_fraction,
+            )
+            for name, why in dropped_c.items():
+                logger.warning(f'{camera} {name}: left out, {why}')
+            idx_keep = np.flatnonzero(usable_c)
+            if idx_keep.size:
+                fitted_c = masked_cross_correlation(
+                    neural['neural'], motion['centroid_traces'][:, idx_keep],
+                    neural['max_lag_bins'],
+                )
+                centroid_fits[camera] = {
+                    motion['centroid_names'][i]: (motion['centroid_groups'][i], fitted_c[:, j, :])
+                    for j, i in enumerate(idx_keep)
+                }
         for entry in motion['plan']:
             group_rows.append({'camera': camera, **entry})
         for name in motion['names']:
@@ -824,13 +887,38 @@ def run_session(
             r_original[idx_c, :, idx_b, :].ravel(), r_relative[idx_c, :, idx_b, :].ravel(),
         )[0, 1]
 
+    extra_arrays: dict[str, np.ndarray] = {}
+    centroid_plot: dict[str, Any] = {}
+    if centroid_fits:
+        # union of the centroid traces over cameras, in first-seen order
+        centroid_names = list(dict.fromkeys(n for fits in centroid_fits.values() for n in fits))
+        centroid_groups = [
+            next(fits[n][0] for fits in centroid_fits.values() if n in fits)
+            for n in centroid_names
+        ]
+        r_centroid = np.full((n_cam, n_neuron, len(centroid_names), n_lag), np.nan)
+        valid_centroid = np.zeros((n_cam, len(centroid_names)), dtype=bool)
+        for idx_c, camera in enumerate(cams):
+            for name, (_, fit) in centroid_fits.get(camera, {}).items():
+                idx_g = centroid_names.index(name)
+                r_centroid[idx_c, :, idx_g, :] = fit
+                valid_centroid[idx_c, idx_g] = True
+        extra_arrays = {
+            'r_centroid': r_centroid.astype(np.float32), 'valid_centroid': valid_centroid,
+            'centroid_names': np.asarray(centroid_names),
+            'centroid_groups': np.asarray(centroid_groups),
+        }
+        centroid_plot = {
+            'r_centroid': r_centroid, 'centroid_names': centroid_names,
+            'centroid_groups': centroid_groups, 'valid_centroid': valid_centroid,
+        }
     arrays_path = out_dir / f'relative_arrays.{eid}.npz'
     np.savez_compressed(
         arrays_path, r_relative=r_relative.astype(np.float32),
         r_original=r_original.astype(np.float32), corrected=corrected, valid=valid,
         lags_sec=lags_sec, cameras=np.asarray(cams), behavior_names=np.asarray(names),
         behavior_groups=np.asarray(groups), neuron_ids=base['neuron_ids'],
-        neuron_depths=base['neuron_depths'],
+        neuron_depths=base['neuron_depths'], **extra_arrays,
     )
     summary_path = out_dir / f'relative_summary.{eid}.csv'
     summary.to_csv(summary_path, index=False)
@@ -867,6 +955,7 @@ def run_session(
             plot_results(
                 this_dir, eid, lags_sec, cams, names, groups, valid, r_original, r_relative,
                 idx_order, order_label, vmax, corrected, summary, group_rows, centroids,
+                diff_vmax=diff_vmax, **centroid_plot,
             )
             if order == 'saved':
                 plots_dir = this_dir
@@ -895,6 +984,11 @@ def plot_results(
     summary: pd.DataFrame,
     group_rows: list[dict[str, Any]],
     centroids: list[dict[str, Any]],
+    r_centroid: np.ndarray | None = None,
+    centroid_names: list[str] | None = None,
+    centroid_groups: list[str] | None = None,
+    valid_centroid: np.ndarray | None = None,
+    diff_vmax: float | None = None,
 ) -> list[Path]:
     """Draw every Experiment C figure from already-computed (or reloaded) arrays.
 
@@ -923,6 +1017,12 @@ def plot_results(
             `relative_groups.<eid>.json`'s per-camera `groups` plans).
         centroids: centroid trajectory data, one dict per corrected camera/group
             (`run_session`'s `centroids`); empty skips the trajectory figure.
+        r_centroid: xcorr of the centroid speeds `[C, N, G, L]`; `None` skips their heatmap.
+        centroid_names: the `G` centroid trace names (`<group>_centroid`).
+        centroid_groups: anatomical group of each centroid trace.
+        valid_centroid: boolean `[C, G]`.
+        diff_vmax: half-range of the one colour scale of every difference strip of
+            `heatmap.signed_difference`; `None` takes it from the data, once per figure.
 
     Returns:
         The written png files, then the figure guide `figures.<eid>.md`
@@ -958,6 +1058,17 @@ def plot_results(
             'number = max |value|', BASELINE_COLORBAR_LABEL,
         )
         paths += save_figure(fig, plots_dir / f'heatmap.{stem}.{eid}')
+    if r_centroid is not None:
+        fig = plot_xcorr_overview(
+            r_centroid[:, idx_order], lags_sec, centroid_names, cams, centroid_groups,
+            valid_centroid, eid, scale, ylabel=ylabel,
+        )
+        relabel_overview(
+            fig, f'{eid}: group centroid speed; colour scale +-{scale:.2f}; each strip: '
+            'neurons x lag, number = max |value|', BASELINE_COLORBAR_LABEL,
+        )
+        paths += save_figure(fig, plots_dir / f'heatmap.centroid_speed.{eid}')
+        guide.insert(2, CENTROID_HEATMAP_GUIDE)
     scatter_panels = []
     for idx_c, camera in enumerate(cams):
         idx_b = np.flatnonzero(valid[idx_c])
@@ -965,10 +1076,17 @@ def plot_results(
             'camera': camera, 'original': peak_original[idx_c][:, idx_b],
             'relative': peak_relative[idx_c][:, idx_b],
             'groups': [groups[i] for i in idx_b], 'corrected': corrected[idx_c, idx_b],
+            'names': [names[i] for i in idx_b],
         })
     paths += save_figure(
         diagnostics.plot_peak_scatter(scatter_panels), plots_dir / f'scatter.peak_abs_r.{eid}',
     )
+    signed_paths, signed_guide = save_signed_comparison(
+        plots_dir, eid, lags_sec, cams, names, groups, valid, r_original, r_relative, idx_order,
+        scale, ylabel, 'relative', corrected, groups, diff_vmax,
+    )
+    paths += signed_paths
+    guide += signed_guide
     paths += save_figure(
         diagnostics.plot_variance_bars(summary), plots_dir / f'bar.variance.{eid}',
     )
@@ -1011,6 +1129,7 @@ def main(argv: list[str] | None = None) -> None:
                     config, eid, args.video_timestamps_dir, args.cameras, args.exclude,
                     args.no_centroid_groups, args.min_valid_fraction, args.vmax, plots_subdir,
                     args.no_plot, args.n_jobs, not args.no_depth_plot,
+                    not args.no_centroid_xcorr, args.diff_vmax,
                 )
                 logger.info(f'wrote {[str(p) for p in paths.values()]}')
             except Exception as error:  # noqa: BLE001 - one session must not stop the others

@@ -373,6 +373,130 @@ def plot_xcorr_overview(
     return fig
 
 
+def plot_signed_difference(
+    r_original: np.ndarray,
+    r_other: np.ndarray,
+    lags_sec: np.ndarray,
+    names: list[str],
+    cameras: list[str],
+    groups: list[str],
+    valid: np.ndarray,
+    title: str,
+    vmax: float,
+    diff_vmax: float,
+    label_other: str,
+    ylabel: str = 'neurons',
+) -> Figure:
+    """Original, corrected and signed-difference xcorr strips of every behavior.
+
+    Same strips and column layout as `plot_xcorr_overview` (one neuron x lag strip per behavior,
+    mirrored left/right keypoints share a column, one neuron order), but every camera gets three
+    rows: the original xcorr, the corrected one and their difference
+    ``r(corrected) - r(original)``. The first two rows share the colour scale `vmax`; all
+    difference strips of the figure (every camera, group and behavior) share the single scale
+    `diff_vmax`, so equally coloured patches mean equal changes. Red = the correlation moved
+    towards positive at that neuron and lag, blue = towards negative; read it with the paired
+    strips above to tell a stronger, weaker or sign-reversed relationship.
+
+    Args:
+        r_original: original correlations ``[C, N, B, L]``, neurons in display order.
+        r_other: corrected correlations, same shape and neuron order.
+        lags_sec: lag in seconds of each of the ``L`` columns.
+        names: the ``B`` behavior names, grouped.
+        cameras: the ``C`` camera names, in row order.
+        groups: body-part group of each behavior (``B`` entries).
+        valid: boolean ``[C, B]``, whether camera `c` has behavior `b`.
+        title: figure title prefix (session id).
+        vmax: half-range of the colour scale of the original and corrected strips.
+        diff_vmax: half-range of the one colour scale of every difference strip.
+        label_other: row label of the corrected strips, e.g. `'relative'`.
+        ylabel: label of the neuron axis.
+
+    Returns:
+        The figure.
+    """
+    n_cameras = r_original.shape[0]
+    slots = align_behaviors(names, groups, valid)
+    columns: list[int] = []
+    ratios: list[float] = []
+    for idx_slot, slot in enumerate(slots):
+        if idx_slot and slot.group != slots[idx_slot - 1].group:
+            ratios.append(GROUP_GAP)
+        columns.append(len(ratios))
+        ratios.append(1.0)
+    ratios += [GROUP_GAP, COLORBAR_RATIO, GROUP_GAP * 3.5, COLORBAR_RATIO]
+    width = min(MAX_FIGURE_WIDTH, max(MIN_FIGURE_WIDTH, PANEL_WIDTH * sum(ratios) + 1.5))
+    strip_height = ROW_HEIGHT * 0.6
+    height_ratios = [GROUP_ROW_HEIGHT] + [NAME_ROW_HEIGHT, strip_height, strip_height,
+                                          strip_height] * n_cameras
+    fig = Figure(figsize=(width, sum(height_ratios) / 0.86))
+    grid = fig.add_gridspec(
+        len(height_ratios), len(ratios), width_ratios=ratios, height_ratios=height_ratios,
+        left=0.07, right=0.91, top=0.93, bottom=0.07, wspace=0.12, hspace=0.12,
+    )
+    rows = (
+        ('original', r_original, vmax),
+        (label_other, r_other, vmax),
+        ('difference', r_other - r_original, diff_vmax),
+    )
+    image = None
+    diff_image = None
+    for idx_cam, camera in enumerate(cameras):
+        first_in_row = True
+        top = 1 + 4 * idx_cam
+        for slot, col in zip(slots, columns):
+            if idx_cam not in slot.members:
+                continue
+            idx_b = slot.members[idx_cam]
+            for idx_row, (label, data, limit) in enumerate(rows):
+                ax = fig.add_subplot(grid[top + 1 + idx_row, col])
+                drawn = _draw_corr_strip(
+                    ax, data[idx_cam, :, idx_b, :], lags_sec, limit,
+                    f'{camera} camera, {label}\n{ylabel}' if first_in_row else None,
+                )
+                if label == 'difference':
+                    diff_image = drawn
+                else:
+                    image = drawn
+                if idx_row < len(rows) - 1:
+                    ax.set_xlabel('')
+                    ax.tick_params(labelbottom=False)
+            first_in_row = False
+            header = fig.add_subplot(grid[top, col])
+            header.axis('off')
+            header.text(
+                0.5, 0.0, names[idx_b], rotation=90, ha='center', va='bottom', fontsize=5,
+                color=TEXT_COLOR, transform=header.transAxes,
+            )
+    begin = 0
+    for stop in range(1, len(slots) + 1):
+        if stop == len(slots) or slots[stop].group != slots[begin].group:
+            ax = fig.add_subplot(grid[0, columns[begin]:columns[stop - 1] + 1])
+            ax.axis('off')
+            ax.plot([0.02, 0.98], [0.1, 0.1], color=TEXT_COLOR, lw=0.8, transform=ax.transAxes)
+            ax.text(
+                0.5, 0.3, slots[begin].group, ha='center', va='bottom', fontsize=7,
+                color=TEXT_COLOR, fontweight='bold', transform=ax.transAxes,
+            )
+            begin = stop
+    cax = fig.add_subplot(grid[1:, -3])
+    fig.colorbar(image, cax=cax, label=f'correlation (original and {label_other} rows)')
+    cax.tick_params(labelsize=6)
+    cax_diff = fig.add_subplot(grid[1:, -1])
+    fig.colorbar(
+        diff_image, cax=cax_diff,
+        label=f'r({label_other}) - r(original) (difference rows, one scale)',
+    )
+    cax_diff.tick_params(labelsize=6)
+    fig.suptitle(
+        f'{title}: per camera original | {label_other} | difference; strips: neurons x lag, '
+        f'positive lag = neural leads; correlation scale +-{vmax:.2f}, difference scale '
+        f'+-{diff_vmax:.2f} (red = moved positive, blue = moved negative)',
+        fontsize=8, color=TEXT_COLOR,
+    )
+    return fig
+
+
 def plot_example_curves(
     examples: list[dict],
     lags_sec: np.ndarray,
