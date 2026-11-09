@@ -71,7 +71,35 @@
     "forelimb": [
       "wrist"
     ]
-  }, "wholeface_tongue_forelimb": {
+  }, "nonoverlapping_analysis_groups_separate_tongue_combined_forelimb": {
+    "eye_related": [
+      "eye",
+      "pupil"
+    ],
+    "mouth_related": [
+      "mouth",
+      "upperlip",
+      "lowerlip"
+    ],
+    "tongue": [
+      "tongue"
+    ],
+    "nose_pad_related": [
+      "nose",
+      "pad"
+    ],
+    "ear_related": [
+      "ear"
+    ],
+    "forelimb": [
+      "wrist",
+      "d1",
+      "d2",
+      "d3",
+      "d4"
+    ]
+  },
+  "wholeface_tongue_forelimb": {
     "wholeface": [
       "eye",
       "pupil",      
@@ -118,6 +146,13 @@
       "nose_pad_related": 2,
       "ear_related": 5,
       "forelimb": 4
+    }, "nonoverlapping_analysis_groups_separate_tongue_combined_forelimb": {
+      "eye_related": 5,
+      "mouth_related": 6,
+      "tongue": 1,
+      "nose_pad_related": 4,
+      "ear_related": 5,
+      "forelimb": 16
     }
   },
   "overlapping_analysis_groups":{
