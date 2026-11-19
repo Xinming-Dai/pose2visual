@@ -20,7 +20,8 @@ Each keypoint has the coords ``x``, ``y`` (smoothed), ``likelihood`` (mean ensem
 ``y_posterior_var``. The fitted ``s`` per keypoint is recorded in the run's manifest.
 
 Needs only ``pandas``, ``numpy``, ``jax`` and ``eks`` (``pip install
-git+https://github.com/paninski-lab/eks.git`` — it is not on PyPI under this name); no
+git+https://github.com/paninski-lab/eks.git``; the distribution is named
+``ensemble-kalman-smoother`` and the import name is ``eks``); no
 ``litpose``/``lightning_pose`` import, so any conda env with those four is fine. ``eks`` does
 not require a GPU.
 

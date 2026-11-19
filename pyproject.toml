@@ -61,10 +61,11 @@ plotting = [
     "matplotlib",
     "pyyaml",
 ]
-# Pose-EKS latent-model fitting (pose2visual.lightningpose.fit_eks_latent_model); not on PyPI
-# under this name, so installed straight from the paninski-lab/eks GitHub repo
+# Pose-EKS latent-model fitting (pose2visual.lightningpose.fit_eks_latent_model); installed
+# straight from the paninski-lab/eks GitHub repo. The distribution is named
+# ensemble-kalman-smoother (the import name is eks), and a direct reference must use that name.
 eks = [
-    "eks @ git+https://github.com/paninski-lab/eks.git",
+    "ensemble-kalman-smoother @ git+https://github.com/paninski-lab/eks.git",
     "pandas",
 ]
 test = [
