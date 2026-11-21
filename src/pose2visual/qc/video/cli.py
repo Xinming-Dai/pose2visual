@@ -93,6 +93,13 @@ Examples:
         help='Cameras to show, side by side in this order (default: left right)',
     )
     parser.add_argument(
+        '--far-side',
+        action='store_true',
+        help='Draw the bilateral keypoints of the side far from each camera (right hand in the '
+        'left camera, left hand in the right camera) instead of the near side; the PCA trace is '
+        'not drawn',
+    )
+    parser.add_argument(
         '--groups-file',
         default=None,
         help='Path to a body_parts.json-style file (default: paths.body_parts_json of --config)',

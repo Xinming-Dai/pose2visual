@@ -21,13 +21,15 @@ export HF_HUB_OFFLINE=1
 
 REPO=/u/xdai3/project3d/pose2visual/pose2visual
 ROOT=/work/hdd/bfsr/xdai3/IBL-2view
-LIGHTNING_POSE_MODEL_DIR=/work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/E3a-headmlp256/face+ibl+cheese+caz+kondo+hmv+c3d+kauf_train/supervised/sampling-T2/tf1/vits_dinov3/seed0
+DRAW=${1:?usage: sbatch litpose_predict.sh <draw index 0-2>}
+MODEL_ROOT=/work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/mm-anchored-lora_ibl_v14/mm-anchored-lora
+LIGHTNING_POSE_MODEL_DIR=${MODEL_ROOT}/tfall-draw${DRAW}
 SCRIPT=${REPO}/src/pose2visual/lightningpose/predict_ibl.py
 CONFIG=${REPO}/configs/lightningpose/extraction_keypoints.yaml
 
 SESSION_IDS=(
-  3e6a97d3-3991-49e2-b346-6948cb4580fb
-  5dcee0eb-b34d-4652-acc3-d10afc6eae68
+  51e53aff-1d5d-4182-a684-aba783d50ae5
+  b22f694e-4a34-4142-ab9d-2556c3487086
 )
 
 if [ "${#SESSION_IDS[@]}" -eq 0 ]; then

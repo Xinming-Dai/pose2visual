@@ -28,6 +28,23 @@ from pose2visual.qc.video.render_compare import VideoJob, render_video
 
 logger = logging.getLogger(__name__)
 
+# the hand a camera sees second: the far side of the left camera is the right hand and vice versa
+OPPOSITE_CAMERA = {'left': 'right', 'right': 'left'}
+
+
+def side_for_camera(camera: str, far_side: bool = False) -> str:
+    """Anatomical side whose bilateral keypoints are drawn for a camera.
+
+    Args:
+        camera: camera name (`'left'` or `'right'`).
+        far_side: if True, return the side far from the camera instead of the near one.
+
+    Returns:
+        `camera` itself (the near side) or the opposite camera name (the far side), which is the
+        suffix of the bilateral keypoint columns, e.g. `d2_tip_<side>`.
+    """
+    return OPPOSITE_CAMERA[camera] if far_side else camera
+
 
 def build_output_path(
     out_dir: Path,
@@ -158,6 +175,7 @@ def load_session_cameras(
     start_frame: int,
     n_frames: int,
     pca_dir: Path | None = None,
+    far_side: bool = False,
 ) -> tuple[dict[str, CameraData], dict[str, Path]]:
     """Load the Pose-EKS arrays of every camera of one session.
 
@@ -171,6 +189,8 @@ def load_session_cameras(
         pca_dir: directory of the files written by encoding step 0 (`default_pca_dir`); when
             given, each camera's `pca_xy` is filled from its file (it stays None when the file does
             not exist). None loads no PCA.
+        far_side: draw the bilateral keypoints of the side far from each camera (right hand in
+            the left camera, left hand in the right camera) instead of the near side.
 
     Returns:
         the arrays and the csv path, each keyed by camera.
@@ -188,7 +208,8 @@ def load_session_cameras(
         landmarks: list[str] = []
         for tokens in groups.values():
             bases = resolve_group_bases(keypoint_names, tokens)
-            for (base, _), column in zip(bases, group_columns_for_camera(bases, camera)):
+            side = side_for_camera(camera, far_side)
+            for (base, _), column in zip(bases, group_columns_for_camera(bases, side)):
                 if column not in columns:
                     columns.append(column)
                     landmarks.append(base)
@@ -245,8 +266,11 @@ def run(args: argparse.Namespace) -> list[Path]:
         Path(args.out_dir).resolve() if args.out_dir else eks_dir.parent / 'qc' / 'video_qc'
     )
     run_label = read_run_label(eks_dir)
+    if args.far_side and not args.no_pca:
+        # the PCA reprojection is fitted on the near-side columns
+        logger.info('--far-side: not drawing the PCA trace')
     pca_dir = (
-        None if args.no_pca
+        None if args.no_pca or args.far_side
         else Path(args.pca_dir) if args.pca_dir else default_pca_dir(args.config)
     )
     video_overrides = {'left': args.video_left, 'right': args.video_right}
@@ -298,7 +322,7 @@ def run(args: argparse.Namespace) -> list[Path]:
                     logger.info(f'  {camera}: crop {crops[camera]} from {args.crop_boxes_file}')
             data, _ = load_session_cameras(
                 eks_dir, session_id, args.cameras, {group_name: tokens}, args.start_frame,
-                args.n_frames, pca_dir,
+                args.n_frames, pca_dir, args.far_side,
             )
             job = VideoJob(
                 session_id=session_id,

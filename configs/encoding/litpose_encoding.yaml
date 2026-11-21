@@ -55,18 +55,6 @@ visibility:
 one_api:
   behavior_traces: [whisker_motion_energy, wheel_speed, licks]
 
-# optional: take each body part from the model that predicts it best. Step 0 builds one csv per
-# session and camera in paths.video_preds_dir from these models.
-merge:
-  # group set of paths.body_parts_json used to resolve `groups`
-  group_set: nonoverlapping_analysis_groups_separate_tongue
-  # every keypoint comes from exactly one source; `rest` = all keypoints no other source claims
-  sources:
-    - video_preds_dir: /work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/ibl-digits-alora-v11/ibl-digits/mm-anchored-lora/eks/20261027_113942/eks
-      groups: [digits]
-    - video_preds_dir: /work/nvme/bfsr/xdai3/pose2visual/mighty-mouse-models/ibl-alora-v11/mm-anchored-lora/eks/20261027_114133/eks
-      groups: rest
-
 # PCA reprojection, done in step 1. On/off comes from step_order; this is only the group set
 pca:
   group_set: nonoverlapping_analysis_groups_separate_tongue_combined_forelimb
